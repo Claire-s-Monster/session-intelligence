@@ -10,8 +10,8 @@ Features:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware

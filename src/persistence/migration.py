@@ -25,9 +25,9 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from .base import DEFAULT_DATA_DIR, DEFAULT_SQLITE_PATH, DatabaseBackend
+from .base import DEFAULT_SQLITE_PATH, DatabaseBackend
 from .config import DatabaseConfig, create_database
 
 logger = logging.getLogger(__name__)
@@ -201,7 +201,7 @@ class MigrationManager:
 
 
 async def migrate_local_to_global(
-    local_path: Optional[Path] = None,
+    local_path: Path | None = None,
 ) -> dict[str, Any]:
     """Migrate from local project database to global ~/.claude database."""
 
@@ -244,8 +244,8 @@ async def migrate_local_to_global(
 
 
 async def migrate_sqlite_to_postgres(
-    sqlite_path: Optional[Path] = None,
-    postgres_dsn: Optional[str] = None,
+    sqlite_path: Path | None = None,
+    postgres_dsn: str | None = None,
 ) -> dict[str, Any]:
     """Migrate from SQLite to PostgreSQL."""
 
@@ -280,8 +280,8 @@ async def migrate_sqlite_to_postgres(
 
 
 async def export_to_json(
-    source_config: Optional[DatabaseConfig] = None,
-    output_path: Optional[Path] = None,
+    source_config: DatabaseConfig | None = None,
+    output_path: Path | None = None,
 ) -> dict[str, Any]:
     """Export all data to JSON file for backup."""
 

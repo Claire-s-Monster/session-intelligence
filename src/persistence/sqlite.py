@@ -11,15 +11,14 @@ Uses WAL mode for better concurrent read access.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import aiosqlite
 
-from .base import BaseDatabaseBackend, DEFAULT_SQLITE_PATH
+from .base import DEFAULT_SQLITE_PATH, BaseDatabaseBackend
 
 logger = logging.getLogger(__name__)
 
@@ -130,9 +129,36 @@ class SQLiteBackend(BaseDatabaseBackend):
     );
 
     CREATE INDEX IF NOT EXISTS idx_mcp_sessions_engine ON mcp_sessions(engine_session_id);
+
+    -- Session summaries table for narrative session documentation
+    CREATE TABLE IF NOT EXISTS session_summaries (
+        session_id TEXT PRIMARY KEY,
+        title TEXT,
+        summary_markdown TEXT,
+        key_changes TEXT,
+        tags TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_summaries_created ON session_summaries(created_at);
     """
 
-    def __init__(self, db_path: Optional[str] = None) -> None:
+    # FTS5 schema must be created separately (cannot use IF NOT EXISTS with virtual tables)
+    FTS_SCHEMA = """
+    CREATE VIRTUAL TABLE IF NOT EXISTS session_search USING fts5(
+        session_id,
+        title,
+        summary,
+        decisions,
+        notes,
+        tags,
+        content='',
+        tokenize='porter unicode61'
+    );
+    """
+
+    def __init__(self, db_path: str | None = None) -> None:
         """Initialize SQLite backend.
 
         Args:
@@ -148,7 +174,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             if isinstance(self.db_path, Path):
                 self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self._connection: Optional[aiosqlite.Connection] = None
+        self._connection: aiosqlite.Connection | None = None
 
     async def initialize(self) -> None:
         """Initialize database connection and apply schema."""
@@ -164,6 +190,14 @@ class SQLiteBackend(BaseDatabaseBackend):
         # Apply schema
         await self._connection.executescript(self.SCHEMA)
         await self._connection.commit()
+
+        # Create FTS5 virtual table (handle gracefully if already exists)
+        try:
+            await self._connection.executescript(self.FTS_SCHEMA)
+            await self._connection.commit()
+        except Exception as e:
+            # FTS5 table likely already exists
+            logger.debug(f"FTS5 table creation: {e}")
 
         # Track schema version
         await self._connection.execute(
@@ -222,7 +256,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
         await self._connection.commit()
 
-    async def get_session(self, session_id: str) -> Optional[dict[str, Any]]:
+    async def get_session(self, session_id: str) -> dict[str, Any] | None:
         """Get a session by ID."""
         self._ensure_connected()
 
@@ -237,8 +271,8 @@ class SQLiteBackend(BaseDatabaseBackend):
     async def query_sessions(
         self,
         limit: int = 50,
-        project_path: Optional[str] = None,
-        status: Optional[str] = None,
+        project_path: str | None = None,
+        status: str | None = None,
     ) -> list[dict[str, Any]]:
         """Query sessions with optional filters."""
         self._ensure_connected()
@@ -262,7 +296,7 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def get_active_session_for_project(
         self, project_path: str
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Get the most recent active session for a project path."""
         self._ensure_connected()
 
@@ -502,8 +536,8 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def query_agent_executions(
         self,
-        session_id: Optional[str] = None,
-        agent_name: Optional[str] = None,
+        session_id: str | None = None,
+        agent_name: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Query agent executions with optional filters."""
@@ -548,7 +582,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
         await self._connection.commit()
 
-    async def get_mcp_session(self, mcp_session_id: str) -> Optional[dict[str, Any]]:
+    async def get_mcp_session(self, mcp_session_id: str) -> dict[str, Any] | None:
         """Get MCP session by ID."""
         self._ensure_connected()
 
@@ -583,6 +617,207 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
         await self._connection.commit()
 
+    # Session summary operations
+
+    async def save_session_summary(self, summary_data: dict[str, Any]) -> None:
+        """Save or update a session summary."""
+        self._ensure_connected()
+
+        await self._connection.execute(
+            """
+            INSERT OR REPLACE INTO session_summaries
+            (session_id, title, summary_markdown, key_changes, tags, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """,
+            (
+                summary_data["session_id"],
+                summary_data.get("title"),
+                summary_data.get("summary_markdown"),
+                self._serialize_json(summary_data.get("key_changes", [])),
+                self._serialize_json(summary_data.get("tags", [])),
+                summary_data.get("created_at", self._get_timestamp()),
+            ),
+        )
+        await self._connection.commit()
+
+        # Update FTS index
+        await self._update_search_index(summary_data["session_id"])
+
+    async def get_session_summary(self, session_id: str) -> dict[str, Any] | None:
+        """Get session summary by session ID."""
+        self._ensure_connected()
+
+        cursor = await self._connection.execute(
+            "SELECT * FROM session_summaries WHERE session_id = ?", (session_id,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            result = dict(row)
+            result["key_changes"] = self._deserialize_json(result.get("key_changes"))
+            result["tags"] = self._deserialize_json(result.get("tags"))
+            return result
+        return None
+
+    async def query_summaries_by_tag(
+        self, tag: str, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Query session summaries that contain a specific tag."""
+        self._ensure_connected()
+
+        # SQLite JSON search using json_each
+        cursor = await self._connection.execute(
+            """
+            SELECT ss.*, s.project_name, s.project_path
+            FROM session_summaries ss
+            JOIN sessions s ON ss.session_id = s.id
+            WHERE EXISTS (
+                SELECT 1 FROM json_each(ss.tags) WHERE value = ?
+            )
+            ORDER BY ss.created_at DESC
+            LIMIT ?
+        """,
+            (tag, limit),
+        )
+        rows = await cursor.fetchall()
+        results = []
+        for row in rows:
+            result = dict(row)
+            result["key_changes"] = self._deserialize_json(result.get("key_changes"))
+            result["tags"] = self._deserialize_json(result.get("tags"))
+            results.append(result)
+        return results
+
+    async def query_recent_summaries(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Get most recent session summaries."""
+        self._ensure_connected()
+
+        cursor = await self._connection.execute(
+            """
+            SELECT ss.*, s.project_name, s.project_path
+            FROM session_summaries ss
+            JOIN sessions s ON ss.session_id = s.id
+            ORDER BY ss.created_at DESC
+            LIMIT ?
+        """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        results = []
+        for row in rows:
+            result = dict(row)
+            result["key_changes"] = self._deserialize_json(result.get("key_changes"))
+            result["tags"] = self._deserialize_json(result.get("tags"))
+            results.append(result)
+        return results
+
+    # Full-text search operations
+
+    async def _update_search_index(self, session_id: str) -> None:
+        """Update FTS index for a session."""
+        self._ensure_connected()
+
+        # Gather all searchable content for this session
+        session = await self.get_session(session_id)
+        summary = await self.get_session_summary(session_id)
+        decisions = await self.query_decisions_by_session(session_id)
+
+        # Build searchable content
+        title = summary.get("title", "") if summary else ""
+        summary_text = summary.get("summary_markdown", "") if summary else ""
+        decisions_text = " ".join(
+            [d.get("description", "") + " " + (d.get("rationale") or "") for d in decisions]
+        )
+
+        # Get notes for this session
+        cursor = await self._connection.execute(
+            "SELECT content FROM notes WHERE session_id = ?", (session_id,)
+        )
+        notes_rows = await cursor.fetchall()
+        notes_text = " ".join([row[0] for row in notes_rows])
+
+        tags_text = " ".join(summary.get("tags", [])) if summary else ""
+
+        # Delete existing entry and insert new one
+        await self._connection.execute(
+            "DELETE FROM session_search WHERE session_id = ?", (session_id,)
+        )
+        await self._connection.execute(
+            """
+            INSERT INTO session_search (session_id, title, summary, decisions, notes, tags)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """,
+            (session_id, title, summary_text, decisions_text, notes_text, tags_text),
+        )
+        await self._connection.commit()
+
+    async def search_sessions(
+        self, query: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Full-text search across sessions."""
+        self._ensure_connected()
+
+        # Use FTS5 MATCH syntax for full-text search
+        cursor = await self._connection.execute(
+            """
+            SELECT
+                ss.session_id,
+                ss.title,
+                ss.summary,
+                ss.tags,
+                bm25(session_search) as relevance,
+                snippet(session_search, 2, '<mark>', '</mark>', '...', 32) as snippet
+            FROM session_search ss
+            WHERE session_search MATCH ?
+            ORDER BY relevance
+            LIMIT ?
+        """,
+            (query, limit),
+        )
+        rows = await cursor.fetchall()
+
+        results = []
+        for row in rows:
+            result = dict(row)
+            # Enrich with session data
+            session = await self.get_session(result["session_id"])
+            if session:
+                result["project_name"] = session.get("project_name")
+                result["project_path"] = session.get("project_path")
+                result["started_at"] = session.get("started_at")
+            results.append(result)
+
+        return results
+
+    async def search_by_file_change(
+        self, file_pattern: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Search sessions by file changes."""
+        self._ensure_connected()
+
+        # Search in key_changes JSON array
+        cursor = await self._connection.execute(
+            """
+            SELECT ss.*, s.project_name, s.project_path
+            FROM session_summaries ss
+            JOIN sessions s ON ss.session_id = s.id
+            WHERE EXISTS (
+                SELECT 1 FROM json_each(ss.key_changes)
+                WHERE value LIKE ?
+            )
+            ORDER BY ss.created_at DESC
+            LIMIT ?
+        """,
+            (f"%{file_pattern}%", limit),
+        )
+        rows = await cursor.fetchall()
+        results = []
+        for row in rows:
+            result = dict(row)
+            result["key_changes"] = self._deserialize_json(result.get("key_changes"))
+            result["tags"] = self._deserialize_json(result.get("tags"))
+            results.append(result)
+        return results
+
     # Maintenance operations
 
     async def vacuum(self) -> None:
@@ -599,7 +834,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         stats: dict[str, Any] = {"backend": "sqlite", "path": str(self.db_path)}
 
         # Get table counts
-        tables = ["sessions", "decisions", "metrics", "notes", "agent_executions", "mcp_sessions"]
+        tables = ["sessions", "decisions", "metrics", "notes", "agent_executions", "mcp_sessions", "session_summaries"]
         for table in tables:
             cursor = await self._connection.execute(f"SELECT COUNT(*) FROM {table}")
             row = await cursor.fetchone()

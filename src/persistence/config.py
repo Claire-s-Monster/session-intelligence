@@ -19,14 +19,13 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Optional, Union
+from typing import Any, Literal
 
 from .base import (
     DEFAULT_DATA_DIR,
     DEFAULT_POSTGRES_DSN,
-    DEFAULT_SQLITE_PATH,
     DatabaseBackend,
     get_default_data_dir,
 )
@@ -44,19 +43,19 @@ class DatabaseConfig:
     backend: BackendType = "sqlite"
 
     # SQLite settings
-    sqlite_path: Optional[Path] = None
+    sqlite_path: Path | None = None
 
     # PostgreSQL settings
-    postgresql_dsn: Optional[str] = None
+    postgresql_dsn: str | None = None
     postgresql_pool_min: int = 2
     postgresql_pool_max: int = 10
 
     # Shared settings
     auto_vacuum: bool = True
-    retention_days: Optional[int] = None  # None = no retention policy
+    retention_days: int | None = None  # None = no retention policy
 
     @classmethod
-    def from_env(cls) -> "DatabaseConfig":
+    def from_env(cls) -> DatabaseConfig:
         """Create configuration from environment variables."""
         backend = os.environ.get("SESSION_DB_BACKEND", "sqlite").lower()
         if backend not in ("sqlite", "postgresql"):
@@ -84,7 +83,7 @@ class DatabaseConfig:
         return config
 
     @classmethod
-    def from_file(cls, config_path: Optional[Path] = None) -> "DatabaseConfig":
+    def from_file(cls, config_path: Path | None = None) -> DatabaseConfig:
         """Load configuration from JSON file."""
         if config_path is None:
             config_path = DEFAULT_DATA_DIR / "config.json"
@@ -123,7 +122,7 @@ class DatabaseConfig:
             return cls()
 
     @classmethod
-    def load(cls) -> "DatabaseConfig":
+    def load(cls) -> DatabaseConfig:
         """Load configuration with precedence: env > file > defaults."""
         # Start with file config
         config = cls.from_file()
@@ -147,7 +146,7 @@ class DatabaseConfig:
 
         return config
 
-    def save(self, config_path: Optional[Path] = None) -> None:
+    def save(self, config_path: Path | None = None) -> None:
         """Save configuration to JSON file."""
         if config_path is None:
             config_path = get_default_data_dir() / "config.json"
@@ -168,8 +167,8 @@ class DatabaseConfig:
 
 
 def create_database(
-    config: Optional[DatabaseConfig] = None,
-    backend: Optional[BackendType] = None,
+    config: DatabaseConfig | None = None,
+    backend: BackendType | None = None,
     **kwargs: Any,
 ) -> DatabaseBackend:
     """Factory function to create the appropriate database backend.
@@ -220,8 +219,8 @@ def create_database(
 
 
 async def get_database(
-    config: Optional[DatabaseConfig] = None,
-    backend: Optional[BackendType] = None,
+    config: DatabaseConfig | None = None,
+    backend: BackendType | None = None,
     **kwargs: Any,
 ) -> DatabaseBackend:
     """Create and initialize database backend.

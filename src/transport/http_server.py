@@ -15,9 +15,10 @@ import dataclasses
 import json
 import logging
 import uuid
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, AsyncGenerator, Optional
+from typing import Any
 
 
 class DataclassJSONEncoder(json.JSONEncoder):
@@ -42,6 +43,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from core.session_engine import SessionIntelligenceEngine
+from lean_mcp_interface import LeanMCPInterface
+from persistence import DEFAULT_DATA_DIR, DatabaseConfig, create_database
 from transport.mcp_session_manager import MCPSessionManager
 from transport.security import (
     LocalhostOnlyMiddleware,
@@ -49,8 +52,6 @@ from transport.security import (
     get_origin_validation_middleware,
     validate_api_key,
 )
-from lean_mcp_interface import LeanMCPInterface
-from persistence import DatabaseConfig, create_database, DEFAULT_DATA_DIR
 from utils.token_limiter import apply_token_limits
 
 logger = logging.getLogger(__name__)
@@ -113,9 +114,9 @@ class HTTPSessionIntelligenceServer:
         host: str = "127.0.0.1",
         port: int = 4002,
         repository_path: str = ".",
-        db_path: Optional[str] = None,
-        db_config: Optional[DatabaseConfig] = None,
-        security_config: Optional[SecurityConfig] = None,
+        db_path: str | None = None,
+        db_config: DatabaseConfig | None = None,
+        security_config: SecurityConfig | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -138,11 +139,11 @@ class HTTPSessionIntelligenceServer:
         else:
             self.db_path = str(self.db_config.sqlite_path or DEFAULT_DATA_DIR / "sessions.db")
 
-        self.database: Optional[Any] = None
-        self.session_engine: Optional[SessionIntelligenceEngine] = None
-        self.lean_interface: Optional[LeanMCPInterface] = None
-        self.mcp_session_manager: Optional[MCPSessionManager] = None
-        self.notification_manager: Optional[NotificationManager] = None
+        self.database: Any | None = None
+        self.session_engine: SessionIntelligenceEngine | None = None
+        self.lean_interface: LeanMCPInterface | None = None
+        self.mcp_session_manager: MCPSessionManager | None = None
+        self.notification_manager: NotificationManager | None = None
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI) -> AsyncGenerator[None, None]:
@@ -232,8 +233,8 @@ class HTTPSessionIntelligenceServer:
         @app.post("/mcp")
         async def handle_mcp_post(
             request: Request,
-            mcp_session_id: Optional[str] = Header(None, alias="MCP-Session-Id"),
-            x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+            mcp_session_id: str | None = Header(None, alias="MCP-Session-Id"),
+            x_api_key: str | None = Header(None, alias="X-API-Key"),
         ) -> JSONResponse:
             """Handle MCP JSON-RPC 2.0 requests."""
             if self.security_config.require_api_key and self.security_config.api_key:
@@ -300,7 +301,7 @@ class HTTPSessionIntelligenceServer:
         @app.get("/mcp")
         async def handle_mcp_sse(
             request: Request,
-            mcp_session_id: Optional[str] = Header(None, alias="MCP-Session-Id"),
+            mcp_session_id: str | None = Header(None, alias="MCP-Session-Id"),
         ) -> StreamingResponse:
             """Server-Sent Events stream for notifications."""
             if not mcp_session_id:
@@ -460,7 +461,11 @@ class HTTPSessionIntelligenceServer:
 
             # Reconstruct Session object and add to cache
             from models.session_models import (
-                Session, SessionMetadata, SessionStatus, HealthStatus, PerformanceMetrics
+                HealthStatus,
+                PerformanceMetrics,
+                Session,
+                SessionMetadata,
+                SessionStatus,
             )
 
             # Build session from database data
@@ -582,14 +587,14 @@ class HTTPSessionIntelligenceServer:
         """Add REST endpoints for session queries."""
 
         @app.get("/api/sessions")
-        async def list_sessions(request: Request, limit: int = 50, x_api_key: Optional[str] = Header(None, alias="X-API-Key")) -> dict[str, Any]:
+        async def list_sessions(request: Request, limit: int = 50, x_api_key: str | None = Header(None, alias="X-API-Key")) -> dict[str, Any]:
             if self.security_config.require_api_key and self.security_config.api_key:
                 validate_api_key(x_api_key, self.security_config.api_key)
             sessions = await request.app.state.database.query_sessions(limit=limit)
             return {"sessions": sessions, "count": len(sessions)}
 
         @app.get("/api/sessions/{session_id}")
-        async def get_session(request: Request, session_id: str, x_api_key: Optional[str] = Header(None, alias="X-API-Key")) -> dict[str, Any]:
+        async def get_session(request: Request, session_id: str, x_api_key: str | None = Header(None, alias="X-API-Key")) -> dict[str, Any]:
             if self.security_config.require_api_key and self.security_config.api_key:
                 validate_api_key(x_api_key, self.security_config.api_key)
             session = await request.app.state.database.get_session(session_id)

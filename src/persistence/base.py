@@ -19,11 +19,9 @@ Usage:
 
 from __future__ import annotations
 
-from abc import abstractmethod
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional, Protocol, runtime_checkable
-
+from typing import Any, Protocol, runtime_checkable
 
 # Default global location for session intelligence data
 DEFAULT_DATA_DIR = Path.home() / ".claude" / "session-intelligence"
@@ -69,22 +67,22 @@ class DatabaseBackend(Protocol):
         """Save or update a session."""
         ...
 
-    async def get_session(self, session_id: str) -> Optional[dict[str, Any]]:
+    async def get_session(self, session_id: str) -> dict[str, Any] | None:
         """Get a session by ID."""
         ...
 
     async def query_sessions(
         self,
         limit: int = 50,
-        project_path: Optional[str] = None,
-        status: Optional[str] = None,
+        project_path: str | None = None,
+        status: str | None = None,
     ) -> list[dict[str, Any]]:
         """Query sessions with optional filters."""
         ...
 
     async def get_active_session_for_project(
         self, project_path: str
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Get the most recent active session for a project path."""
         ...
 
@@ -144,8 +142,8 @@ class DatabaseBackend(Protocol):
 
     async def query_agent_executions(
         self,
-        session_id: Optional[str] = None,
-        agent_name: Optional[str] = None,
+        session_id: str | None = None,
+        agent_name: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Query agent executions with optional filters."""
@@ -156,7 +154,7 @@ class DatabaseBackend(Protocol):
         """Save MCP session mapping."""
         ...
 
-    async def get_mcp_session(self, mcp_session_id: str) -> Optional[dict[str, Any]]:
+    async def get_mcp_session(self, mcp_session_id: str) -> dict[str, Any] | None:
         """Get MCP session by ID."""
         ...
 
@@ -206,7 +204,7 @@ class BaseDatabaseBackend:
             return obj
         return json.dumps(obj, default=str)
 
-    def _deserialize_json(self, json_str: Optional[str]) -> dict[str, Any]:
+    def _deserialize_json(self, json_str: str | None) -> dict[str, Any]:
         """Deserialize JSON string to dict."""
         import json
 

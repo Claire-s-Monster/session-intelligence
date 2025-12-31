@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from persistence.database import Database
@@ -24,12 +24,12 @@ logger = logging.getLogger(__name__)
 class MCPSessionManager:
     """Manages MCP session IDs and their mapping to engine sessions."""
 
-    def __init__(self, database: Optional[Database] = None) -> None:
+    def __init__(self, database: Database | None = None) -> None:
         self.database = database
         self._active_sessions: dict[str, dict[str, Any]] = {}
 
     async def create_mcp_session(
-        self, client_info: Optional[dict[str, Any]] = None
+        self, client_info: dict[str, Any] | None = None
     ) -> str:
         """Create a new MCP session."""
         mcp_session_id = f"mcp-{uuid.uuid4().hex[:16]}"
@@ -54,7 +54,7 @@ class MCPSessionManager:
         logger.info(f"Created MCP session: {mcp_session_id}")
         return mcp_session_id
 
-    async def get_engine_session_id(self, mcp_session_id: str) -> Optional[str]:
+    async def get_engine_session_id(self, mcp_session_id: str) -> str | None:
         """Get the engine session ID for an MCP session."""
         if mcp_session_id in self._active_sessions:
             return self._active_sessions[mcp_session_id].get("engine_session_id")
@@ -116,7 +116,7 @@ class MCPSessionManager:
 
         return False
 
-    async def get_session_info(self, mcp_session_id: str) -> Optional[dict[str, Any]]:
+    async def get_session_info(self, mcp_session_id: str) -> dict[str, Any] | None:
         """Get full session information."""
         if mcp_session_id in self._active_sessions:
             return self._active_sessions[mcp_session_id].copy()

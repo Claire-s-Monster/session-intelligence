@@ -18,14 +18,14 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
 
 try:
     import asyncpg
 except ImportError:
     asyncpg = None  # type: ignore
 
-from .base import BaseDatabaseBackend, DEFAULT_POSTGRES_DSN
+from .base import DEFAULT_POSTGRES_DSN, BaseDatabaseBackend
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +173,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     GROUP BY category, impact_level;
     """
 
-    def __init__(self, dsn: Optional[str] = None, **kwargs: Any) -> None:
+    def __init__(self, dsn: str | None = None, **kwargs: Any) -> None:
         """Initialize PostgreSQL backend.
 
         Args:
@@ -190,7 +190,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
         self.dsn = dsn or DEFAULT_POSTGRES_DSN
         self._pool_kwargs = kwargs
-        self._pool: Optional[asyncpg.Pool] = None
+        self._pool: asyncpg.Pool | None = None
 
     async def initialize(self) -> None:
         """Initialize database connection pool and apply schema."""
@@ -290,7 +290,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 json.dumps({"session_id": session_data["id"], "action": "upsert"}),
             )
 
-    async def get_session(self, session_id: str) -> Optional[dict[str, Any]]:
+    async def get_session(self, session_id: str) -> dict[str, Any] | None:
         """Get a session by ID."""
         self._ensure_connected()
 
@@ -305,8 +305,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     async def query_sessions(
         self,
         limit: int = 50,
-        project_path: Optional[str] = None,
-        status: Optional[str] = None,
+        project_path: str | None = None,
+        status: str | None = None,
     ) -> list[dict[str, Any]]:
         """Query sessions with optional filters."""
         self._ensure_connected()
@@ -333,7 +333,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     async def get_active_session_for_project(
         self, project_path: str
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Get the most recent active session for a project path."""
         self._ensure_connected()
 
@@ -574,8 +574,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     async def query_agent_executions(
         self,
-        session_id: Optional[str] = None,
-        agent_name: Optional[str] = None,
+        session_id: str | None = None,
+        agent_name: str | None = None,
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Query agent executions with optional filters."""
@@ -625,7 +625,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 json.dumps(mcp_session_data.get("client_info", {})),
             )
 
-    async def get_mcp_session(self, mcp_session_id: str) -> Optional[dict[str, Any]]:
+    async def get_mcp_session(self, mcp_session_id: str) -> dict[str, Any] | None:
         """Get MCP session by ID."""
         self._ensure_connected()
 
@@ -711,7 +711,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     # PostgreSQL-specific analytical methods
 
     async def get_session_analytics(
-        self, project_path: Optional[str] = None, limit: int = 100
+        self, project_path: str | None = None, limit: int = 100
     ) -> list[dict[str, Any]]:
         """Get session analytics from the pre-built view."""
         self._ensure_connected()

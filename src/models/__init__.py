@@ -6,121 +6,114 @@ to represent sessions, executions, decisions, patterns, and analytics data.
 """
 
 from .session_models import (
-    # Core Session Models
-    Session,
-    SessionMetadata,
-    SessionResult,
-    ExecutionStep,
-    
-    # Agent and Workflow Models  
-    AgentExecution,
     AgentContext,
-    AgentPerformance,
     AgentError,
-    WorkflowState,
-    WorkflowResult,
-    StateMachine,
-    ParallelExecution,
-    
+    # Agent and Workflow Models
+    AgentExecution,
+    AgentPerformance,
+    AnalysisScope,
+    Bottleneck,
+    CommandAlternative,
+    CommandAnalysis,
+    CommandAnalysisResult,
+    CoordinationResult,
+    # Dashboard and Reporting Models
+    DashboardResult,
+    DashboardType,
     # Decision Models
     Decision,
     DecisionContext,
     DecisionOutcome,
     DecisionResult,
-    
-    # Analytics and Intelligence Models
-    PatternAnalysis,
-    SessionIntelligence,
-    CommandAnalysis,
-    Bottleneck,
-    Optimization,
-    PredictedIssue,
-    LearningInsight,
-    Trend,
-    Recommendation,
-    CommandAlternative,
-    
-    # Health and Monitoring Models
-    HealthStatus,
-    PerformanceMetrics,
-    SessionHealthResult,
-    
-    # Dashboard and Reporting Models
-    DashboardResult,
-    
+    ExecutionMode,
+    ExecutionStatus,
+    ExecutionStep,
     # Function Result Models
     ExecutionTrackingResult,
-    CoordinationResult,
-    PatternAnalysisResult,
+    # Health and Monitoring Models
+    HealthStatus,
+    ImpactLevel,
+    LearningInsight,
     MissingFunctionResult,
-    CommandAnalysisResult,
-    
+    Optimization,
+    OptimizationLevel,
+    ParallelExecution,
+    # Analytics and Intelligence Models
+    PatternAnalysis,
+    PatternAnalysisResult,
+    PatternType,
+    PerformanceMetrics,
+    PredictedIssue,
+    Recommendation,
+    # Core Session Models
+    Session,
+    SessionHealthResult,
+    SessionIntelligence,
+    SessionMetadata,
+    SessionResult,
     # Enums
     SessionStatus,
-    ExecutionStatus,
-    ImpactLevel,
-    PatternType,
+    StateMachine,
+    Trend,
+    WorkflowResult,
+    WorkflowState,
     WorkflowType,
-    DashboardType,
-    AnalysisScope,
-    ExecutionMode,
-    OptimizationLevel,
 )
 
 __all__ = [
     # Core Session Models
     "Session",
-    "SessionMetadata", 
+    "SessionMetadata",
     "SessionResult",
     "ExecutionStep",
-    
+
     # Agent and Workflow Models
     "AgentExecution",
     "AgentContext",
-    "AgentPerformance", 
+    "AgentPerformance",
     "AgentError",
     "WorkflowState",
     "WorkflowResult",
     "StateMachine",
     "ParallelExecution",
-    
+
     # Decision Models
     "Decision",
     "DecisionContext",
     "DecisionOutcome",
     "DecisionResult",
-    
+
     # Analytics and Intelligence Models
     "PatternAnalysis",
     "SessionIntelligence",
-    "CommandAnalysis", 
+    "CommandAnalysis",
     "Bottleneck",
     "Optimization",
     "PredictedIssue",
-    "LearningInsight", 
+    "LearningInsight",
     "Trend",
     "Recommendation",
     "CommandAlternative",
-    
+
     # Health and Monitoring Models
     "HealthStatus",
     "PerformanceMetrics",
     "SessionHealthResult",
-    
+
     # Dashboard and Reporting Models
     "DashboardResult",
-    
+
     # Function Result Models
     "ExecutionTrackingResult",
     "CoordinationResult",
     "PatternAnalysisResult",
-    "MissingFunctionResult", 
+    "MissingFunctionResult",
     "CommandAnalysisResult",
-    
+
     # Enums
     "SessionStatus",
     "ExecutionStatus",
-    "ImpactLevel", 
+    "ImpactLevel",
     "PatternType",
     "WorkflowType",
     "DashboardType",

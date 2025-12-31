@@ -56,23 +56,23 @@ def main():
     try:
         args = parse_args()
         setup_logging(args.log_level)
-        
+
         # Resolve repository path
         repository_path = Path(args.repository).resolve()
         logger.info(f"Initializing lean MCP server for repository: {repository_path}")
-        
+
         # Initialize session intelligence engine
         session_engine = SessionIntelligenceEngine(repository_path=str(repository_path))
-        
+
         # Create lean interface with 3 meta-tools
         app = create_lean_interface(session_engine)
-        
+
         logger.info("Starting lean MCP server with meta-tool pattern")
         logger.info("Context consumption: ~500 tokens (vs 20-50K tokens for traditional MCP)")
-        
+
         # Run the server
         app.run()
-        
+
     except KeyboardInterrupt:
         logger.info("Server stopped by user")
     except Exception as e:

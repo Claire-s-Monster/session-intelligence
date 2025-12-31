@@ -9,9 +9,8 @@ pattern analysis, and intelligence operations for the Claude Code framework.
 import argparse
 import json
 import logging
-import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union
+from typing import Any
 
 from fastmcp import FastMCP
 
@@ -25,21 +24,33 @@ debug_handler.setFormatter(logging.Formatter('%(asctime)s [%(levelname)s] %(mess
 debug_logger.addHandler(debug_handler)
 debug_logger.setLevel(logging.INFO)
 
-from models.session_models import (
-    SessionResult, ExecutionTrackingResult, CoordinationResult, DecisionResult,
-    PatternAnalysisResult, SessionHealthResult, WorkflowResult, CommandAnalysisResult,
-    MissingFunctionResult, DashboardResult, ExecutionMode, OptimizationLevel,
-    AnalysisScope, DashboardType, WorkflowType
-)
 from core.session_engine import SessionIntelligenceEngine
+from models.session_models import (
+    AnalysisScope,
+    CommandAnalysisResult,
+    CoordinationResult,
+    DashboardResult,
+    DashboardType,
+    DecisionResult,
+    ExecutionMode,
+    ExecutionTrackingResult,
+    MissingFunctionResult,
+    OptimizationLevel,
+    PatternAnalysisResult,
+    SessionHealthResult,
+    SessionResult,
+    WorkflowResult,
+    WorkflowType,
+)
 from utils.token_limiter import apply_token_limits
+
 
 # Parse command line arguments
 def parse_args():
     parser = argparse.ArgumentParser(description="Session Intelligence MCP Server")
     parser.add_argument(
-        "--repository", 
-        type=str, 
+        "--repository",
+        type=str,
         default=".",
         help="Repository root path (default: current directory)"
     )
@@ -53,7 +64,7 @@ session_engine = None
 repository_path = None
 
 
-def safe_response(response_data: Any, operation: str) -> Dict[str, Any]:
+def safe_response(response_data: Any, operation: str) -> dict[str, Any]:
     """Helper function to safely return response with token limits."""
     try:
         if hasattr(response_data, 'model_dump'):
@@ -62,7 +73,7 @@ def safe_response(response_data: Any, operation: str) -> Dict[str, Any]:
             response = response_data
         else:
             response = {"data": str(response_data)}
-        
+
         return apply_token_limits(response, operation)
     except Exception as e:
         logger.error(f"Error processing response for {operation}: {e}")
@@ -76,10 +87,10 @@ def safe_response(response_data: Any, operation: str) -> Dict[str, Any]:
 def session_manage_lifecycle(
     operation: str,
     mode: str = "local",
-    project_name: Optional[str] = None,
-    metadata: Optional[Any] = None,
+    project_name: str | None = None,
+    metadata: Any | None = None,
     auto_recovery: bool = True
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Comprehensive session lifecycle management with intelligent tracking.
     
@@ -111,7 +122,7 @@ def session_manage_lifecycle(
                 parsed_metadata = metadata
             else:
                 parsed_metadata = {"metadata": str(metadata)}
-        
+
         result = session_engine.session_manage_lifecycle(
             operation=operation,
             mode=mode,
@@ -134,11 +145,11 @@ def session_manage_lifecycle(
 @app.tool()
 def session_track_execution(
     agent_name: str,
-    step_data: Dict[str, Any],
-    session_id: Optional[str] = None,
+    step_data: dict[str, Any],
+    session_id: str | None = None,
     track_patterns: bool = True,
     suggest_optimizations: bool = True
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Advanced execution tracking with pattern detection and optimization.
     
@@ -162,7 +173,7 @@ def session_track_execution(
         debug_logger.info(f"[EXEC-TRACK] Repository path: {repository_path}")
         debug_logger.info(f"[EXEC-TRACK] Step data: {step_data}")
         debug_logger.info(f"[EXEC-TRACK] Session engine claude_sessions_path: {session_engine.claude_sessions_path}")
-        
+
         result = session_engine.session_track_execution(
             session_id=session_id,
             agent_name=agent_name,
@@ -170,17 +181,17 @@ def session_track_execution(
             track_patterns=track_patterns,
             suggest_optimizations=suggest_optimizations
         )
-        
+
         debug_logger.info(f"[EXEC-TRACK] Execution tracking result: {result}")
         debug_logger.info(f"[EXEC-TRACK] Result status: {result.status}")
-        
+
         return safe_response(result, "session_track_execution")
     except Exception as e:
         debug_logger.error(f"[EXEC-TRACK] Exception in session_track_execution: {e}")
         debug_logger.error(f"[EXEC-TRACK] Exception type: {type(e)}")
         import traceback
         debug_logger.error(f"[EXEC-TRACK] Full traceback: {traceback.format_exc()}")
-        
+
         return safe_response(ExecutionTrackingResult(
             step_id="error",
             session_id=session_id or "unknown",
@@ -193,12 +204,12 @@ def session_track_execution(
 
 @app.tool()
 def session_coordinate_agents(
-    agents: List[Dict[str, Any]],
-    session_id: Optional[str] = None,
+    agents: list[dict[str, Any]],
+    session_id: str | None = None,
     execution_mode: str = "sequential",
-    dependency_graph: Optional[Dict[str, Any]] = None,
+    dependency_graph: dict[str, Any] | None = None,
     optimization_level: str = "balanced"
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Multi-agent coordination with dependency management and parallel execution.
     
@@ -219,7 +230,7 @@ def session_coordinate_agents(
     try:
         exec_mode = ExecutionMode(execution_mode)
         opt_level = OptimizationLevel(optimization_level)
-        
+
         result = session_engine.session_coordinate_agents(
             session_id=session_id,
             agents=agents,
@@ -240,11 +251,11 @@ def session_coordinate_agents(
 @app.tool()
 def session_log_decision(
     decision: str,
-    session_id: Optional[str] = None,
-    context: Optional[Dict[str, Any]] = None,
+    session_id: str | None = None,
+    context: dict[str, Any] | None = None,
     impact_analysis: bool = True,
-    link_artifacts: Optional[List[str]] = None
-) -> Dict[str, Any]:
+    link_artifacts: list[str] | None = None
+) -> dict[str, Any]:
     """
     Intelligent decision logging with context and impact analysis.
     
@@ -281,11 +292,11 @@ def session_log_decision(
 @app.tool()
 def session_analyze_patterns(
     scope: str = "current",
-    pattern_types: List[str] = None,
-    include_agents: Optional[List[str]] = None,
+    pattern_types: list[str] = None,
+    include_agents: list[str] | None = None,
     learning_mode: bool = True,
     generate_insights: bool = True
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Cross-session pattern analysis with learning and recommendations.
     
@@ -304,9 +315,9 @@ def session_analyze_patterns(
     try:
         if pattern_types is None:
             pattern_types = ["execution", "errors", "performance"]
-            
+
         analysis_scope = AnalysisScope(scope)
-        
+
         result = session_engine.session_analyze_patterns(
             scope=analysis_scope,
             pattern_types=pattern_types,
@@ -315,7 +326,7 @@ def session_analyze_patterns(
             generate_insights=generate_insights
         )
         return safe_response(result, "session_manage_lifecycle")
-    except Exception as e:
+    except Exception:
         return safe_response(PatternAnalysisResult(
             analysis_id="error",
             scope=AnalysisScope.CURRENT,
@@ -327,12 +338,12 @@ def session_analyze_patterns(
 
 @app.tool()
 def session_monitor_health(
-    session_id: Optional[str] = None,
-    health_checks: List[str] = None,
+    session_id: str | None = None,
+    health_checks: list[str] = None,
     auto_recover: bool = True,
-    alert_thresholds: Optional[Dict[str, float]] = None,
+    alert_thresholds: dict[str, float] | None = None,
     include_diagnostics: bool = True
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Real-time session health monitoring with auto-recovery capabilities.
     
@@ -352,7 +363,7 @@ def session_monitor_health(
     try:
         if health_checks is None:
             health_checks = ["continuity", "files", "state", "agents"]
-            
+
         result = session_engine.session_monitor_health(
             session_id=session_id,
             health_checks=health_checks,
@@ -372,11 +383,11 @@ def session_monitor_health(
 @app.tool()
 def session_orchestrate_workflow(
     workflow_type: str,
-    session_id: Optional[str] = None,
-    workflow_config: Optional[Dict[str, Any]] = None,
+    session_id: str | None = None,
+    workflow_config: dict[str, Any] | None = None,
     parallel_execution: bool = False,
     optimize_execution: bool = True
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Advanced workflow orchestration with state management and optimization.
     
@@ -395,7 +406,7 @@ def session_orchestrate_workflow(
     """
     try:
         wf_type = WorkflowType(workflow_type)
-        
+
         result = session_engine.session_orchestrate_workflow(
             workflow_type=wf_type,
             session_id=session_id,
@@ -415,12 +426,12 @@ def session_orchestrate_workflow(
 
 @app.tool()
 def session_analyze_commands(
-    session_id: Optional[str] = None,
-    command_types: List[str] = None,
+    session_id: str | None = None,
+    command_types: list[str] = None,
     detect_inefficiencies: bool = True,
     suggest_alternatives: bool = True,
     include_timing: bool = True
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Analyze hook-based command logs for patterns and inefficiencies.
     
@@ -439,7 +450,7 @@ def session_analyze_commands(
     try:
         if command_types is None:
             command_types = ["git", "test", "quality"]
-            
+
         result = session_engine.session_analyze_commands(
             session_id=session_id,
             command_types=command_types,
@@ -448,7 +459,7 @@ def session_analyze_commands(
             include_timing=include_timing
         )
         return safe_response(result, "session_manage_lifecycle")
-    except Exception as e:
+    except Exception:
         return safe_response(CommandAnalysisResult(
             session_id=session_id or "unknown",
             analysis_period="current",
@@ -461,11 +472,11 @@ def session_analyze_commands(
 
 @app.tool()
 def session_track_missing_functions(
-    session_id: Optional[str] = None,
+    session_id: str | None = None,
     auto_suggest: bool = True,
     priority_analysis: bool = True,
     generate_report: bool = True
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Track and analyze missing functions for ecosystem improvement.
     
@@ -489,7 +500,7 @@ def session_track_missing_functions(
             generate_report=generate_report
         )
         return safe_response(result, "session_manage_lifecycle")
-    except Exception as e:
+    except Exception:
         return safe_response(MissingFunctionResult(
             session_id=session_id or "unknown",
             functions=[],
@@ -502,10 +513,10 @@ def session_track_missing_functions(
 @app.tool()
 def session_get_dashboard(
     dashboard_type: str = "overview",
-    session_id: Optional[str] = None,
+    session_id: str | None = None,
     real_time: bool = False,
-    export_format: Optional[str] = None
-) -> Dict[str, Any]:
+    export_format: str | None = None
+) -> dict[str, Any]:
     """
     Comprehensive session intelligence dashboard with real-time insights.
     
@@ -522,7 +533,7 @@ def session_get_dashboard(
     """
     try:
         dash_type = DashboardType(dashboard_type)
-        
+
         result = session_engine.session_get_dashboard(
             dashboard_type=dash_type,
             session_id=session_id,
@@ -544,14 +555,14 @@ def session_get_dashboard(
 def initialize_server():
     """Initialize the server with command line arguments."""
     global session_engine, repository_path
-    
+
     try:
         args = parse_args()
         repository_path = Path(args.repository).resolve()
     except SystemExit:
         # Fallback when argparse fails (e.g., in MCP mode)
         repository_path = Path(".").resolve()
-    
+
     # Initialize session intelligence engine with repository path
     session_engine = SessionIntelligenceEngine(repository_path=str(repository_path))
 
@@ -559,7 +570,7 @@ def initialize_server():
 if __name__ == "__main__":
     # Initialize server with command line arguments
     initialize_server()
-    
+
     # For development/testing
     app.run()
 else:

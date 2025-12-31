@@ -558,13 +558,19 @@ class HTTPSessionIntelligenceServer:
                     database = request.app.state.database
                     if target == "session_log_learning" and hasattr(tool_result, 'learning') and tool_result.learning:
                         learning = tool_result.learning
+                        # Validate source_session_id exists before FK insert, else use None
+                        valid_session_id = None
+                        if learning.source_session_id:
+                            existing = await database.get_session(learning.source_session_id)
+                            if existing:
+                                valid_session_id = learning.source_session_id
                         await database.save_project_learning(
                             learning_id=learning.id,
                             project_path=learning.project_path,
                             category=learning.category.value if hasattr(learning.category, 'value') else learning.category,
                             learning_content=learning.learning_content,
                             trigger_context=learning.trigger_context,
-                            source_session_id=learning.source_session_id,
+                            source_session_id=valid_session_id,
                         )
                         tool_result = tool_result.model_copy(update={"status": "saved", "message": "Learning saved to database"})
 

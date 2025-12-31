@@ -1410,7 +1410,7 @@ class SessionIntelligenceEngine:
         import uuid
 
         learning_id = f"learn_{uuid.uuid4().hex[:12]}"
-        effective_project = project_path or self.repository_path
+        effective_project = project_path or str(self.claude_sessions_path.parent)
 
         # Get current session if available
         source_session = self.current_session.id if self.current_session else None

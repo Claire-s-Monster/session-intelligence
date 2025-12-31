@@ -540,7 +540,9 @@ class HTTPSessionIntelligenceServer:
                 # Tools that read/write session state - need DB sync
                 session_modifying_tools = {
                     "session_manage_lifecycle", "session_track_execution",
-                    "session_log_decision", "session_coordinate_agents"
+                    "session_log_decision", "session_coordinate_agents",
+                    "session_log_learning", "session_find_solution",
+                    "session_update_solution_outcome"
                 }
 
                 try:
@@ -551,6 +553,49 @@ class HTTPSessionIntelligenceServer:
                         await self._ensure_sessions_loaded_from_database(request)
 
                     tool_result = tool_registry[target]["implementation"](**tool_params)
+
+                    # Handle knowledge system tools - persist to database
+                    database = request.app.state.database
+                    if target == "session_log_learning" and hasattr(tool_result, 'learning') and tool_result.learning:
+                        learning = tool_result.learning
+                        await database.save_project_learning(
+                            learning_id=learning.id,
+                            project_path=learning.project_path,
+                            category=learning.category.value if hasattr(learning.category, 'value') else learning.category,
+                            learning_content=learning.learning_content,
+                            trigger_context=learning.trigger_context,
+                            source_session_id=learning.source_session_id,
+                        )
+                        tool_result = tool_result.model_copy(update={"status": "saved", "message": "Learning saved to database"})
+
+                    elif target == "session_find_solution":
+                        # Query database for solutions
+                        solutions = await database.find_error_solutions(
+                            error_text=tool_params.get("error_text", ""),
+                            project_path=tool_params.get("project_path"),
+                            include_universal=tool_params.get("include_universal", True),
+                        )
+                        from models.session_models import ErrorSolution, SolutionSearchResult
+                        tool_result = SolutionSearchResult(
+                            error_text=tool_params.get("error_text", ""),
+                            total_found=len(solutions),
+                            solutions=[ErrorSolution(**s) for s in solutions] if solutions else [],
+                            project_specific_count=sum(1 for s in solutions if s.get("project_path")),
+                            universal_count=sum(1 for s in solutions if not s.get("project_path")),
+                        )
+
+                    elif target == "session_update_solution_outcome":
+                        db_result = await database.update_solution_outcome(
+                            solution_id=tool_params.get("solution_id", ""),
+                            success=tool_params.get("success", False),
+                        )
+                        from models.session_models import SolutionResult
+                        tool_result = SolutionResult(
+                            id=tool_params.get("solution_id", ""),
+                            status="updated" if db_result.get("updated") else "error",
+                            message=f"Success rate: {db_result.get('success_rate', 0):.2f}" if db_result.get("updated") else db_result.get("error", ""),
+                        )
+
                     limited = apply_token_limits(tool_result, target)
                     result = {"tool": target, "status": "success", "result": limited}
 

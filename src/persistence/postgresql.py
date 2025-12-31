@@ -813,3 +813,227 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         async with self._pool.acquire() as conn:
             await conn.add_listener("session_changes", callback)
             logger.info("Subscribed to session_changes notifications")
+
+    # ===== Knowledge System Methods =====
+
+    async def save_project_learning(
+        self,
+        learning_id: str,
+        project_path: str,
+        category: str,
+        learning_content: str,
+        trigger_context: str | None = None,
+        source_session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Save a project-specific learning."""
+        self._ensure_connected()
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO project_learnings (
+                    id, project_path, category, trigger_context, learning_content,
+                    source_session_id, success_count, failure_count, last_used,
+                    promoted_to_universal, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, 1, 0, NOW(), FALSE, NOW())
+                ON CONFLICT(id) DO UPDATE SET
+                    learning_content = EXCLUDED.learning_content,
+                    trigger_context = EXCLUDED.trigger_context,
+                    last_used = NOW()
+                """,
+                learning_id, project_path, category, trigger_context,
+                learning_content, source_session_id,
+            )
+        return {"id": learning_id, "status": "saved"}
+
+    async def query_project_learnings(
+        self,
+        project_path: str,
+        category: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Query learnings for a project."""
+        self._ensure_connected()
+
+        async with self._pool.acquire() as conn:
+            if category:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM project_learnings
+                    WHERE project_path = $1 AND category = $2
+                    ORDER BY success_count DESC, last_used DESC
+                    LIMIT $3
+                    """,
+                    project_path, category, limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM project_learnings
+                    WHERE project_path = $1
+                    ORDER BY success_count DESC, last_used DESC
+                    LIMIT $2
+                    """,
+                    project_path, limit,
+                )
+            return [self._from_record(row) for row in rows]
+
+    async def update_learning_usage(
+        self, learning_id: str, success: bool
+    ) -> dict[str, Any]:
+        """Update success/failure count for a learning."""
+        self._ensure_connected()
+
+        async with self._pool.acquire() as conn:
+            if success:
+                await conn.execute(
+                    """
+                    UPDATE project_learnings
+                    SET success_count = success_count + 1, last_used = NOW()
+                    WHERE id = $1
+                    """,
+                    learning_id,
+                )
+            else:
+                await conn.execute(
+                    """
+                    UPDATE project_learnings
+                    SET failure_count = failure_count + 1, last_used = NOW()
+                    WHERE id = $1
+                    """,
+                    learning_id,
+                )
+        return {"id": learning_id, "updated": True, "success": success}
+
+    async def save_error_solution(
+        self,
+        solution_id: str,
+        error_pattern: str,
+        solution_steps: list[str],
+        error_category: str | None = None,
+        context_requirements: dict[str, Any] | None = None,
+        project_path: str | None = None,
+        source_session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Save an error→solution mapping."""
+        self._ensure_connected()
+        import hashlib
+
+        error_hash = hashlib.sha256(error_pattern.encode()).hexdigest()[:16]
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO error_solutions (
+                    id, error_pattern, error_hash, error_category, solution_steps,
+                    context_requirements, success_rate, usage_count, project_path,
+                    source_session_id, created_at, last_used
+                ) VALUES ($1, $2, $3, $4, $5, $6, 1.0, 1, $7, $8, NOW(), NOW())
+                ON CONFLICT(id) DO UPDATE SET
+                    solution_steps = EXCLUDED.solution_steps,
+                    context_requirements = EXCLUDED.context_requirements,
+                    last_used = NOW()
+                """,
+                solution_id, error_pattern, error_hash, error_category,
+                json.dumps(solution_steps),
+                json.dumps(context_requirements) if context_requirements else None,
+                project_path, source_session_id,
+            )
+        return {"id": solution_id, "error_hash": error_hash, "status": "saved"}
+
+    async def find_error_solutions(
+        self,
+        error_text: str,
+        project_path: str | None = None,
+        include_universal: bool = True,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Find solutions matching an error pattern."""
+        self._ensure_connected()
+
+        async with self._pool.acquire() as conn:
+            if project_path and include_universal:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM error_solutions
+                    WHERE (project_path = $1 OR project_path IS NULL)
+                    AND (error_pattern ILIKE $2 OR $3 ILIKE '%' || error_pattern || '%')
+                    ORDER BY
+                        CASE WHEN project_path = $1 THEN 0 ELSE 1 END,
+                        success_rate DESC,
+                        usage_count DESC
+                    LIMIT $4
+                    """,
+                    project_path, f"%{error_text[:100]}%", error_text, limit,
+                )
+            elif project_path:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM error_solutions
+                    WHERE project_path = $1
+                    AND (error_pattern ILIKE $2 OR $3 ILIKE '%' || error_pattern || '%')
+                    ORDER BY success_rate DESC, usage_count DESC
+                    LIMIT $4
+                    """,
+                    project_path, f"%{error_text[:100]}%", error_text, limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM error_solutions
+                    WHERE project_path IS NULL
+                    AND (error_pattern ILIKE $1 OR $2 ILIKE '%' || error_pattern || '%')
+                    ORDER BY success_rate DESC, usage_count DESC
+                    LIMIT $3
+                    """,
+                    f"%{error_text[:100]}%", error_text, limit,
+                )
+
+            results = []
+            for row in rows:
+                result = self._from_record(row)
+                if result.get("solution_steps"):
+                    result["solution_steps"] = json.loads(result["solution_steps"]) if isinstance(result["solution_steps"], str) else result["solution_steps"]
+                if result.get("context_requirements"):
+                    result["context_requirements"] = json.loads(result["context_requirements"]) if isinstance(result["context_requirements"], str) else result["context_requirements"]
+                results.append(result)
+            return results
+
+    async def update_solution_outcome(
+        self, solution_id: str, success: bool
+    ) -> dict[str, Any]:
+        """Update success rate for a solution."""
+        self._ensure_connected()
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT usage_count, success_rate FROM error_solutions WHERE id = $1",
+                solution_id,
+            )
+            if not row:
+                return {"id": solution_id, "error": "Solution not found"}
+
+            usage_count = row["usage_count"]
+            current_rate = row["success_rate"]
+
+            new_usage = usage_count + 1
+            if success:
+                new_rate = (current_rate * usage_count + 1.0) / new_usage
+            else:
+                new_rate = (current_rate * usage_count) / new_usage
+
+            await conn.execute(
+                """
+                UPDATE error_solutions
+                SET usage_count = $1, success_rate = $2, last_used = NOW()
+                WHERE id = $3
+                """,
+                new_usage, new_rate, solution_id,
+            )
+
+        return {
+            "id": solution_id,
+            "usage_count": new_usage,
+            "success_rate": new_rate,
+            "updated": True,
+        }

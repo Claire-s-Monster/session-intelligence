@@ -11,8 +11,9 @@ Uses WAL mode for better concurrent read access.
 
 from __future__ import annotations
 
+import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -873,7 +874,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         """Save a project-specific learning."""
         self._ensure_connected()
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         await self._connection.execute(
             """
             INSERT INTO project_learnings (
@@ -939,7 +940,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         """Update success/failure count for a learning."""
         self._ensure_connected()
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         if success:
             await self._connection.execute(
                 """
@@ -977,7 +978,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         self._ensure_connected()
         import hashlib
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         error_hash = hashlib.sha256(error_pattern.encode()).hexdigest()[:16]
 
         await self._connection.execute(
@@ -1073,7 +1074,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         """Update success rate for a solution."""
         self._ensure_connected()
 
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
 
         # Get current stats
         cursor = await self._connection.execute(

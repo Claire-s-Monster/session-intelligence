@@ -1439,6 +1439,7 @@ class SessionIntelligenceEngine:
         error_text: str,
         error_category: str | None = None,
         include_universal: bool = True,
+        project_path: str | None = None,
     ) -> SolutionSearchResult:
         """
         Find solutions for an error from project and universal knowledge.
@@ -1447,6 +1448,7 @@ class SessionIntelligenceEngine:
             error_text: The error message/pattern to search for
             error_category: Optional category hint (compile, runtime, config, dependency)
             include_universal: Whether to include universal solutions
+            project_path: Project scope for solutions
 
         Returns:
             SolutionSearchResult with matching solutions

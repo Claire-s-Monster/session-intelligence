@@ -1413,7 +1413,7 @@ class SessionIntelligenceEngine:
         effective_project = project_path or str(self.claude_sessions_path.parent)
 
         # Get current session if available
-        source_session = self.current_session.id if self.current_session else None
+        source_session = self._current_session_id
 
         debug_logger.info(
             f"Logging learning: {category} for {effective_project}"

@@ -576,6 +576,12 @@ class HTTPSessionIntelligenceServer:
                             include_universal=tool_params.get("include_universal", True),
                         )
                         from models.session_models import ErrorSolution, SolutionSearchResult
+                        # Convert datetime fields to strings for Pydantic
+                        for s in solutions:
+                            if s.get("created_at") and hasattr(s["created_at"], "isoformat"):
+                                s["created_at"] = s["created_at"].isoformat()
+                            if s.get("last_used") and hasattr(s["last_used"], "isoformat"):
+                                s["last_used"] = s["last_used"].isoformat()
                         tool_result = SolutionSearchResult(
                             error_text=tool_params.get("error_text", ""),
                             total_found=len(solutions),

@@ -574,3 +574,89 @@ class SearchResults(BaseModel):
     query: str
     total_results: int
     results: list[SearchResult] = Field(default_factory=list)
+
+
+# ===== KNOWLEDGE SYSTEM MODELS =====
+
+
+class LearningCategory(str, Enum):
+    """Learning category enumeration."""
+    ERROR_FIX = "error_fix"
+    PATTERN = "pattern"
+    PREFERENCE = "preference"
+    WORKFLOW = "workflow"
+
+
+class ErrorCategory(str, Enum):
+    """Error category enumeration."""
+    COMPILE = "compile"
+    RUNTIME = "runtime"
+    CONFIG = "config"
+    DEPENDENCY = "dependency"
+    TEST = "test"
+    LINT = "lint"
+
+
+class ProjectLearning(BaseModel):
+    """Project-specific learning record."""
+    id: str
+    project_path: str
+    category: LearningCategory
+    trigger_context: str | None = None
+    learning_content: str
+    source_session_id: str | None = None
+    success_count: int = 1
+    failure_count: int = 0
+    last_used: str | None = None
+    promoted_to_universal: bool = False
+    created_at: str
+
+
+class LearningResult(BaseModel):
+    """Result of a learning operation."""
+    id: str
+    status: str
+    message: str = ""
+    learning: ProjectLearning | None = None
+
+
+class LearningsQueryResult(BaseModel):
+    """Result of querying learnings."""
+    project_path: str
+    category: str | None = None
+    total_count: int
+    learnings: list[ProjectLearning] = Field(default_factory=list)
+
+
+class ErrorSolution(BaseModel):
+    """Error→Solution mapping."""
+    id: str
+    error_pattern: str
+    error_hash: str | None = None
+    error_category: ErrorCategory | None = None
+    solution_steps: list[str] = Field(default_factory=list)
+    context_requirements: dict[str, Any] | None = None
+    success_rate: float = 1.0
+    usage_count: int = 1
+    project_path: str | None = None  # None = universal
+    source_session_id: str | None = None
+    created_at: str
+    last_used: str | None = None
+
+
+class SolutionResult(BaseModel):
+    """Result of a solution operation."""
+    id: str
+    status: str
+    error_hash: str | None = None
+    message: str = ""
+    solution: ErrorSolution | None = None
+
+
+class SolutionSearchResult(BaseModel):
+    """Result of searching for solutions."""
+    error_text: str
+    total_found: int
+    solutions: list[ErrorSolution] = Field(default_factory=list)
+    project_specific_count: int = 0
+    universal_count: int = 0

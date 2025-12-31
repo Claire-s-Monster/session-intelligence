@@ -171,6 +171,57 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         MAX(timestamp) as last_decision
     FROM decisions
     GROUP BY category, impact_level;
+
+    -- Session summaries table for narrative session documentation
+    CREATE TABLE IF NOT EXISTS session_summaries (
+        session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+        title TEXT,
+        summary_markdown TEXT,
+        key_changes JSONB DEFAULT '[]',
+        tags JSONB DEFAULT '[]',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_summaries_created ON session_summaries(created_at);
+
+    -- Project-specific learnings (trial/error history)
+    CREATE TABLE IF NOT EXISTS project_learnings (
+        id TEXT PRIMARY KEY,
+        project_path TEXT NOT NULL,
+        category TEXT NOT NULL,
+        trigger_context TEXT,
+        learning_content TEXT NOT NULL,
+        source_session_id TEXT REFERENCES sessions(id),
+        success_count INTEGER DEFAULT 1,
+        failure_count INTEGER DEFAULT 0,
+        last_used TIMESTAMPTZ,
+        promoted_to_universal BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_learnings_project ON project_learnings(project_path);
+    CREATE INDEX IF NOT EXISTS idx_learnings_category ON project_learnings(category);
+    CREATE INDEX IF NOT EXISTS idx_learnings_promoted ON project_learnings(promoted_to_universal);
+
+    -- Error→Solution quick lookup
+    CREATE TABLE IF NOT EXISTS error_solutions (
+        id TEXT PRIMARY KEY,
+        error_pattern TEXT NOT NULL,
+        error_hash TEXT,
+        error_category TEXT,
+        solution_steps JSONB NOT NULL DEFAULT '[]',
+        context_requirements JSONB,
+        success_rate REAL DEFAULT 1.0,
+        usage_count INTEGER DEFAULT 1,
+        project_path TEXT,
+        source_session_id TEXT REFERENCES sessions(id),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_used TIMESTAMPTZ
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_errors_hash ON error_solutions(error_hash);
+    CREATE INDEX IF NOT EXISTS idx_errors_category ON error_solutions(error_category);
+    CREATE INDEX IF NOT EXISTS idx_errors_project ON error_solutions(project_path);
     """
 
     def __init__(self, dsn: str | None = None, **kwargs: Any) -> None:

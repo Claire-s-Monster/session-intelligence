@@ -142,6 +142,47 @@ class SQLiteBackend(BaseDatabaseBackend):
     );
 
     CREATE INDEX IF NOT EXISTS idx_summaries_created ON session_summaries(created_at);
+
+    -- Project-specific learnings (trial/error history)
+    CREATE TABLE IF NOT EXISTS project_learnings (
+        id TEXT PRIMARY KEY,
+        project_path TEXT NOT NULL,
+        category TEXT NOT NULL,           -- 'error_fix', 'pattern', 'preference', 'workflow'
+        trigger_context TEXT,             -- What situation triggers this knowledge
+        learning_content TEXT NOT NULL,   -- The actual knowledge/solution
+        source_session_id TEXT,           -- Which session created this
+        success_count INTEGER DEFAULT 1,
+        failure_count INTEGER DEFAULT 0,
+        last_used TEXT,
+        promoted_to_universal BOOLEAN DEFAULT FALSE,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (source_session_id) REFERENCES sessions(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_learnings_project ON project_learnings(project_path);
+    CREATE INDEX IF NOT EXISTS idx_learnings_category ON project_learnings(category);
+    CREATE INDEX IF NOT EXISTS idx_learnings_promoted ON project_learnings(promoted_to_universal);
+
+    -- Error→Solution quick lookup
+    CREATE TABLE IF NOT EXISTS error_solutions (
+        id TEXT PRIMARY KEY,
+        error_pattern TEXT NOT NULL,      -- Key phrases or regex
+        error_hash TEXT,                  -- Hash for quick matching
+        error_category TEXT,              -- 'compile', 'runtime', 'config', 'dependency'
+        solution_steps TEXT NOT NULL,     -- JSON array of solution steps
+        context_requirements TEXT,        -- When this solution applies (JSON)
+        success_rate REAL DEFAULT 1.0,
+        usage_count INTEGER DEFAULT 1,
+        project_path TEXT,                -- NULL = universal, set = project-specific
+        source_session_id TEXT,
+        created_at TEXT NOT NULL,
+        last_used TEXT,
+        FOREIGN KEY (source_session_id) REFERENCES sessions(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_errors_hash ON error_solutions(error_hash);
+    CREATE INDEX IF NOT EXISTS idx_errors_category ON error_solutions(error_category);
+    CREATE INDEX IF NOT EXISTS idx_errors_project ON error_solutions(project_path);
     """
 
     # FTS5 schema must be created separately (cannot use IF NOT EXISTS with virtual tables)
@@ -817,6 +858,257 @@ class SQLiteBackend(BaseDatabaseBackend):
             result["tags"] = self._deserialize_json(result.get("tags"))
             results.append(result)
         return results
+
+    # Project Learnings operations
+
+    async def save_project_learning(
+        self,
+        learning_id: str,
+        project_path: str,
+        category: str,
+        learning_content: str,
+        trigger_context: str | None = None,
+        source_session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Save a project-specific learning."""
+        self._ensure_connected()
+
+        now = datetime.now(timezone.utc).isoformat()
+        await self._connection.execute(
+            """
+            INSERT INTO project_learnings (
+                id, project_path, category, trigger_context, learning_content,
+                source_session_id, success_count, failure_count, last_used,
+                promoted_to_universal, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, FALSE, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                learning_content = excluded.learning_content,
+                trigger_context = excluded.trigger_context,
+                last_used = excluded.last_used
+        """,
+            (
+                learning_id,
+                project_path,
+                category,
+                trigger_context,
+                learning_content,
+                source_session_id,
+                now,
+                now,
+            ),
+        )
+        await self._connection.commit()
+        return {"id": learning_id, "status": "saved"}
+
+    async def query_project_learnings(
+        self,
+        project_path: str,
+        category: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Query learnings for a project."""
+        self._ensure_connected()
+
+        if category:
+            cursor = await self._connection.execute(
+                """
+                SELECT * FROM project_learnings
+                WHERE project_path = ? AND category = ?
+                ORDER BY success_count DESC, last_used DESC
+                LIMIT ?
+            """,
+                (project_path, category, limit),
+            )
+        else:
+            cursor = await self._connection.execute(
+                """
+                SELECT * FROM project_learnings
+                WHERE project_path = ?
+                ORDER BY success_count DESC, last_used DESC
+                LIMIT ?
+            """,
+                (project_path, limit),
+            )
+
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def update_learning_usage(
+        self, learning_id: str, success: bool
+    ) -> dict[str, Any]:
+        """Update success/failure count for a learning."""
+        self._ensure_connected()
+
+        now = datetime.now(timezone.utc).isoformat()
+        if success:
+            await self._connection.execute(
+                """
+                UPDATE project_learnings
+                SET success_count = success_count + 1, last_used = ?
+                WHERE id = ?
+            """,
+                (now, learning_id),
+            )
+        else:
+            await self._connection.execute(
+                """
+                UPDATE project_learnings
+                SET failure_count = failure_count + 1, last_used = ?
+                WHERE id = ?
+            """,
+                (now, learning_id),
+            )
+        await self._connection.commit()
+        return {"id": learning_id, "updated": True, "success": success}
+
+    # Error Solutions operations
+
+    async def save_error_solution(
+        self,
+        solution_id: str,
+        error_pattern: str,
+        solution_steps: list[str],
+        error_category: str | None = None,
+        context_requirements: dict[str, Any] | None = None,
+        project_path: str | None = None,
+        source_session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Save an error→solution mapping."""
+        self._ensure_connected()
+        import hashlib
+
+        now = datetime.now(timezone.utc).isoformat()
+        error_hash = hashlib.sha256(error_pattern.encode()).hexdigest()[:16]
+
+        await self._connection.execute(
+            """
+            INSERT INTO error_solutions (
+                id, error_pattern, error_hash, error_category, solution_steps,
+                context_requirements, success_rate, usage_count, project_path,
+                source_session_id, created_at, last_used
+            ) VALUES (?, ?, ?, ?, ?, ?, 1.0, 1, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                solution_steps = excluded.solution_steps,
+                context_requirements = excluded.context_requirements,
+                last_used = excluded.last_used
+        """,
+            (
+                solution_id,
+                error_pattern,
+                error_hash,
+                error_category,
+                json.dumps(solution_steps),
+                json.dumps(context_requirements) if context_requirements else None,
+                project_path,
+                source_session_id,
+                now,
+                now,
+            ),
+        )
+        await self._connection.commit()
+        return {"id": solution_id, "error_hash": error_hash, "status": "saved"}
+
+    async def find_error_solutions(
+        self,
+        error_text: str,
+        project_path: str | None = None,
+        include_universal: bool = True,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Find solutions matching an error pattern."""
+        self._ensure_connected()
+
+        # Build query based on scope
+        if project_path and include_universal:
+            cursor = await self._connection.execute(
+                """
+                SELECT * FROM error_solutions
+                WHERE (project_path = ? OR project_path IS NULL)
+                AND (error_pattern LIKE ? OR ? LIKE '%' || error_pattern || '%')
+                ORDER BY
+                    CASE WHEN project_path = ? THEN 0 ELSE 1 END,
+                    success_rate DESC,
+                    usage_count DESC
+                LIMIT ?
+            """,
+                (project_path, f"%{error_text[:100]}%", error_text, project_path, limit),
+            )
+        elif project_path:
+            cursor = await self._connection.execute(
+                """
+                SELECT * FROM error_solutions
+                WHERE project_path = ?
+                AND (error_pattern LIKE ? OR ? LIKE '%' || error_pattern || '%')
+                ORDER BY success_rate DESC, usage_count DESC
+                LIMIT ?
+            """,
+                (project_path, f"%{error_text[:100]}%", error_text, limit),
+            )
+        else:
+            cursor = await self._connection.execute(
+                """
+                SELECT * FROM error_solutions
+                WHERE project_path IS NULL
+                AND (error_pattern LIKE ? OR ? LIKE '%' || error_pattern || '%')
+                ORDER BY success_rate DESC, usage_count DESC
+                LIMIT ?
+            """,
+                (f"%{error_text[:100]}%", error_text, limit),
+            )
+
+        rows = await cursor.fetchall()
+        results = []
+        for row in rows:
+            result = dict(row)
+            result["solution_steps"] = self._deserialize_json(result.get("solution_steps"))
+            result["context_requirements"] = self._deserialize_json(
+                result.get("context_requirements")
+            )
+            results.append(result)
+        return results
+
+    async def update_solution_outcome(
+        self, solution_id: str, success: bool
+    ) -> dict[str, Any]:
+        """Update success rate for a solution."""
+        self._ensure_connected()
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Get current stats
+        cursor = await self._connection.execute(
+            "SELECT usage_count, success_rate FROM error_solutions WHERE id = ?",
+            (solution_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return {"id": solution_id, "error": "Solution not found"}
+
+        usage_count = row["usage_count"]
+        current_rate = row["success_rate"]
+
+        # Calculate new success rate as weighted average
+        new_usage = usage_count + 1
+        if success:
+            new_rate = (current_rate * usage_count + 1.0) / new_usage
+        else:
+            new_rate = (current_rate * usage_count) / new_usage
+
+        await self._connection.execute(
+            """
+            UPDATE error_solutions
+            SET usage_count = ?, success_rate = ?, last_used = ?
+            WHERE id = ?
+        """,
+            (new_usage, new_rate, now, solution_id),
+        )
+        await self._connection.commit()
+        return {
+            "id": solution_id,
+            "usage_count": new_usage,
+            "success_rate": new_rate,
+            "updated": True,
+        }
 
     # Maintenance operations
 

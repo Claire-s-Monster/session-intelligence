@@ -35,6 +35,8 @@ from models.session_models import (
     ExecutionTrackingResult,
     HealthStatus,
     ImpactLevel,
+    LearningCategory,
+    LearningResult,
     MissingFunctionResult,
     NotebookResult,
     NotebookSection,
@@ -45,6 +47,7 @@ from models.session_models import (
     PatternAnalysisResult,
     PatternType,
     PerformanceMetrics,
+    ProjectLearning,
     SearchResults,
     Session,
     SessionHealthResult,
@@ -52,6 +55,8 @@ from models.session_models import (
     SessionNotebook,
     SessionResult,
     SessionStatus,
+    SolutionResult,
+    SolutionSearchResult,
     WorkflowResult,
     WorkflowState,
     WorkflowType,
@@ -1379,4 +1384,108 @@ class SessionIntelligenceEngine:
             query=query,
             total_results=0,
             results=[]
+        )
+
+    # ===== KNOWLEDGE SYSTEM =====
+
+    def session_log_learning(
+        self,
+        category: str,
+        learning_content: str,
+        trigger_context: str | None = None,
+        project_path: str | None = None,
+    ) -> LearningResult:
+        """
+        Log a project-specific learning (pattern, fix, preference).
+
+        Args:
+            category: Learning category - error_fix, pattern, preference, workflow
+            learning_content: The actual knowledge/solution
+            trigger_context: When to apply this learning
+            project_path: Project scope (uses current if not specified)
+
+        Returns:
+            LearningResult with saved learning
+        """
+        import uuid
+
+        learning_id = f"learn_{uuid.uuid4().hex[:12]}"
+        effective_project = project_path or self.repository_path
+
+        # Get current session if available
+        source_session = self.current_session.id if self.current_session else None
+
+        debug_logger.info(
+            f"Logging learning: {category} for {effective_project}"
+        )
+
+        return LearningResult(
+            id=learning_id,
+            status="pending_save",
+            message=f"Learning logged for {category}. Requires async save to database.",
+            learning=ProjectLearning(
+                id=learning_id,
+                project_path=effective_project,
+                category=LearningCategory(category),
+                trigger_context=trigger_context,
+                learning_content=learning_content,
+                source_session_id=source_session,
+                created_at=datetime.now().isoformat(),
+            )
+        )
+
+    def session_find_solution(
+        self,
+        error_text: str,
+        error_category: str | None = None,
+        include_universal: bool = True,
+    ) -> SolutionSearchResult:
+        """
+        Find solutions for an error from project and universal knowledge.
+
+        Args:
+            error_text: The error message/pattern to search for
+            error_category: Optional category hint (compile, runtime, config, dependency)
+            include_universal: Whether to include universal solutions
+
+        Returns:
+            SolutionSearchResult with matching solutions
+        """
+        debug_logger.info(
+            f"Finding solutions for error: {error_text[:100]}..."
+        )
+
+        # This requires database access which is async
+        # Return placeholder indicating need for async call
+        return SolutionSearchResult(
+            error_text=error_text,
+            total_found=0,
+            solutions=[],
+            project_specific_count=0,
+            universal_count=0,
+        )
+
+    def session_update_solution_outcome(
+        self,
+        solution_id: str,
+        success: bool,
+    ) -> SolutionResult:
+        """
+        Update success/failure count for a solution.
+
+        Args:
+            solution_id: ID of the solution to update
+            success: Whether the solution worked
+
+        Returns:
+            SolutionResult with updated status
+        """
+        debug_logger.info(
+            f"Updating solution outcome: {solution_id} -> {'success' if success else 'failure'}"
+        )
+
+        return SolutionResult(
+            id=solution_id,
+            status="pending_update",
+            message="Solution outcome recorded. Requires async update to database.",
         )

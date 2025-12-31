@@ -506,6 +506,104 @@ class LeanMCPInterface:
             ]
         }
 
+        # ===== KNOWLEDGE SYSTEM TOOLS =====
+
+        registry["session_log_learning"] = {
+            "implementation": self._wrap_tool(self.session_engine.session_log_learning),
+            "description": "Log a project-specific learning (pattern, fix, preference, workflow)",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "enum": ["error_fix", "pattern", "preference", "workflow"],
+                        "description": "Learning category"
+                    },
+                    "learning_content": {
+                        "type": "string",
+                        "description": "The actual knowledge/solution"
+                    },
+                    "trigger_context": {
+                        "type": "string",
+                        "description": "When to apply this learning (optional)"
+                    },
+                    "project_path": {
+                        "type": "string",
+                        "description": "Project scope (uses current if not specified)"
+                    }
+                },
+                "required": ["category", "learning_content"]
+            },
+            "examples": [
+                {
+                    "category": "error_fix",
+                    "learning_content": "ImportError for module X: install via pip install X",
+                    "trigger_context": "When seeing 'ModuleNotFoundError: X'"
+                },
+                {
+                    "category": "pattern",
+                    "learning_content": "Always run lint before commit in this project"
+                }
+            ]
+        }
+
+        registry["session_find_solution"] = {
+            "implementation": self._wrap_tool(self.session_engine.session_find_solution),
+            "description": "Find solutions for an error from project and universal knowledge",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "error_text": {
+                        "type": "string",
+                        "description": "The error message/pattern to search for"
+                    },
+                    "error_category": {
+                        "type": "string",
+                        "enum": ["compile", "runtime", "config", "dependency", "test", "lint"],
+                        "description": "Optional category hint"
+                    },
+                    "include_universal": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Whether to include universal (cross-project) solutions"
+                    }
+                },
+                "required": ["error_text"]
+            },
+            "examples": [
+                {"error_text": "ModuleNotFoundError: No module named 'foo'"},
+                {
+                    "error_text": "TypeError: expected str, got int",
+                    "error_category": "runtime"
+                }
+            ]
+        }
+
+        registry["session_update_solution_outcome"] = {
+            "implementation": self._wrap_tool(
+                self.session_engine.session_update_solution_outcome
+            ),
+            "description": "Update success/failure count for a solution after trying it",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "solution_id": {
+                        "type": "string",
+                        "description": "ID of the solution to update"
+                    },
+                    "success": {
+                        "type": "boolean",
+                        "description": "Whether the solution worked"
+                    }
+                },
+                "required": ["solution_id", "success"]
+            },
+            "examples": [
+                {"solution_id": "sol_abc123", "success": True},
+                {"solution_id": "sol_xyz789", "success": False}
+            ]
+        }
+
         return registry
 
     def _wrap_tool(self, tool_func):

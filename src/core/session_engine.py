@@ -8,7 +8,7 @@ into a unified, intelligent system with pattern recognition, optimization, and l
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -272,7 +272,7 @@ class SessionIntelligenceEngine:
         # Create session object
         session = Session(
             id=session_id,
-            started=datetime.now(),
+            started=datetime.now(UTC),
             mode=mode,
             project_name=project_name or "unknown",
             project_path=metadata.get("project_path", str(Path.cwd())),
@@ -370,7 +370,7 @@ class SessionIntelligenceEngine:
 
         # Update session status
         session.status = SessionStatus.COMPLETED
-        session.completed = datetime.now()
+        session.completed = datetime.now(UTC)
 
         # Calculate final metrics
         total_time = (session.completed - session.started).total_seconds() * 1000
@@ -537,7 +537,7 @@ class SessionIntelligenceEngine:
             operation=step_data.get("operation", "unknown"),
             description=step_data.get("description", ""),
             tools_used=step_data.get("tools_used", []),
-            started=datetime.now(),
+            started=datetime.now(UTC),
             status=ExecutionStatus.RUNNING
         )
         debug_logger.info(f"Created execution_step: {execution_step}")
@@ -568,7 +568,7 @@ class SessionIntelligenceEngine:
                 agent_name=agent_name,
                 agent_type=step_data.get("agent_type", "unknown"),
                 execution_id=f"{agent_name}-{uuid.uuid4().hex[:8]}",
-                started=datetime.now(),
+                started=datetime.now(UTC),
                 context=AgentContext(
                     session_id=session_id,
                     project_path=session.project_path,
@@ -811,7 +811,7 @@ class SessionIntelligenceEngine:
 
             decision_obj = Decision(
                 decision_id=decision_id,
-                timestamp=datetime.now(),
+                timestamp=datetime.now(UTC),
                 description=decision,
                 context=decision_context,
                 impact_level=ImpactLevel.MEDIUM,
@@ -819,6 +819,24 @@ class SessionIntelligenceEngine:
             )
 
             session.decisions.append(decision_obj)
+
+            # Persist to database
+            if self.database:
+                decision_data = {
+                    "id": decision_id,
+                    "session_id": session_id,
+                    "timestamp": decision_obj.timestamp.isoformat(),
+                    "description": decision,
+                    "context": json.dumps(context or {}),
+                    "impact_level": decision_obj.impact_level.value,
+                    "artifacts": json.dumps(link_artifacts or []),
+                }
+                try:
+                    import asyncio
+                    asyncio.get_running_loop()
+                    asyncio.create_task(self.database.save_decision(decision_data))
+                except RuntimeError:
+                    pass  # No event loop in sync context
 
         # Impact analysis
         impact_analysis_result = {}
@@ -836,6 +854,44 @@ class SessionIntelligenceEngine:
             linked_decisions=[],
             predicted_outcomes=["Continue with planned execution"]
         )
+
+    def session_track_file_operation(
+        self,
+        operation: str,
+        file_path: str,
+        session_id: str | None = None,
+        lines_added: int = 0,
+        lines_removed: int = 0,
+        summary: str | None = None,
+        tool_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Track a file operation for the session notebook."""
+        if not session_id and self.session_cache:
+            session_id = list(self.session_cache.keys())[-1]
+
+        if not session_id:
+            return {"status": "error", "message": "No active session"}
+
+        file_op_data = {
+            "session_id": session_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "operation": operation,
+            "file_path": file_path,
+            "lines_added": lines_added,
+            "lines_removed": lines_removed,
+            "summary": summary,
+            "tool_name": tool_name,
+        }
+
+        if self.database:
+            try:
+                import asyncio
+                asyncio.get_running_loop()
+                asyncio.create_task(self.database.save_file_operation(file_op_data))
+            except RuntimeError:
+                pass
+
+        return {"status": "success", "session_id": session_id, "operation": operation, "file_path": file_path}
 
     # ===== HEALTH MONITORING =====
 
@@ -937,7 +993,7 @@ class SessionIntelligenceEngine:
         diagnostics = {}
         if include_diagnostics:
             diagnostics = {
-                "session_age_minutes": (datetime.now() - session.started).total_seconds() / 60,
+                "session_age_minutes": (datetime.now(UTC) - session.started).total_seconds() / 60,
                 "agents_count": len(session.agents_executed),
                 "decisions_count": len(session.decisions),
                 "performance_score": session.performance_metrics.efficiency_score
@@ -1054,6 +1110,108 @@ class SessionIntelligenceEngine:
                 message=f"Failed to create notebook: {str(e)}"
             )
 
+    async def session_create_notebook_async(
+        self,
+        session_id: str | None = None,
+        title: str | None = None,
+        include_decisions: bool = True,
+        include_agents: bool = True,
+        include_metrics: bool = True,
+        tags: list[str] | None = None,
+        save_to_file: bool = True,
+        save_to_database: bool = True
+    ) -> NotebookResult:
+        """Async version: Generate notebook with full database queries."""
+        try:
+            # Get session
+            if not session_id:
+                session_id = self._get_or_create_current_session_id()
+            if not session_id or session_id not in self.session_cache:
+                return NotebookResult(session_id=session_id or "unknown", status="error", message="No session found")
+
+            session = self.session_cache[session_id]
+
+            # Merge decisions from database
+            if self.database:
+                db_decisions = await self.database.query_decisions_by_session(session_id)
+                existing_ids = {d.decision_id for d in session.decisions}
+                for db_dec in db_decisions:
+                    dec_id = db_dec.get("id") or db_dec.get("decision_id")
+                    if dec_id and dec_id not in existing_ids:
+                        from models.session_models import Decision, DecisionContext
+                        session.decisions.append(Decision(
+                            decision_id=dec_id,
+                            timestamp=datetime.fromisoformat(db_dec["timestamp"]) if db_dec.get("timestamp") else datetime.now(UTC),
+                            description=db_dec.get("description", ""),
+                            context=DecisionContext(session_id=session_id, project_state={}),
+                            impact_level=ImpactLevel(db_dec.get("impact_level", "medium")),
+                            artifacts=json.loads(db_dec.get("artifacts", "[]")) if isinstance(db_dec.get("artifacts"), str) else db_dec.get("artifacts", []),
+                        ))
+
+            # Build sections
+            end_time = session.completed or datetime.now(UTC)
+            duration_minutes = (end_time - session.started).total_seconds() / 60
+            if not title:
+                title = f"Session: {session.project_name} - {session.started.strftime('%Y-%m-%d %H:%M')}"
+
+            sections: list[NotebookSection] = []
+            sections.append(NotebookSection(heading="Overview", content=self._generate_overview_section(session, duration_minutes), level=2))
+
+            # File operations from database (async)
+            files_changed: list[str] = []
+            if self.database:
+                files_content, files_changed = await self._generate_files_section_async(session_id)
+                if files_content:
+                    sections.append(NotebookSection(heading="Work Completed", content=files_content, level=2))
+
+            # Agents
+            agents_used: list[str] = []
+            if include_agents and session.agents_executed:
+                agents_content, agents_used = self._generate_agents_section(session)
+                sections.append(NotebookSection(heading="Agents Executed", content=agents_content, level=2))
+
+            # Decisions
+            decisions_made: list[str] = []
+            if include_decisions and session.decisions:
+                decisions_content, decisions_made = self._generate_decisions_section(session)
+                sections.append(NotebookSection(heading="Decisions Made", content=decisions_content, level=2))
+
+            # Metrics
+            if include_metrics:
+                sections.append(NotebookSection(heading="Performance Metrics", content=self._generate_metrics_section(session), level=2))
+
+            # Learnings from database (async)
+            if self.database:
+                learnings_content = await self._generate_learnings_section_async(session.project_path)
+                if learnings_content:
+                    sections.append(NotebookSection(heading="Project Learnings", content=learnings_content, level=2))
+
+            key_changes = list(set(self._extract_key_changes(session)) | set(files_changed))[:20]
+            if tags is None:
+                tags = self._auto_generate_tags(session, agents_used, key_changes)
+
+            summary_markdown = self._generate_summary_markdown(title, sections, session, duration_minutes)
+            notebook = SessionNotebook(
+                session_id=session_id, title=title, created_at=datetime.now().isoformat(),
+                project_name=session.project_name, project_path=session.project_path,
+                duration_minutes=round(duration_minutes, 2), sections=sections,
+                summary_markdown=summary_markdown, key_changes=key_changes,
+                agents_used=agents_used, decisions_made=decisions_made, tags=tags
+            )
+
+            file_path = None
+            if save_to_file and self.use_filesystem:
+                file_path = self._save_notebook_to_file(session_id, notebook)
+
+            return NotebookResult(
+                session_id=session_id, status="success", notebook=notebook,
+                markdown_output=summary_markdown, file_path=file_path, search_indexed=False,
+                message=f"Notebook created with {len(sections)} sections"
+            )
+        except Exception as e:
+            debug_logger.error(f"Error creating async notebook: {e}")
+            return NotebookResult(session_id=session_id or "unknown", status="error", message=str(e))
+
     def _create_notebook_sync(
         self,
         session_id: str | None,
@@ -1080,8 +1238,39 @@ class SessionIntelligenceEngine:
 
         session = self.session_cache[session_id]
 
+        # Merge decisions from database if available
+        if self.database:
+            try:
+                import asyncio
+                loop = asyncio.get_running_loop()
+                db_decisions = asyncio.create_task(
+                    self.database.query_decisions_by_session(session_id)
+                )
+                # We can't await here in sync context, so use run_until_complete alternative
+                # Instead, we'll check if we're in async context
+            except RuntimeError:
+                pass  # No event loop - skip database merge in sync context
+            else:
+                # If we have an event loop, schedule the merge
+                async def merge_db_decisions():
+                    db_decisions_list = await self.database.query_decisions_by_session(session_id)
+                    existing_ids = {d.decision_id for d in session.decisions}
+                    for db_dec in db_decisions_list:
+                        dec_id = db_dec.get("id") or db_dec.get("decision_id")
+                        if dec_id and dec_id not in existing_ids:
+                            from models.session_models import Decision, DecisionContext
+                            session.decisions.append(Decision(
+                                decision_id=dec_id,
+                                timestamp=datetime.fromisoformat(db_dec["timestamp"]) if db_dec.get("timestamp") else datetime.now(UTC),
+                                description=db_dec.get("description", ""),
+                                context=DecisionContext(session_id=session_id, project_state={}),
+                                impact_level=ImpactLevel(db_dec.get("impact_level", "medium")),
+                                artifacts=json.loads(db_dec.get("artifacts", "[]")) if isinstance(db_dec.get("artifacts"), str) else db_dec.get("artifacts", []),
+                            ))
+                asyncio.create_task(merge_db_decisions())
+
         # Calculate duration
-        end_time = session.completed or datetime.now()
+        end_time = session.completed or datetime.now(UTC)
         duration_minutes = (end_time - session.started).total_seconds() / 60
 
         # Generate title if not provided
@@ -1098,6 +1287,15 @@ class SessionIntelligenceEngine:
             content=overview_content,
             level=2
         ))
+
+        # Work Completed section (file operations)
+        files_content, files_changed = self._generate_files_section(session)
+        if files_content:
+            sections.append(NotebookSection(
+                heading="Work Completed",
+                content=files_content,
+                level=2
+            ))
 
         # Agents section
         agents_used: list[str] = []
@@ -1128,8 +1326,19 @@ class SessionIntelligenceEngine:
                 level=2
             ))
 
-        # Gather key file changes from agent executions
+        # Learnings section (from database)
+        learnings_content = self._generate_learnings_section(session.project_path)
+        if learnings_content:
+            sections.append(NotebookSection(
+                heading="Project Learnings",
+                content=learnings_content,
+                level=2
+            ))
+
+        # Gather key file changes from agent executions and file operations
         key_changes = self._extract_key_changes(session)
+        # Merge with files from file_operations tracking
+        key_changes = list(set(key_changes) | set(files_changed))[:20]
 
         # Auto-generate tags if not provided
         if tags is None:
@@ -1248,6 +1457,114 @@ class SessionIntelligenceEngine:
 | Decisions Made | {metrics.decisions_made} |
 | Efficiency Score | {metrics.efficiency_score:.1f}% |
 """.strip()
+
+    def _generate_files_section(self, session: Session) -> tuple[str | None, list[str]]:
+        """Generate files section from database.
+
+        Queries file operations for the session and formats as markdown table.
+        Returns tuple of (markdown_content, list_of_changed_files).
+        Returns (None, []) if no database or no file operations found.
+        """
+        changed_files: list[str] = []
+
+        if not self.database:
+            return None, changed_files
+
+        # We need async context to query, return placeholder for sync
+        try:
+            import asyncio
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return None, changed_files
+
+        return None, changed_files
+
+    async def _generate_files_section_async(self, session_id: str) -> tuple[str | None, list[str]]:
+        """Async version: Generate files section from database."""
+        changed_files: list[str] = []
+
+        if not self.database:
+            return None, changed_files
+
+        file_ops = await self.database.query_file_operations_by_session(session_id)
+        if not file_ops:
+            return None, changed_files
+
+        # Group by operation type
+        by_type: dict[str, list[dict]] = {"create": [], "edit": [], "delete": [], "read": []}
+        for op in file_ops:
+            op_type = op.get("operation", "edit").lower()
+            if op_type in by_type:
+                by_type[op_type].append(op)
+            changed_files.append(op.get("file_path", ""))
+
+        lines = ["| Operation | File | Lines | Summary |", "|-----------|------|-------|---------|"]
+
+        for op_type in ["create", "edit", "delete"]:
+            ops = by_type.get(op_type, [])
+            for op in ops:
+                file_path = op.get("file_path", "")
+                lines_info = f"+{op.get('lines_added', 0)}/-{op.get('lines_removed', 0)}"
+                summary = (op.get("summary") or "")[:50]
+                lines.append(f"| {op_type} | `{file_path}` | {lines_info} | {summary} |")
+
+        if len(lines) == 2:  # Only header
+            return None, changed_files
+
+        return "\n".join(lines), changed_files
+
+    def _generate_learnings_section(self, project_path: str) -> str | None:
+        """Generate learnings section from database.
+
+        Queries project-specific learnings and formats as markdown.
+        Returns None if no database or no learnings found.
+        """
+        if not self.database:
+            return None
+
+        # We need async context to query, so return placeholder
+        # The actual query happens in async context of HTTP server
+        try:
+            import asyncio
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return None  # No event loop - skip learnings in sync context
+
+        # Return a placeholder that will be populated async
+        # For sync context, we return None and let HTTP server handle it
+        return None
+
+    async def _generate_learnings_section_async(self, project_path: str) -> str | None:
+        """Async version: Generate learnings section from database."""
+        if not self.database:
+            return None
+
+        learnings = await self.database.query_project_learnings(project_path, limit=10)
+        if not learnings:
+            return None
+
+        lines = ["This project has accumulated the following learnings:\n"]
+
+        for learning in learnings:
+            category = learning.get("category", "general")
+            content = learning.get("learning_content", "")
+            trigger = learning.get("trigger_context", "")
+            success_count = learning.get("success_count", 0)
+
+            category_emoji = {
+                "error_fix": "🔧",
+                "pattern": "📋",
+                "preference": "⚙️",
+                "workflow": "🔄",
+            }.get(category, "💡")
+
+            lines.append(f"- {category_emoji} **{category}**: {content[:100]}{'...' if len(content) > 100 else ''}")
+            if trigger:
+                lines.append(f"  - *Trigger*: {trigger[:80]}{'...' if len(trigger) > 80 else ''}")
+            if success_count > 1:
+                lines.append(f"  - *Used successfully*: {success_count} times")
+
+        return "\n".join(lines)
 
     def _extract_key_changes(self, session: Session) -> list[str]:
         """Extract key file changes from agent executions."""

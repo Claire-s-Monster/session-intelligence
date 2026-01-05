@@ -210,6 +210,47 @@ class LeanMCPInterface:
             ]
         }
 
+        registry["session_track_file_operation"] = {
+            "implementation": self._wrap_tool(self.session_engine.session_track_file_operation),
+            "description": "Track file create/edit/delete operations for session notebook",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "operation": {
+                        "type": "string",
+                        "enum": ["create", "edit", "delete", "read"],
+                        "description": "File operation type"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Path to the file"
+                    },
+                    "lines_added": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Number of lines added"
+                    },
+                    "lines_removed": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Number of lines removed"
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Brief description of changes"
+                    },
+                    "tool_name": {
+                        "type": "string",
+                        "description": "Tool that made the change"
+                    }
+                },
+                "required": ["operation", "file_path"]
+            },
+            "examples": [
+                {"operation": "create", "file_path": "src/module.py", "lines_added": 150}
+            ]
+        }
+
         registry["session_analyze_patterns"] = {
             "implementation": self._wrap_tool(self.session_engine.session_analyze_patterns),
             "description": "Cross-session pattern analysis with ML insights",
@@ -425,7 +466,7 @@ class LeanMCPInterface:
         }
 
         registry["session_create_notebook"] = {
-            "implementation": self._wrap_tool(self.session_engine.session_create_notebook),
+            "implementation": self._wrap_async_tool(self.session_engine.session_create_notebook_async),
             "description": "Generate markdown notebook/summary at session end with searchable content",
             "schema": {
                 "type": "object",
@@ -618,6 +659,18 @@ class LeanMCPInterface:
                 return {"error": str(e), "tool": tool_func.__name__}
         return wrapper
 
+    def _wrap_async_tool(self, async_tool_func):
+        """Wrap async tool function with token limiting and error handling."""
+        @wraps(async_tool_func)
+        async def wrapper(*args, **kwargs):
+            try:
+                result = await async_tool_func(*args, **kwargs)
+                return apply_token_limits(result, async_tool_func.__name__)
+            except Exception as e:
+                logger.error(f"Error in {async_tool_func.__name__}: {e}")
+                return {"error": str(e), "tool": async_tool_func.__name__}
+        return wrapper
+
     def _setup_meta_tools(self):
         """Setup the 3 meta-tools for dynamic discovery."""
 
@@ -679,17 +732,19 @@ class LeanMCPInterface:
             }
 
         @self.app.tool()
-        def execute_tool(tool_name: str, parameters: dict[str, Any]) -> dict[str, Any]:
+        async def execute_tool(tool_name: str, parameters: dict[str, Any]) -> dict[str, Any]:
             """
             Execute session-intelligence tool with parameters using dynamic dispatch.
-            
+
             Args:
                 tool_name: Name of tool to execute
                 parameters: Tool parameters as object
-            
+
             Returns:
                 Tool execution result with standard error handling
             """
+            import inspect
+
             if tool_name not in self.tool_registry:
                 available_tools = list(self.tool_registry.keys())
                 return {
@@ -701,8 +756,11 @@ class LeanMCPInterface:
             tool_func = tool_info["implementation"]
 
             try:
-                # Execute tool with parameters
-                result = tool_func(**parameters)
+                # Execute tool - await if async, call directly if sync
+                if inspect.iscoroutinefunction(tool_func):
+                    result = await tool_func(**parameters)
+                else:
+                    result = tool_func(**parameters)
                 return {
                     "tool": tool_name,
                     "status": "success",

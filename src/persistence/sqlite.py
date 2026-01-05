@@ -102,6 +102,22 @@ class SQLiteBackend(BaseDatabaseBackend):
     CREATE INDEX IF NOT EXISTS idx_notes_session ON notes(session_id);
     CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);
 
+    -- File operations tracking
+    CREATE TABLE IF NOT EXISTS file_operations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        lines_added INTEGER DEFAULT 0,
+        lines_removed INTEGER DEFAULT 0,
+        summary TEXT,
+        tool_name TEXT,
+        FOREIGN KEY (session_id) REFERENCES sessions(id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_file_ops_session ON file_operations(session_id);
+
     -- Agent executions table
     CREATE TABLE IF NOT EXISTS agent_executions (
         id TEXT PRIMARY KEY,
@@ -371,6 +387,9 @@ class SQLiteBackend(BaseDatabaseBackend):
             "DELETE FROM notes WHERE session_id = ?", (session_id,)
         )
         await self._connection.execute(
+            "DELETE FROM file_operations WHERE session_id = ?", (session_id,)
+        )
+        await self._connection.execute(
             "DELETE FROM agent_executions WHERE session_id = ?", (session_id,)
         )
 
@@ -544,6 +563,49 @@ class SQLiteBackend(BaseDatabaseBackend):
             LIMIT ?
         """,
             (date, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    # File operations tracking
+
+    async def save_file_operation(self, file_op_data: dict[str, Any]) -> None:
+        """Save a file operation record."""
+        self._ensure_connected()
+
+        await self._connection.execute(
+            """
+            INSERT INTO file_operations
+            (session_id, timestamp, operation, file_path, lines_added, lines_removed, summary, tool_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+            (
+                file_op_data["session_id"],
+                file_op_data.get("timestamp", self._get_timestamp()),
+                file_op_data["operation"],
+                file_op_data["file_path"],
+                file_op_data.get("lines_added", 0),
+                file_op_data.get("lines_removed", 0),
+                file_op_data.get("summary"),
+                file_op_data.get("tool_name"),
+            ),
+        )
+        await self._connection.commit()
+
+    async def query_file_operations_by_session(
+        self, session_id: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Query file operations for a specific session."""
+        self._ensure_connected()
+
+        cursor = await self._connection.execute(
+            """
+            SELECT * FROM file_operations
+            WHERE session_id = ?
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """,
+            (session_id, limit),
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -1127,7 +1189,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         stats: dict[str, Any] = {"backend": "sqlite", "path": str(self.db_path)}
 
         # Get table counts
-        tables = ["sessions", "decisions", "metrics", "notes", "agent_executions", "mcp_sessions", "session_summaries"]
+        tables = ["sessions", "decisions", "metrics", "notes", "file_operations", "agent_executions", "mcp_sessions", "session_summaries"]
         for table in tables:
             cursor = await self._connection.execute(f"SELECT COUNT(*) FROM {table}")
             row = await cursor.fetchone()

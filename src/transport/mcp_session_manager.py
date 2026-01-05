@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -33,7 +33,7 @@ class MCPSessionManager:
     ) -> str:
         """Create a new MCP session."""
         mcp_session_id = f"mcp-{uuid.uuid4().hex[:16]}"
-        now = datetime.now().isoformat()
+        now = datetime.now(UTC).isoformat()
 
         session_data = {
             "mcp_session_id": mcp_session_id,
@@ -89,7 +89,7 @@ class MCPSessionManager:
 
     async def update_activity(self, mcp_session_id: str) -> None:
         """Update last activity timestamp for session keepalive."""
-        now = datetime.now().isoformat()
+        now = datetime.now(UTC).isoformat()
 
         if mcp_session_id in self._active_sessions:
             self._active_sessions[mcp_session_id]["last_activity"] = now
@@ -135,7 +135,7 @@ class MCPSessionManager:
 
     async def cleanup_inactive_sessions(self, max_age_seconds: int = 3600) -> int:
         """Clean up inactive sessions from memory cache."""
-        now = datetime.now()
+        now = datetime.now(UTC)
         to_remove = []
 
         for session_id, session_data in self._active_sessions.items():

@@ -137,6 +137,18 @@ class CommandExecution(BaseModel):
     success: bool = True
 
 
+class FileOperation(BaseModel):
+    """File operation tracking for session notebooks."""
+    session_id: str
+    timestamp: datetime
+    operation: str  # create, edit, delete, read
+    file_path: str
+    lines_added: int = 0
+    lines_removed: int = 0
+    summary: str | None = None
+    tool_name: str | None = None
+
+
 class Pattern(BaseModel):
     """Detected execution pattern."""
     pattern_id: str

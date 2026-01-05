@@ -106,6 +106,21 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     CREATE INDEX IF NOT EXISTS idx_notes_session ON notes(session_id);
     CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);
 
+    -- File operations tracking
+    CREATE TABLE IF NOT EXISTS file_operations (
+        id SERIAL PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        operation TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        lines_added INTEGER DEFAULT 0,
+        lines_removed INTEGER DEFAULT 0,
+        summary TEXT,
+        tool_name TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_file_ops_session ON file_operations(session_id);
+
     -- Agent executions table
     CREATE TABLE IF NOT EXISTS agent_executions (
         id TEXT PRIMARY KEY,
@@ -587,6 +602,54 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 LIMIT $2
                 """,
                 date,
+                limit,
+            )
+            return [self._from_record(row) for row in rows]
+
+    # File operations tracking
+
+    async def save_file_operation(self, file_op_data: dict[str, Any]) -> None:
+        """Save a file operation record."""
+        self._ensure_connected()
+
+        # Parse timestamp if string
+        timestamp = file_op_data.get("timestamp", self._get_timestamp())
+        if isinstance(timestamp, str):
+            from datetime import datetime
+            timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO file_operations
+                (session_id, timestamp, operation, file_path, lines_added, lines_removed, summary, tool_name)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """,
+                file_op_data["session_id"],
+                timestamp,
+                file_op_data["operation"],
+                file_op_data["file_path"],
+                file_op_data.get("lines_added", 0),
+                file_op_data.get("lines_removed", 0),
+                file_op_data.get("summary"),
+                file_op_data.get("tool_name"),
+            )
+
+    async def query_file_operations_by_session(
+        self, session_id: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
+        """Query file operations for a specific session."""
+        self._ensure_connected()
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT * FROM file_operations
+                WHERE session_id = $1
+                ORDER BY timestamp DESC
+                LIMIT $2
+                """,
+                session_id,
                 limit,
             )
             return [self._from_record(row) for row in rows]

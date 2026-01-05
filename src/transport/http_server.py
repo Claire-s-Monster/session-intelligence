@@ -542,17 +542,23 @@ class HTTPSessionIntelligenceServer:
                     "session_manage_lifecycle", "session_track_execution",
                     "session_log_decision", "session_coordinate_agents",
                     "session_log_learning", "session_find_solution",
-                    "session_update_solution_outcome"
+                    "session_update_solution_outcome", "session_track_file_operation"
                 }
 
                 try:
+                    import inspect
                     # Pre-load sessions from database before session-modifying tools
                     # This ensures decisions/executions can find their session even after
                     # the engine cache is cleared between HTTP requests
                     if target in session_modifying_tools:
                         await self._ensure_sessions_loaded_from_database(request)
 
-                    tool_result = tool_registry[target]["implementation"](**tool_params)
+                    tool_func = tool_registry[target]["implementation"]
+                    # Handle async tool implementations
+                    if inspect.iscoroutinefunction(tool_func):
+                        tool_result = await tool_func(**tool_params)
+                    else:
+                        tool_result = tool_func(**tool_params)
 
                     # Handle knowledge system tools - persist to database
                     database = request.app.state.database
@@ -607,6 +613,22 @@ class HTTPSessionIntelligenceServer:
                             status="updated" if db_result.get("updated") else "error",
                             message=f"Success rate: {db_result.get('success_rate', 0):.2f}" if db_result.get("updated") else db_result.get("error", ""),
                         )
+
+                    elif target == "session_track_file_operation":
+                        # Persist file operation to database
+                        if hasattr(tool_result, 'operation') and tool_result.operation:
+                            op = tool_result.operation
+                            await database.save_file_operation({
+                                "session_id": op.session_id,
+                                "timestamp": op.timestamp.isoformat() if hasattr(op.timestamp, 'isoformat') else str(op.timestamp),
+                                "operation": op.operation_type.value if hasattr(op.operation_type, 'value') else op.operation_type,
+                                "file_path": op.file_path,
+                                "lines_added": op.lines_added or 0,
+                                "lines_removed": op.lines_removed or 0,
+                                "summary": op.description or "",
+                                "tool_name": op.tool_name or "",
+                            })
+                            tool_result = tool_result.model_copy(update={"status": "saved"})
 
                     limited = apply_token_limits(tool_result, target)
                     result = {"tool": target, "status": "success", "result": limited}

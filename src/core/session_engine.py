@@ -1203,9 +1203,20 @@ class SessionIntelligenceEngine:
             if save_to_file and self.use_filesystem:
                 file_path = self._save_notebook_to_file(session_id, notebook)
 
+            # Save to database
+            if save_to_database and self.database:
+                await self.database.save_session_summary({
+                    "session_id": session_id,
+                    "title": title,
+                    "summary_markdown": summary_markdown,
+                    "key_changes": key_changes,
+                    "tags": tags,
+                    "created_at": datetime.now(UTC).isoformat(),
+                })
+
             return NotebookResult(
                 session_id=session_id, status="success", notebook=notebook,
-                markdown_output=summary_markdown, file_path=file_path, search_indexed=False,
+                markdown_output=summary_markdown, file_path=file_path, search_indexed=True,
                 message=f"Notebook created with {len(sections)} sections"
             )
         except Exception as e:

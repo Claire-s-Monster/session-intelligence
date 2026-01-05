@@ -654,6 +654,44 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             )
             return [self._from_record(row) for row in rows]
 
+    # Session summaries (notebooks)
+
+    async def save_session_summary(self, summary_data: dict[str, Any]) -> None:
+        """Save or update a session summary/notebook."""
+        self._ensure_connected()
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO session_summaries
+                (session_id, title, summary_markdown, key_changes, tags, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (session_id) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    summary_markdown = EXCLUDED.summary_markdown,
+                    key_changes = EXCLUDED.key_changes,
+                    tags = EXCLUDED.tags,
+                    created_at = EXCLUDED.created_at
+                """,
+                summary_data["session_id"],
+                summary_data.get("title"),
+                summary_data.get("summary_markdown"),
+                json.dumps(summary_data.get("key_changes", [])),
+                json.dumps(summary_data.get("tags", [])),
+                summary_data.get("created_at", self._get_timestamp()),
+            )
+
+    async def get_session_summary(self, session_id: str) -> dict[str, Any] | None:
+        """Retrieve a session summary by session ID."""
+        self._ensure_connected()
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM session_summaries WHERE session_id = $1",
+                session_id,
+            )
+            return self._from_record(row) if row else None
+
     # Agent execution operations
 
     async def save_agent_execution(self, execution_data: dict[str, Any]) -> None:

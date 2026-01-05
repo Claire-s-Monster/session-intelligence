@@ -645,6 +645,475 @@ class LeanMCPInterface:
             ]
         }
 
+        # ===== AGENT SYSTEM TOOLS =====
+
+        registry["agent_register"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.agent_register),
+            "description": "Register or update an agent in the global agent registry",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Unique agent name (e.g., 'focused-quality-resolver')"
+                    },
+                    "agent_type": {
+                        "type": "string",
+                        "description": "Agent type (e.g., 'focused', 'comprehensive', 'micro', 'meta')"
+                    },
+                    "display_name": {
+                        "type": "string",
+                        "description": "Human-friendly display name"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Brief description of agent's purpose"
+                    },
+                    "metadata": {
+                        "type": "object",
+                        "description": "Additional agent metadata (version, author, etc.)"
+                    },
+                    "capabilities": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of agent capabilities"
+                    }
+                },
+                "required": ["name", "agent_type"]
+            },
+            "examples": [
+                {
+                    "name": "focused-quality-resolver",
+                    "agent_type": "focused",
+                    "display_name": "Quality Resolver",
+                    "description": "Resolves code quality issues",
+                    "capabilities": ["lint-fix", "format", "type-check"]
+                },
+                {
+                    "name": "micro-test-runner",
+                    "agent_type": "micro"
+                }
+            ]
+        }
+
+        registry["agent_get_info"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.agent_get_info),
+            "description": "Get agent information by name or UUID",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "identifier": {
+                        "type": "string",
+                        "description": "Agent name (e.g., 'focused-quality-resolver') or UUID"
+                    }
+                },
+                "required": ["identifier"]
+            },
+            "examples": [
+                {"identifier": "focused-quality-resolver"},
+                {"identifier": "550e8400-e29b-41d4-a716-446655440000"}
+            ]
+        }
+
+        registry["agent_log_decision"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.agent_log_decision),
+            "description": "Log a decision made by an agent with context and reasoning",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {
+                        "type": "string",
+                        "description": "Name of the agent making the decision"
+                    },
+                    "decision_type": {
+                        "type": "string",
+                        "description": "Category of decision (e.g., 'tool_selection', 'error_handling', 'strategy')"
+                    },
+                    "context": {
+                        "type": "string",
+                        "description": "The situation or problem that required a decision"
+                    },
+                    "decision": {
+                        "type": "string",
+                        "description": "The decision that was made"
+                    },
+                    "reasoning": {
+                        "type": "string",
+                        "description": "Why this decision was made"
+                    },
+                    "alternatives": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Other options that were considered"
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "default": 0.8,
+                        "description": "Confidence level in the decision (0.0-1.0)"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tags for categorization and search"
+                    }
+                },
+                "required": ["agent_name", "decision_type", "context", "decision"]
+            },
+            "examples": [
+                {
+                    "agent_name": "focused-quality-resolver",
+                    "decision_type": "tool_selection",
+                    "context": "Multiple lint errors in Python file",
+                    "decision": "Use ruff --fix for auto-fixable issues",
+                    "reasoning": "Ruff is faster and handles most common issues",
+                    "alternatives": ["Manual fixes", "Black + isort separately"],
+                    "confidence": 0.9,
+                    "tags": ["python", "linting"]
+                }
+            ]
+        }
+
+        registry["agent_query_decisions"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.agent_query_decisions),
+            "description": "Query decisions made by an agent with optional filters",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {
+                        "type": "string",
+                        "description": "Name of the agent to query"
+                    },
+                    "decision_type": {
+                        "type": "string",
+                        "description": "Filter by decision type/category"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter by tags"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "Maximum number of results"
+                    }
+                },
+                "required": ["agent_name"]
+            },
+            "examples": [
+                {"agent_name": "focused-quality-resolver"},
+                {
+                    "agent_name": "focused-quality-resolver",
+                    "decision_type": "error_handling",
+                    "limit": 10
+                }
+            ]
+        }
+
+        registry["agent_update_decision_outcome"] = {
+            "implementation": self._wrap_async_tool(
+                self.session_engine.agent_update_decision_outcome
+            ),
+            "description": "Update the outcome of a decision after execution",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "decision_id": {
+                        "type": "string",
+                        "description": "ID of the decision to update"
+                    },
+                    "outcome": {
+                        "type": "string",
+                        "description": "Description of the outcome"
+                    },
+                    "success": {
+                        "type": "boolean",
+                        "description": "Whether the decision led to a successful outcome"
+                    }
+                },
+                "required": ["decision_id", "outcome", "success"]
+            },
+            "examples": [
+                {
+                    "decision_id": "dec_abc123",
+                    "outcome": "All lint errors fixed successfully",
+                    "success": True
+                },
+                {
+                    "decision_id": "dec_xyz789",
+                    "outcome": "Auto-fix introduced new errors, needed manual intervention",
+                    "success": False
+                }
+            ]
+        }
+
+        registry["agent_log_learning"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.agent_log_learning),
+            "description": "Log a learning or knowledge item discovered by an agent",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {
+                        "type": "string",
+                        "description": "Name of the agent logging the learning"
+                    },
+                    "learning_type": {
+                        "type": "string",
+                        "description": "Type of learning (e.g., 'pattern', 'anti_pattern', 'technique', 'preference')"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Brief title for the learning"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Detailed content of the learning"
+                    },
+                    "source_context": {
+                        "type": "string",
+                        "description": "The context where this was learned"
+                    },
+                    "applicability": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Situations where this learning applies"
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "default": 0.8,
+                        "description": "Confidence level in the learning (0.0-1.0)"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tags for categorization and search"
+                    }
+                },
+                "required": ["agent_name", "learning_type", "title", "content"]
+            },
+            "examples": [
+                {
+                    "agent_name": "focused-quality-resolver",
+                    "learning_type": "pattern",
+                    "title": "Ruff handles import sorting",
+                    "content": "Ruff with isort rules enabled can replace separate isort step",
+                    "applicability": ["python-projects", "lint-workflows"],
+                    "confidence": 0.95,
+                    "tags": ["python", "tooling"]
+                }
+            ]
+        }
+
+        registry["agent_query_learnings"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.agent_query_learnings),
+            "description": "Query learnings for an agent with optional filters",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {
+                        "type": "string",
+                        "description": "Name of the agent to query"
+                    },
+                    "learning_type": {
+                        "type": "string",
+                        "description": "Filter by learning type/category"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter by tags"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "Maximum number of results"
+                    }
+                },
+                "required": ["agent_name"]
+            },
+            "examples": [
+                {"agent_name": "focused-quality-resolver"},
+                {
+                    "agent_name": "focused-quality-resolver",
+                    "learning_type": "pattern",
+                    "limit": 5
+                }
+            ]
+        }
+
+        registry["agent_update_learning_outcome"] = {
+            "implementation": self._wrap_async_tool(
+                self.session_engine.agent_update_learning_outcome
+            ),
+            "description": "Update application stats for a learning after it was applied",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "learning_id": {
+                        "type": "string",
+                        "description": "ID of the learning to update"
+                    },
+                    "times_applied_increment": {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "How many times to increment the application count"
+                    },
+                    "new_success_rate": {
+                        "type": "number",
+                        "minimum": 0,
+                        "maximum": 1,
+                        "description": "Updated success rate (0.0-1.0)"
+                    }
+                },
+                "required": ["learning_id"]
+            },
+            "examples": [
+                {"learning_id": "lrn_abc123", "times_applied_increment": 1},
+                {
+                    "learning_id": "lrn_xyz789",
+                    "times_applied_increment": 1,
+                    "new_success_rate": 0.85
+                }
+            ]
+        }
+
+        registry["agent_create_notebook"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.agent_create_notebook),
+            "description": "Create a notebook document for an agent",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {
+                        "type": "string",
+                        "description": "Name of the agent creating the notebook"
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Title of the notebook"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "Markdown content of the notebook"
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "Brief summary for search/display"
+                    },
+                    "notebook_type": {
+                        "type": "string",
+                        "default": "execution",
+                        "description": "Type of notebook (e.g., 'execution', 'analysis', 'retrospective')"
+                    },
+                    "context": {
+                        "type": "object",
+                        "description": "Additional context metadata"
+                    },
+                    "decisions_referenced": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "IDs of decisions referenced in this notebook"
+                    },
+                    "learnings_referenced": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "IDs of learnings referenced in this notebook"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tags for categorization and search"
+                    }
+                },
+                "required": ["agent_name", "title", "content"]
+            },
+            "examples": [
+                {
+                    "agent_name": "focused-quality-resolver",
+                    "title": "Quality Resolution Session - 2025-01-05",
+                    "content": "## Summary\n\nFixed 15 lint issues...",
+                    "summary": "Resolved lint issues in src/module.py",
+                    "notebook_type": "execution",
+                    "tags": ["quality", "python"]
+                }
+            ]
+        }
+
+        registry["agent_query_notebooks"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.agent_query_notebooks),
+            "description": "Query notebooks for an agent with optional filters",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {
+                        "type": "string",
+                        "description": "Name of the agent to query"
+                    },
+                    "notebook_type": {
+                        "type": "string",
+                        "description": "Filter by notebook type"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter by tags"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "Maximum number of results"
+                    }
+                },
+                "required": ["agent_name"]
+            },
+            "examples": [
+                {"agent_name": "focused-quality-resolver"},
+                {
+                    "agent_name": "focused-quality-resolver",
+                    "notebook_type": "execution",
+                    "limit": 5
+                }
+            ]
+        }
+
+        registry["agent_search_all"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.agent_search_all),
+            "description": "Search across all agent data (decisions, learnings, notebooks)",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "agent_name": {
+                        "type": "string",
+                        "description": "Name of the agent to search"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Search query string"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "Maximum results per content type"
+                    }
+                },
+                "required": ["agent_name", "query"]
+            },
+            "examples": [
+                {
+                    "agent_name": "focused-quality-resolver",
+                    "query": "ruff lint"
+                },
+                {
+                    "agent_name": "focused-quality-resolver",
+                    "query": "import sorting",
+                    "limit": 10
+                }
+            ]
+        }
+
         return registry
 
     def _wrap_tool(self, tool_func):

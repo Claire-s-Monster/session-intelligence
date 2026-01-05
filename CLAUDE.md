@@ -487,3 +487,220 @@ The Lean MCP Server framework revolutionizes MCP server development by solving t
 **Key Achievement**: Transform MCP from context-heavy to context-efficient while preserving full functionality through intelligent dynamic discovery.
 
 This framework provides everything needed to implement Lean MCP servers efficiently and reproduce this pattern across any domain or MCP server implementation.
+
+---
+
+## 🚧 Current Implementation: Agent System (In Progress)
+
+### Overview
+
+Adding a dedicated agent system for sub-agents to have their own notebooks, decisions, and learnings that persist across ALL sessions (globally scoped, not project-bound).
+
+**User Requirements Confirmed:**
+- **Agent Identity**: Explicit agent registry with UUID, name, type, metadata
+- **Agent Data**: Notebooks + Decisions + Learnings (all three)
+- **Data Scope**: Global - agent knowledge persists across ALL projects
+- **Hierarchy**: Flat structure - no parent-child tracking
+- **Integration**: Integrated into session-intelligence (not separate server)
+
+### Implementation Progress
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 1 | Add database tables and CRUD to PostgreSQL | ✅ COMPLETED |
+| 2 | Add database tables and CRUD to SQLite | ✅ COMPLETED |
+| 3 | Add Pydantic models for agents | ✅ COMPLETED |
+| 4 | Add agent methods to session_engine.py | ✅ COMPLETED |
+| 5 | Register 11 new tools in lean_mcp_interface.py | ✅ COMPLETED |
+| 6 | Update HTTP server for agent tools | ✅ COMPLETED (no changes needed) |
+| 7 | Restart service and test | ✅ COMPLETED |
+
+### Implementation Complete: 2026-01-05
+
+All 11 agent tools are now functional:
+- `agent_register`, `agent_get_info` - Agent registry
+- `agent_log_decision`, `agent_query_decisions`, `agent_update_decision_outcome` - Decisions
+- `agent_log_learning`, `agent_query_learnings`, `agent_update_learning_outcome` - Learnings
+- `agent_create_notebook`, `agent_query_notebooks` - Notebooks
+- `agent_search_all` - Cross-data search
+
+### Database Schema (Completed)
+
+#### Tables Added (Both PostgreSQL and SQLite)
+
+```sql
+-- AGENTS TABLE (registry)
+CREATE TABLE agents (
+    id TEXT PRIMARY KEY,              -- UUID
+    name TEXT NOT NULL UNIQUE,        -- Agent name (unique constraint)
+    agent_type TEXT NOT NULL,         -- meta, domain, specialized, etc.
+    display_name TEXT,                -- Human-friendly name
+    description TEXT,                 -- Agent description
+    metadata JSONB DEFAULT '{}',      -- Custom metadata
+    capabilities JSONB DEFAULT '[]',  -- Agent capabilities
+    first_seen_at TIMESTAMPTZ,        -- First registration
+    last_active_at TIMESTAMPTZ,       -- Last activity
+    total_executions INTEGER DEFAULT 0,
+    total_decisions INTEGER DEFAULT 0,
+    total_learnings INTEGER DEFAULT 0,
+    total_notebooks INTEGER DEFAULT 0,
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+-- AGENT_DECISIONS TABLE
+CREATE TABLE agent_decisions (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id),
+    decision_type TEXT NOT NULL,      -- architecture, implementation, etc.
+    context TEXT NOT NULL,            -- What triggered decision
+    decision TEXT NOT NULL,           -- The decision made
+    reasoning TEXT,                   -- Why this decision
+    alternatives JSONB DEFAULT '[]',  -- Other options considered
+    confidence REAL DEFAULT 0.8,      -- Confidence score
+    outcome TEXT,                     -- actual outcome after execution
+    outcome_success BOOLEAN,          -- Was decision successful?
+    tags JSONB DEFAULT '[]',
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ
+);
+
+-- AGENT_LEARNINGS TABLE
+CREATE TABLE agent_learnings (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id),
+    learning_type TEXT NOT NULL,      -- pattern, anti-pattern, technique, etc.
+    title TEXT NOT NULL,              -- Brief title
+    content TEXT NOT NULL,            -- Full learning content
+    source_context TEXT,              -- Where this was learned
+    applicability JSONB DEFAULT '[]', -- When to apply
+    confidence REAL DEFAULT 0.8,
+    times_applied INTEGER DEFAULT 0,
+    success_rate REAL DEFAULT 0.0,
+    tags JSONB DEFAULT '[]',
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ
+);
+
+-- AGENT_NOTEBOOKS TABLE
+CREATE TABLE agent_notebooks (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL REFERENCES agents(id),
+    title TEXT NOT NULL,
+    summary TEXT,
+    content TEXT NOT NULL,            -- Full notebook content (markdown)
+    notebook_type TEXT DEFAULT 'execution',  -- execution, research, learning
+    context JSONB DEFAULT '{}',       -- Project, session context
+    decisions_referenced JSONB DEFAULT '[]',
+    learnings_referenced JSONB DEFAULT '[]',
+    tags JSONB DEFAULT '[]',
+    created_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ
+);
+```
+
+#### CRUD Methods Added (12 per backend)
+
+| Method | Purpose |
+|--------|---------|
+| `save_agent()` | Register/update agent |
+| `get_agent(id)` | Get agent by UUID |
+| `get_agent_by_name(name)` | Get agent by unique name |
+| `update_agent_stats()` | Update execution/decision/learning counts |
+| `save_agent_decision()` | Log agent decision |
+| `query_agent_decisions()` | Query with filters |
+| `update_agent_decision_outcome()` | Update decision outcome |
+| `save_agent_learning()` | Log agent learning |
+| `query_agent_learnings()` | Query with filters |
+| `update_agent_learning_outcome()` | Update learning stats |
+| `save_agent_notebook()` | Save agent notebook |
+| `query_agent_notebooks()` | Query with filters |
+
+### Next Steps: Pydantic Models (Step 3)
+
+Add to `src/models/session_models.py`:
+
+```python
+# Agent Models
+class Agent(BaseModel):
+    id: str
+    name: str  # Unique
+    agent_type: str  # meta, domain, specialized
+    display_name: Optional[str] = None
+    description: Optional[str] = None
+    metadata: Dict[str, Any] = {}
+    capabilities: List[str] = []
+
+class AgentRegistrationResult(BaseModel):
+    agent_id: str
+    name: str
+    status: str  # created, updated, exists
+    message: str
+
+class AgentDecision(BaseModel):
+    id: str
+    agent_id: str
+    decision_type: str
+    context: str
+    decision: str
+    reasoning: Optional[str] = None
+    alternatives: List[str] = []
+    confidence: float = 0.8
+    tags: List[str] = []
+
+class AgentLearning(BaseModel):
+    id: str
+    agent_id: str
+    learning_type: str
+    title: str
+    content: str
+    source_context: Optional[str] = None
+    applicability: List[str] = []
+    confidence: float = 0.8
+    tags: List[str] = []
+
+class AgentNotebook(BaseModel):
+    id: str
+    agent_id: str
+    title: str
+    summary: Optional[str] = None
+    content: str
+    notebook_type: str = "execution"
+    tags: List[str] = []
+```
+
+### Next Steps: MCP Tools (Step 5)
+
+11 new tools to register in `lean_mcp_interface.py`:
+
+| Tool | Description |
+|------|-------------|
+| `agent_register` | Register/update agent in registry |
+| `agent_get_info` | Get agent info by name or ID |
+| `agent_log_decision` | Log a decision for an agent |
+| `agent_query_decisions` | Query agent decisions with filters |
+| `agent_update_decision_outcome` | Update decision outcome |
+| `agent_log_learning` | Log a learning for an agent |
+| `agent_query_learnings` | Query agent learnings with filters |
+| `agent_update_learning_outcome` | Update learning application stats |
+| `agent_create_notebook` | Create agent notebook |
+| `agent_query_notebooks` | Query agent notebooks |
+| `agent_search_all` | Search across decisions, learnings, notebooks |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `src/persistence/postgresql.py` | +4 tables, +12 CRUD methods, timestamp parsing fixes |
+| `src/persistence/sqlite.py` | +4 tables, +12 CRUD methods |
+| `src/models/session_models.py` | +8 Pydantic models (Agent, AgentDecision, etc.) |
+| `src/core/session_engine.py` | +11 agent methods with type conversion |
+| `src/lean_mcp_interface.py` | +11 tool registrations (total: 27 tools) |
+| `src/transport/http_server.py` | No changes needed (agent tools are self-persisting) |
+
+### Bugs Fixed During Implementation
+
+1. **Timestamp parsing** - PostgreSQL expects datetime objects, not ISO strings
+   - Fixed in: `save_mcp_session()`, `save_agent()`, `save_agent_decision()`, `save_agent_learning()`, `save_agent_notebook()`
+
+2. **Type conversion in agent_get_info()** - Database returns datetime objects and JSONB as native types
+   - Fixed by converting datetimes to ISO strings and ensuring dict/list types for Pydantic

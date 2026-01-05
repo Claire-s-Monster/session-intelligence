@@ -672,3 +672,109 @@ class SolutionSearchResult(BaseModel):
     solutions: list[ErrorSolution] = Field(default_factory=list)
     project_specific_count: int = 0
     universal_count: int = 0
+
+
+# ===== AGENT SYSTEM MODELS =====
+# Models for sub-agent registry, decisions, learnings, and notebooks
+# These persist globally across ALL sessions (not session-scoped)
+
+
+class Agent(BaseModel):
+    """Agent registry entry for tracking sub-agents globally."""
+    id: str
+    name: str
+    agent_type: str  # meta, domain, specialized, etc.
+    display_name: str | None = None
+    description: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    capabilities: list[str] = Field(default_factory=list)
+    first_seen_at: str | None = None
+    last_active_at: str | None = None
+    total_executions: int = 0
+    total_decisions: int = 0
+    total_learnings: int = 0
+    total_notebooks: int = 0
+    is_active: bool = True
+
+
+class AgentRegistrationResult(BaseModel):
+    """Result of registering an agent."""
+    agent_id: str
+    name: str
+    status: str  # created, updated, exists
+    message: str
+
+
+class AgentDecision(BaseModel):
+    """Agent decision record for tracking decisions globally."""
+    id: str
+    agent_id: str
+    decision_type: str  # architecture, implementation, pattern, etc.
+    context: str
+    decision: str
+    reasoning: str | None = None
+    alternatives: list[str] = Field(default_factory=list)
+    confidence: float = 0.8
+    outcome: str | None = None
+    outcome_success: bool | None = None
+    tags: list[str] = Field(default_factory=list)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class AgentDecisionResult(BaseModel):
+    """Result of logging an agent decision."""
+    decision_id: str
+    agent_id: str
+    status: str
+    message: str
+
+
+class AgentLearning(BaseModel):
+    """Agent learning record for tracking learnings globally."""
+    id: str
+    agent_id: str
+    learning_type: str  # pattern, anti-pattern, technique, preference, etc.
+    title: str
+    content: str
+    source_context: str | None = None
+    applicability: list[str] = Field(default_factory=list)
+    confidence: float = 0.8
+    times_applied: int = 0
+    success_rate: float = 0.0
+    tags: list[str] = Field(default_factory=list)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class AgentLearningResult(BaseModel):
+    """Result of logging an agent learning."""
+    learning_id: str
+    agent_id: str
+    status: str
+    message: str
+
+
+class AgentNotebook(BaseModel):
+    """Agent notebook record for tracking agent-specific notebooks globally."""
+    id: str
+    agent_id: str
+    title: str
+    summary: str | None = None
+    content: str
+    notebook_type: str = "execution"  # execution, research, learning
+    context: dict[str, Any] = Field(default_factory=dict)
+    decisions_referenced: list[str] = Field(default_factory=list)
+    learnings_referenced: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class AgentNotebookResult(BaseModel):
+    """Result of creating an agent notebook."""
+    notebook_id: str
+    agent_id: str
+    title: str
+    status: str
+    message: str

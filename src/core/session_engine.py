@@ -21,7 +21,15 @@ debug_logger.addHandler(debug_handler)
 debug_logger.setLevel(logging.INFO)
 
 from models.session_models import (
+    Agent,
+    AgentDecision,
+    AgentDecisionResult,
     AgentExecution,
+    AgentLearning,
+    AgentLearningResult,
+    AgentNotebook,
+    AgentNotebookResult,
+    AgentRegistrationResult,
     AnalysisScope,
     CommandAnalysisResult,
     CoordinationResult,
@@ -1819,3 +1827,857 @@ class SessionIntelligenceEngine:
             status="pending_update",
             message="Solution outcome recorded. Requires async update to database.",
         )
+
+    # ===== AGENT SYSTEM METHODS =====
+    # These methods manage cross-session agent identity, decisions, learnings, and notebooks.
+    # Agents persist globally (not session-scoped) to accumulate knowledge over time.
+
+    async def agent_register(
+        self,
+        name: str,
+        agent_type: str,
+        display_name: str | None = None,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        capabilities: list[str] | None = None,
+    ) -> AgentRegistrationResult:
+        """
+        Register or update an agent in the global agent registry.
+
+        Creates a new agent if one doesn't exist with this name, otherwise updates
+        the existing agent's metadata and marks it as active.
+
+        Args:
+            name: Unique agent name (e.g., "focused-quality-resolver")
+            agent_type: Agent type category (e.g., "meta", "domain", "specialized")
+            display_name: Human-readable display name
+            description: Agent description and purpose
+            metadata: Additional metadata dict
+            capabilities: List of agent capabilities
+
+        Returns:
+            AgentRegistrationResult with status 'created', 'updated', or 'error'
+        """
+        if not self.database:
+            debug_logger.warning("agent_register called without database")
+            return AgentRegistrationResult(
+                agent_id="",
+                name=name,
+                status="error",
+                message="Database not available for agent registration",
+            )
+
+        try:
+            # Check if agent already exists by name
+            existing_agent = await self.database.get_agent_by_name(name)
+
+            now = datetime.now(UTC).isoformat()
+
+            if existing_agent:
+                # Update existing agent
+                agent_id = existing_agent["id"]
+                agent_data = {
+                    "id": agent_id,
+                    "name": name,
+                    "agent_type": agent_type,
+                    "display_name": display_name or existing_agent.get("display_name"),
+                    "description": description or existing_agent.get("description"),
+                    "metadata": metadata or existing_agent.get("metadata", {}),
+                    "capabilities": capabilities or existing_agent.get("capabilities", []),
+                    "first_seen_at": existing_agent.get("first_seen_at", now),
+                    "last_active_at": now,
+                    "total_executions": existing_agent.get("total_executions", 0),
+                    "total_decisions": existing_agent.get("total_decisions", 0),
+                    "total_learnings": existing_agent.get("total_learnings", 0),
+                    "total_notebooks": existing_agent.get("total_notebooks", 0),
+                    "is_active": True,
+                }
+                await self.database.save_agent(agent_data)
+                debug_logger.info(f"Updated existing agent: {name} ({agent_id})")
+                return AgentRegistrationResult(
+                    agent_id=agent_id,
+                    name=name,
+                    status="updated",
+                    message=f"Agent '{name}' updated successfully",
+                )
+            else:
+                # Create new agent
+                agent_id = str(uuid.uuid4())
+                agent_data = {
+                    "id": agent_id,
+                    "name": name,
+                    "agent_type": agent_type,
+                    "display_name": display_name,
+                    "description": description,
+                    "metadata": metadata or {},
+                    "capabilities": capabilities or [],
+                    "first_seen_at": now,
+                    "last_active_at": now,
+                    "total_executions": 0,
+                    "total_decisions": 0,
+                    "total_learnings": 0,
+                    "total_notebooks": 0,
+                    "is_active": True,
+                }
+                await self.database.save_agent(agent_data)
+                debug_logger.info(f"Created new agent: {name} ({agent_id})")
+                return AgentRegistrationResult(
+                    agent_id=agent_id,
+                    name=name,
+                    status="created",
+                    message=f"Agent '{name}' created successfully",
+                )
+
+        except Exception as e:
+            debug_logger.error(f"Error registering agent {name}: {e}")
+            return AgentRegistrationResult(
+                agent_id="",
+                name=name,
+                status="error",
+                message=f"Failed to register agent: {str(e)}",
+            )
+
+    async def agent_get_info(self, identifier: str) -> Agent | None:
+        """
+        Get agent information by name or UUID.
+
+        Automatically detects whether the identifier is a UUID or a name
+        and queries accordingly.
+
+        Args:
+            identifier: Agent name (e.g., "focused-quality-resolver") or UUID
+
+        Returns:
+            Agent model if found, None otherwise
+        """
+        if not self.database:
+            debug_logger.warning("agent_get_info called without database")
+            return None
+
+        try:
+            # Detect if identifier is a UUID (contains hyphens and matches UUID format)
+            is_uuid = False
+            try:
+                uuid.UUID(identifier)
+                is_uuid = True
+            except ValueError:
+                is_uuid = False
+
+            if is_uuid:
+                agent_data = await self.database.get_agent(identifier)
+            else:
+                agent_data = await self.database.get_agent_by_name(identifier)
+
+            if not agent_data:
+                debug_logger.info(f"Agent not found: {identifier}")
+                return None
+
+            # Convert timestamps to ISO strings if they're datetime objects
+            first_seen = agent_data.get("first_seen_at")
+            if first_seen and hasattr(first_seen, "isoformat"):
+                first_seen = first_seen.isoformat()
+
+            last_active = agent_data.get("last_active_at")
+            if last_active and hasattr(last_active, "isoformat"):
+                last_active = last_active.isoformat()
+
+            # Ensure metadata and capabilities are correct types
+            metadata = agent_data.get("metadata", {})
+            if isinstance(metadata, str):
+                import json
+                metadata = json.loads(metadata)
+
+            capabilities = agent_data.get("capabilities", [])
+            if isinstance(capabilities, str):
+                import json
+                capabilities = json.loads(capabilities)
+
+            # Convert to Agent model
+            return Agent(
+                id=agent_data["id"],
+                name=agent_data["name"],
+                agent_type=agent_data["agent_type"],
+                display_name=agent_data.get("display_name"),
+                description=agent_data.get("description"),
+                metadata=metadata,
+                capabilities=capabilities,
+                first_seen_at=first_seen,
+                last_active_at=last_active,
+                total_executions=agent_data.get("total_executions", 0),
+                total_decisions=agent_data.get("total_decisions", 0),
+                total_learnings=agent_data.get("total_learnings", 0),
+                total_notebooks=agent_data.get("total_notebooks", 0),
+                is_active=agent_data.get("is_active", True),
+            )
+
+        except Exception as e:
+            debug_logger.error(f"Error getting agent {identifier}: {e}")
+            return None
+
+    async def agent_log_decision(
+        self,
+        agent_name: str,
+        decision_type: str,
+        context: str,
+        decision: str,
+        reasoning: str | None = None,
+        alternatives: list[str] | None = None,
+        confidence: float = 0.8,
+        tags: list[str] | None = None,
+    ) -> AgentDecisionResult:
+        """
+        Log a decision made by an agent.
+
+        Creates a decision record associated with the agent and updates
+        the agent's total_decisions counter.
+
+        Args:
+            agent_name: Name of the agent making the decision
+            decision_type: Category of decision (e.g., "architecture", "implementation", "pattern")
+            context: The situation/context that led to this decision
+            decision: The actual decision made
+            reasoning: Explanation of why this decision was made
+            alternatives: Alternative options that were considered
+            confidence: Confidence level (0.0-1.0)
+            tags: Tags for categorization and search
+
+        Returns:
+            AgentDecisionResult with decision_id and status
+        """
+        if not self.database:
+            debug_logger.warning("agent_log_decision called without database")
+            return AgentDecisionResult(
+                decision_id="",
+                agent_id="",
+                status="error",
+                message="Database not available for logging decision",
+            )
+
+        try:
+            # Look up agent by name
+            agent_data = await self.database.get_agent_by_name(agent_name)
+            if not agent_data:
+                return AgentDecisionResult(
+                    decision_id="",
+                    agent_id="",
+                    status="error",
+                    message=f"Agent '{agent_name}' not found. Register the agent first.",
+                )
+
+            agent_id = agent_data["id"]
+            decision_id = str(uuid.uuid4())
+            now = datetime.now(UTC).isoformat()
+
+            # Build decision data for database
+            decision_data = {
+                "id": decision_id,
+                "agent_id": agent_id,
+                "timestamp": now,
+                "description": decision,
+                "rationale": reasoning,
+                "category": decision_type,
+                "impact_level": "medium",  # Default
+                "context": {"situation": context, "alternatives": alternatives or []},
+                "artifacts": tags or [],
+                "source_session_id": self._current_session_id,
+                "source_project_path": str(self.claude_sessions_path.parent) if self.use_filesystem else None,
+            }
+
+            await self.database.save_agent_decision(decision_data)
+
+            # Update agent stats
+            await self.database.update_agent_stats(agent_id, "decisions")
+
+            debug_logger.info(f"Logged decision {decision_id} for agent {agent_name}")
+            return AgentDecisionResult(
+                decision_id=decision_id,
+                agent_id=agent_id,
+                status="success",
+                message=f"Decision logged successfully for agent '{agent_name}'",
+            )
+
+        except Exception as e:
+            debug_logger.error(f"Error logging decision for {agent_name}: {e}")
+            return AgentDecisionResult(
+                decision_id="",
+                agent_id="",
+                status="error",
+                message=f"Failed to log decision: {str(e)}",
+            )
+
+    async def agent_query_decisions(
+        self,
+        agent_name: str,
+        decision_type: str | None = None,
+        tags: list[str] | None = None,
+        limit: int = 20,
+    ) -> list[AgentDecision]:
+        """
+        Query decisions made by an agent.
+
+        Args:
+            agent_name: Name of the agent to query
+            decision_type: Filter by decision type/category
+            tags: Filter by tags (not yet implemented in DB layer)
+            limit: Maximum number of results
+
+        Returns:
+            List of AgentDecision models
+        """
+        if not self.database:
+            debug_logger.warning("agent_query_decisions called without database")
+            return []
+
+        try:
+            # Look up agent by name
+            agent_data = await self.database.get_agent_by_name(agent_name)
+            if not agent_data:
+                debug_logger.info(f"Agent '{agent_name}' not found for decision query")
+                return []
+
+            agent_id = agent_data["id"]
+
+            # Query decisions
+            decision_rows = await self.database.query_agent_decisions(
+                agent_id=agent_id,
+                category=decision_type,
+                limit=limit,
+            )
+
+            # Convert to AgentDecision models
+            decisions = []
+            for row in decision_rows:
+                context_data = row.get("context", {})
+                decisions.append(AgentDecision(
+                    id=row["id"],
+                    agent_id=row["agent_id"],
+                    decision_type=row.get("category", "unknown"),
+                    context=context_data.get("situation", "") if isinstance(context_data, dict) else str(context_data),
+                    decision=row.get("description", ""),
+                    reasoning=row.get("rationale"),
+                    alternatives=context_data.get("alternatives", []) if isinstance(context_data, dict) else [],
+                    confidence=0.8,  # Default, not stored in current schema
+                    outcome=row.get("outcome"),
+                    outcome_success=None,  # Would need to parse outcome
+                    tags=row.get("artifacts", []) if isinstance(row.get("artifacts"), list) else [],
+                    created_at=row.get("timestamp"),
+                    updated_at=row.get("outcome_updated_at"),
+                ))
+
+            return decisions
+
+        except Exception as e:
+            debug_logger.error(f"Error querying decisions for {agent_name}: {e}")
+            return []
+
+    async def agent_update_decision_outcome(
+        self,
+        decision_id: str,
+        outcome: str,
+        success: bool,
+    ) -> dict[str, Any]:
+        """
+        Update the outcome of a decision.
+
+        Args:
+            decision_id: ID of the decision to update
+            outcome: Description of the outcome
+            success: Whether the decision led to a successful outcome
+
+        Returns:
+            Dict with status and message
+        """
+        if not self.database:
+            debug_logger.warning("agent_update_decision_outcome called without database")
+            return {"status": "error", "message": "Database not available"}
+
+        try:
+            notes = f"Success: {success}"
+            await self.database.update_agent_decision_outcome(decision_id, outcome, notes)
+            debug_logger.info(f"Updated decision outcome: {decision_id}")
+            return {
+                "status": "success",
+                "decision_id": decision_id,
+                "outcome": outcome,
+                "success": success,
+            }
+
+        except Exception as e:
+            debug_logger.error(f"Error updating decision outcome {decision_id}: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def agent_log_learning(
+        self,
+        agent_name: str,
+        learning_type: str,
+        title: str,
+        content: str,
+        source_context: str | None = None,
+        applicability: list[str] | None = None,
+        confidence: float = 0.8,
+        tags: list[str] | None = None,
+    ) -> AgentLearningResult:
+        """
+        Log a learning/knowledge item for an agent.
+
+        Creates a learning record that captures patterns, techniques,
+        anti-patterns, or preferences discovered by the agent.
+
+        Args:
+            agent_name: Name of the agent
+            learning_type: Type of learning (e.g., "pattern", "anti-pattern", "technique", "preference")
+            title: Short title for the learning
+            content: Detailed content of the learning
+            source_context: Context where this learning was discovered
+            applicability: List of contexts where this learning applies
+            confidence: Confidence level (0.0-1.0)
+            tags: Tags for categorization and search
+
+        Returns:
+            AgentLearningResult with learning_id and status
+        """
+        if not self.database:
+            debug_logger.warning("agent_log_learning called without database")
+            return AgentLearningResult(
+                learning_id="",
+                agent_id="",
+                status="error",
+                message="Database not available for logging learning",
+            )
+
+        try:
+            # Look up agent by name
+            agent_data = await self.database.get_agent_by_name(agent_name)
+            if not agent_data:
+                return AgentLearningResult(
+                    learning_id="",
+                    agent_id="",
+                    status="error",
+                    message=f"Agent '{agent_name}' not found. Register the agent first.",
+                )
+
+            agent_id = agent_data["id"]
+            learning_id = str(uuid.uuid4())
+            now = datetime.now(UTC).isoformat()
+
+            # Build learning data for database
+            learning_data = {
+                "id": learning_id,
+                "agent_id": agent_id,
+                "category": learning_type,
+                "trigger_context": source_context,
+                "learning_content": f"# {title}\n\n{content}",
+                "applies_to": {
+                    "contexts": applicability or [],
+                    "tags": tags or [],
+                    "confidence": confidence,
+                },
+                "success_count": 1,
+                "failure_count": 0,
+                "source_session_id": self._current_session_id,
+                "source_project_path": str(self.claude_sessions_path.parent) if self.use_filesystem else None,
+                "created_at": now,
+                "updated_at": now,
+            }
+
+            await self.database.save_agent_learning(learning_data)
+
+            # Update agent stats
+            await self.database.update_agent_stats(agent_id, "learnings")
+
+            debug_logger.info(f"Logged learning {learning_id} for agent {agent_name}")
+            return AgentLearningResult(
+                learning_id=learning_id,
+                agent_id=agent_id,
+                status="success",
+                message=f"Learning logged successfully for agent '{agent_name}'",
+            )
+
+        except Exception as e:
+            debug_logger.error(f"Error logging learning for {agent_name}: {e}")
+            return AgentLearningResult(
+                learning_id="",
+                agent_id="",
+                status="error",
+                message=f"Failed to log learning: {str(e)}",
+            )
+
+    async def agent_query_learnings(
+        self,
+        agent_name: str,
+        learning_type: str | None = None,
+        tags: list[str] | None = None,
+        limit: int = 20,
+    ) -> list[AgentLearning]:
+        """
+        Query learnings for an agent.
+
+        Args:
+            agent_name: Name of the agent to query
+            learning_type: Filter by learning type/category
+            tags: Filter by tags (not yet implemented in DB layer)
+            limit: Maximum number of results
+
+        Returns:
+            List of AgentLearning models
+        """
+        if not self.database:
+            debug_logger.warning("agent_query_learnings called without database")
+            return []
+
+        try:
+            # Look up agent by name
+            agent_data = await self.database.get_agent_by_name(agent_name)
+            if not agent_data:
+                debug_logger.info(f"Agent '{agent_name}' not found for learning query")
+                return []
+
+            agent_id = agent_data["id"]
+
+            # Query learnings
+            learning_rows = await self.database.query_agent_learnings(
+                agent_id=agent_id,
+                category=learning_type,
+                limit=limit,
+            )
+
+            # Convert to AgentLearning models
+            learnings = []
+            for row in learning_rows:
+                applies_to = row.get("applies_to", {})
+                content = row.get("learning_content", "")
+
+                # Parse title from content if it starts with "# "
+                title = "Untitled"
+                if content.startswith("# "):
+                    lines = content.split("\n", 1)
+                    title = lines[0][2:].strip()
+                    content = lines[1].strip() if len(lines) > 1 else ""
+
+                # Calculate success rate
+                success_count = row.get("success_count", 1)
+                failure_count = row.get("failure_count", 0)
+                total = success_count + failure_count
+                success_rate = success_count / total if total > 0 else 0.0
+
+                learnings.append(AgentLearning(
+                    id=row["id"],
+                    agent_id=row["agent_id"],
+                    learning_type=row.get("category", "unknown"),
+                    title=title,
+                    content=content,
+                    source_context=row.get("trigger_context"),
+                    applicability=applies_to.get("contexts", []) if isinstance(applies_to, dict) else [],
+                    confidence=applies_to.get("confidence", 0.8) if isinstance(applies_to, dict) else 0.8,
+                    times_applied=success_count + failure_count,
+                    success_rate=success_rate,
+                    tags=applies_to.get("tags", []) if isinstance(applies_to, dict) else [],
+                    created_at=row.get("created_at"),
+                    updated_at=row.get("updated_at"),
+                ))
+
+            return learnings
+
+        except Exception as e:
+            debug_logger.error(f"Error querying learnings for {agent_name}: {e}")
+            return []
+
+    async def agent_update_learning_outcome(
+        self,
+        learning_id: str,
+        times_applied_increment: int = 1,
+        new_success_rate: float | None = None,
+    ) -> dict[str, Any]:
+        """
+        Update the application stats for a learning.
+
+        Args:
+            learning_id: ID of the learning to update
+            times_applied_increment: How many times to increment application count (default 1)
+            new_success_rate: If provided, indicates success (True) or failure (False)
+                            via the sign - positive for success, we use a simpler bool
+
+        Returns:
+            Dict with status and message
+        """
+        if not self.database:
+            debug_logger.warning("agent_update_learning_outcome called without database")
+            return {"status": "error", "message": "Database not available"}
+
+        try:
+            # Determine success based on new_success_rate
+            # If new_success_rate is provided and > 0.5, consider it a success
+            success = new_success_rate is None or (new_success_rate is not None and new_success_rate > 0.5)
+
+            # Apply updates for each increment
+            for _ in range(times_applied_increment):
+                await self.database.update_agent_learning_outcome(learning_id, success)
+
+            debug_logger.info(f"Updated learning outcome: {learning_id}, increments: {times_applied_increment}")
+            return {
+                "status": "success",
+                "learning_id": learning_id,
+                "times_applied_increment": times_applied_increment,
+                "success": success,
+            }
+
+        except Exception as e:
+            debug_logger.error(f"Error updating learning outcome {learning_id}: {e}")
+            return {"status": "error", "message": str(e)}
+
+    async def agent_create_notebook(
+        self,
+        agent_name: str,
+        title: str,
+        content: str,
+        summary: str | None = None,
+        notebook_type: str = "execution",
+        context: dict[str, Any] | None = None,
+        decisions_referenced: list[str] | None = None,
+        learnings_referenced: list[str] | None = None,
+        tags: list[str] | None = None,
+    ) -> AgentNotebookResult:
+        """
+        Create a notebook for an agent.
+
+        Notebooks are narrative documents that capture agent execution summaries,
+        research findings, or accumulated learnings.
+
+        Args:
+            agent_name: Name of the agent
+            title: Notebook title
+            content: Markdown content of the notebook
+            summary: Short summary of the notebook
+            notebook_type: Type of notebook (e.g., "execution", "research", "learning")
+            context: Additional context dict
+            decisions_referenced: List of decision IDs referenced in this notebook
+            learnings_referenced: List of learning IDs referenced in this notebook
+            tags: Tags for categorization and search
+
+        Returns:
+            AgentNotebookResult with notebook_id and status
+        """
+        if not self.database:
+            debug_logger.warning("agent_create_notebook called without database")
+            return AgentNotebookResult(
+                notebook_id="",
+                agent_id="",
+                title=title,
+                status="error",
+                message="Database not available for creating notebook",
+            )
+
+        try:
+            # Look up agent by name
+            agent_data = await self.database.get_agent_by_name(agent_name)
+            if not agent_data:
+                return AgentNotebookResult(
+                    notebook_id="",
+                    agent_id="",
+                    title=title,
+                    status="error",
+                    message=f"Agent '{agent_name}' not found. Register the agent first.",
+                )
+
+            agent_id = agent_data["id"]
+            notebook_id = str(uuid.uuid4())
+            now = datetime.now(UTC).isoformat()
+
+            # Build notebook data for database
+            notebook_data = {
+                "id": notebook_id,
+                "agent_id": agent_id,
+                "title": title,
+                "summary_markdown": content,
+                "notebook_type": notebook_type,
+                "tags": tags or [],
+                "key_insights": [],  # Could extract from content
+                "related_sessions": [self._current_session_id] if self._current_session_id else [],
+                "created_at": now,
+                "updated_at": now,
+            }
+
+            await self.database.save_agent_notebook(notebook_data)
+
+            # Update agent stats
+            await self.database.update_agent_stats(agent_id, "notebooks")
+
+            debug_logger.info(f"Created notebook {notebook_id} for agent {agent_name}")
+            return AgentNotebookResult(
+                notebook_id=notebook_id,
+                agent_id=agent_id,
+                title=title,
+                status="success",
+                message=f"Notebook '{title}' created successfully for agent '{agent_name}'",
+            )
+
+        except Exception as e:
+            debug_logger.error(f"Error creating notebook for {agent_name}: {e}")
+            return AgentNotebookResult(
+                notebook_id="",
+                agent_id="",
+                title=title,
+                status="error",
+                message=f"Failed to create notebook: {str(e)}",
+            )
+
+    async def agent_query_notebooks(
+        self,
+        agent_name: str,
+        notebook_type: str | None = None,
+        tags: list[str] | None = None,
+        limit: int = 10,
+    ) -> list[AgentNotebook]:
+        """
+        Query notebooks for an agent.
+
+        Args:
+            agent_name: Name of the agent to query
+            notebook_type: Filter by notebook type
+            tags: Filter by tags (not yet implemented in DB layer)
+            limit: Maximum number of results
+
+        Returns:
+            List of AgentNotebook models
+        """
+        if not self.database:
+            debug_logger.warning("agent_query_notebooks called without database")
+            return []
+
+        try:
+            # Look up agent by name
+            agent_data = await self.database.get_agent_by_name(agent_name)
+            if not agent_data:
+                debug_logger.info(f"Agent '{agent_name}' not found for notebook query")
+                return []
+
+            agent_id = agent_data["id"]
+
+            # Query notebooks
+            notebook_rows = await self.database.query_agent_notebooks(
+                agent_id=agent_id,
+                notebook_type=notebook_type,
+                limit=limit,
+            )
+
+            # Convert to AgentNotebook models
+            notebooks = []
+            for row in notebook_rows:
+                notebooks.append(AgentNotebook(
+                    id=row["id"],
+                    agent_id=row["agent_id"],
+                    title=row.get("title", "Untitled"),
+                    summary=None,  # Not stored separately
+                    content=row.get("summary_markdown", ""),
+                    notebook_type=row.get("notebook_type", "execution"),
+                    context={},
+                    decisions_referenced=[],  # Not stored in current schema
+                    learnings_referenced=[],  # Not stored in current schema
+                    tags=row.get("tags", []) if isinstance(row.get("tags"), list) else [],
+                    created_at=row.get("created_at"),
+                    updated_at=row.get("updated_at"),
+                ))
+
+            return notebooks
+
+        except Exception as e:
+            debug_logger.error(f"Error querying notebooks for {agent_name}: {e}")
+            return []
+
+    async def agent_search_all(
+        self,
+        agent_name: str,
+        query: str,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        """
+        Search across decisions, learnings, and notebooks for an agent.
+
+        Performs a simple text search across all agent content types.
+
+        Args:
+            agent_name: Name of the agent to search
+            query: Search query string
+            limit: Maximum results per content type
+
+        Returns:
+            Dict with 'decisions', 'learnings', and 'notebooks' lists
+        """
+        if not self.database:
+            debug_logger.warning("agent_search_all called without database")
+            return {"decisions": [], "learnings": [], "notebooks": [], "error": "Database not available"}
+
+        try:
+            # Look up agent by name
+            agent_data = await self.database.get_agent_by_name(agent_name)
+            if not agent_data:
+                return {
+                    "decisions": [],
+                    "learnings": [],
+                    "notebooks": [],
+                    "error": f"Agent '{agent_name}' not found",
+                }
+
+            agent_id = agent_data["id"]
+            query_lower = query.lower()
+
+            # Query all content types and filter by search query
+            # Note: This is a simple in-memory filter; for production, use FTS
+
+            # Search decisions
+            all_decisions = await self.database.query_agent_decisions(agent_id=agent_id, limit=100)
+            matching_decisions = []
+            for d in all_decisions:
+                desc = (d.get("description") or "").lower()
+                rationale = (d.get("rationale") or "").lower()
+                if query_lower in desc or query_lower in rationale:
+                    matching_decisions.append(d)
+                    if len(matching_decisions) >= limit:
+                        break
+
+            # Search learnings
+            all_learnings = await self.database.query_agent_learnings(agent_id=agent_id, limit=100)
+            matching_learnings = []
+            for l in all_learnings:
+                content = (l.get("learning_content") or "").lower()
+                trigger = (l.get("trigger_context") or "").lower()
+                if query_lower in content or query_lower in trigger:
+                    matching_learnings.append(l)
+                    if len(matching_learnings) >= limit:
+                        break
+
+            # Search notebooks
+            all_notebooks = await self.database.query_agent_notebooks(agent_id=agent_id, limit=100)
+            matching_notebooks = []
+            for n in all_notebooks:
+                title = (n.get("title") or "").lower()
+                content = (n.get("summary_markdown") or "").lower()
+                if query_lower in title or query_lower in content:
+                    matching_notebooks.append(n)
+                    if len(matching_notebooks) >= limit:
+                        break
+
+            debug_logger.info(
+                f"Search for '{query}' in agent {agent_name}: "
+                f"{len(matching_decisions)} decisions, {len(matching_learnings)} learnings, "
+                f"{len(matching_notebooks)} notebooks"
+            )
+
+            return {
+                "agent_name": agent_name,
+                "agent_id": agent_id,
+                "query": query,
+                "decisions": matching_decisions,
+                "learnings": matching_learnings,
+                "notebooks": matching_notebooks,
+                "total_matches": len(matching_decisions) + len(matching_learnings) + len(matching_notebooks),
+            }
+
+        except Exception as e:
+            debug_logger.error(f"Error searching agent {agent_name}: {e}")
+            return {
+                "decisions": [],
+                "learnings": [],
+                "notebooks": [],
+                "error": str(e),
+            }

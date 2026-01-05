@@ -237,6 +237,84 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     CREATE INDEX IF NOT EXISTS idx_errors_hash ON error_solutions(error_hash);
     CREATE INDEX IF NOT EXISTS idx_errors_category ON error_solutions(error_category);
     CREATE INDEX IF NOT EXISTS idx_errors_project ON error_solutions(project_path);
+
+    -- AGENTS TABLE (cross-session agent identity and statistics)
+    CREATE TABLE IF NOT EXISTS agents (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        agent_type TEXT NOT NULL,
+        display_name TEXT,
+        description TEXT,
+        metadata JSONB DEFAULT '{}',
+        capabilities JSONB DEFAULT '[]',
+        first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_active_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        total_executions INTEGER DEFAULT 0,
+        total_decisions INTEGER DEFAULT 0,
+        total_learnings INTEGER DEFAULT 0,
+        total_notebooks INTEGER DEFAULT 0,
+        is_active BOOLEAN DEFAULT TRUE
+    );
+    CREATE INDEX IF NOT EXISTS idx_agents_name ON agents(name);
+    CREATE INDEX IF NOT EXISTS idx_agents_type ON agents(agent_type);
+
+    -- AGENT_DECISIONS TABLE (cross-session decision tracking)
+    CREATE TABLE IF NOT EXISTS agent_decisions (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        description TEXT NOT NULL,
+        rationale TEXT,
+        category TEXT,
+        impact_level TEXT DEFAULT 'medium',
+        context JSONB DEFAULT '{}',
+        artifacts JSONB DEFAULT '[]',
+        source_session_id TEXT,
+        source_project_path TEXT,
+        outcome TEXT,
+        outcome_notes TEXT,
+        outcome_updated_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_decisions_agent ON agent_decisions(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_agent_decisions_category ON agent_decisions(category);
+    CREATE INDEX IF NOT EXISTS idx_agent_decisions_timestamp ON agent_decisions(timestamp);
+
+    -- AGENT_LEARNINGS TABLE (cross-session agent learnings)
+    CREATE TABLE IF NOT EXISTS agent_learnings (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        category TEXT NOT NULL,
+        trigger_context TEXT,
+        learning_content TEXT NOT NULL,
+        applies_to JSONB DEFAULT '{}',
+        success_count INTEGER DEFAULT 1,
+        failure_count INTEGER DEFAULT 0,
+        last_used_at TIMESTAMPTZ,
+        source_session_id TEXT,
+        source_project_path TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_learnings_agent ON agent_learnings(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_agent_learnings_category ON agent_learnings(category);
+
+    -- AGENT_NOTEBOOKS TABLE (cross-session agent notebooks/summaries)
+    CREATE TABLE IF NOT EXISTS agent_notebooks (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        summary_markdown TEXT NOT NULL,
+        notebook_type TEXT DEFAULT 'summary',
+        tags JSONB DEFAULT '[]',
+        key_insights JSONB DEFAULT '[]',
+        related_sessions JSONB DEFAULT '[]',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        covers_from TIMESTAMPTZ,
+        covers_to TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_notebooks_agent ON agent_notebooks(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_agent_notebooks_type ON agent_notebooks(notebook_type);
     """
 
     def __init__(self, dsn: str | None = None, **kwargs: Any) -> None:
@@ -660,6 +738,12 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         """Save or update a session summary/notebook."""
         self._ensure_connected()
 
+        # Parse timestamp if string
+        created_at = summary_data.get("created_at", self._get_timestamp())
+        if isinstance(created_at, str):
+            from datetime import datetime
+            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
@@ -678,7 +762,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 summary_data.get("summary_markdown"),
                 json.dumps(summary_data.get("key_changes", [])),
                 json.dumps(summary_data.get("tags", [])),
-                summary_data.get("created_at", self._get_timestamp()),
+                created_at,
             )
 
     async def get_session_summary(self, session_id: str) -> dict[str, Any] | None:
@@ -759,6 +843,17 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         """Save MCP session mapping."""
         self._ensure_connected()
 
+        # Parse timestamps if strings (MCP session manager passes ISO strings)
+        created_at = mcp_session_data.get("created_at", self._get_timestamp())
+        if isinstance(created_at, str):
+            from datetime import datetime
+            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+
+        last_activity = mcp_session_data.get("last_activity", self._get_timestamp())
+        if isinstance(last_activity, str):
+            from datetime import datetime
+            last_activity = datetime.fromisoformat(last_activity.replace("Z", "+00:00"))
+
         async with self._pool.acquire() as conn:
             await conn.execute(
                 """
@@ -772,8 +867,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 """,
                 mcp_session_data["mcp_session_id"],
                 mcp_session_data.get("engine_session_id"),
-                mcp_session_data.get("created_at", self._get_timestamp()),
-                mcp_session_data.get("last_activity", self._get_timestamp()),
+                created_at,
+                last_activity,
                 json.dumps(mcp_session_data.get("client_info", {})),
             )
 
@@ -842,6 +937,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 "notes",
                 "agent_executions",
                 "mcp_sessions",
+                "agents",
+                "agent_decisions",
+                "agent_learnings",
+                "agent_notebooks",
             ]
             for table in tables:
                 row = await conn.fetchrow(f"SELECT COUNT(*) as count FROM {table}")
@@ -1138,3 +1237,415 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             "success_rate": new_rate,
             "updated": True,
         }
+
+    # ===== Agent System Operations =====
+
+    async def save_agent(self, agent_data: dict[str, Any]) -> dict[str, Any]:
+        """Save or update an agent (ON CONFLICT DO UPDATE)."""
+        self._ensure_connected()
+
+        # Parse timestamps if strings
+        first_seen_at = agent_data.get("first_seen_at", self._get_timestamp())
+        if isinstance(first_seen_at, str):
+            from datetime import datetime
+            first_seen_at = datetime.fromisoformat(first_seen_at.replace("Z", "+00:00"))
+
+        last_active_at = agent_data.get("last_active_at", self._get_timestamp())
+        if isinstance(last_active_at, str):
+            from datetime import datetime
+            last_active_at = datetime.fromisoformat(last_active_at.replace("Z", "+00:00"))
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO agents (
+                    id, name, agent_type, display_name, description,
+                    metadata, capabilities, first_seen_at, last_active_at,
+                    total_executions, total_decisions, total_learnings,
+                    total_notebooks, is_active
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                ON CONFLICT (id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    agent_type = EXCLUDED.agent_type,
+                    display_name = EXCLUDED.display_name,
+                    description = EXCLUDED.description,
+                    metadata = EXCLUDED.metadata,
+                    capabilities = EXCLUDED.capabilities,
+                    last_active_at = EXCLUDED.last_active_at,
+                    is_active = EXCLUDED.is_active
+                """,
+                agent_data["id"],
+                agent_data["name"],
+                agent_data["agent_type"],
+                agent_data.get("display_name"),
+                agent_data.get("description"),
+                json.dumps(agent_data.get("metadata", {})),
+                json.dumps(agent_data.get("capabilities", [])),
+                first_seen_at,
+                last_active_at,
+                agent_data.get("total_executions", 0),
+                agent_data.get("total_decisions", 0),
+                agent_data.get("total_learnings", 0),
+                agent_data.get("total_notebooks", 0),
+                agent_data.get("is_active", True),
+            )
+        return {"id": agent_data["id"], "status": "saved"}
+
+    async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
+        """Get agent by ID."""
+        self._ensure_connected()
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM agents WHERE id = $1",
+                agent_id,
+            )
+            return self._from_record(row) if row else None
+
+    async def get_agent_by_name(self, name: str) -> dict[str, Any] | None:
+        """Get agent by unique name."""
+        self._ensure_connected()
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM agents WHERE name = $1",
+                name,
+            )
+            return self._from_record(row) if row else None
+
+    async def update_agent_stats(
+        self, agent_id: str, stat_type: str
+    ) -> dict[str, Any]:
+        """Increment total_* counters for an agent.
+
+        Args:
+            agent_id: The agent's ID
+            stat_type: One of 'executions', 'decisions', 'learnings', 'notebooks'
+
+        Returns:
+            Updated stats dict
+        """
+        self._ensure_connected()
+
+        column_map = {
+            "executions": "total_executions",
+            "decisions": "total_decisions",
+            "learnings": "total_learnings",
+            "notebooks": "total_notebooks",
+        }
+
+        if stat_type not in column_map:
+            return {"error": f"Invalid stat_type: {stat_type}"}
+
+        column = column_map[stat_type]
+
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""
+                UPDATE agents
+                SET {column} = {column} + 1, last_active_at = NOW()
+                WHERE id = $1
+                RETURNING id, {column} as new_value
+                """,
+                agent_id,
+            )
+            if row:
+                return {
+                    "id": agent_id,
+                    "stat_type": stat_type,
+                    "new_value": row["new_value"],
+                    "updated": True,
+                }
+            return {"id": agent_id, "error": "Agent not found"}
+
+    async def save_agent_decision(
+        self, decision_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Save an agent decision."""
+        self._ensure_connected()
+
+        # Parse timestamps if strings
+        timestamp = decision_data.get("timestamp", self._get_timestamp())
+        if isinstance(timestamp, str):
+            from datetime import datetime
+            timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+
+        outcome_updated_at = decision_data.get("outcome_updated_at")
+        if isinstance(outcome_updated_at, str):
+            from datetime import datetime
+            outcome_updated_at = datetime.fromisoformat(outcome_updated_at.replace("Z", "+00:00"))
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO agent_decisions (
+                    id, agent_id, timestamp, description, rationale, category,
+                    impact_level, context, artifacts, source_session_id,
+                    source_project_path, outcome, outcome_notes, outcome_updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                """,
+                decision_data["id"],
+                decision_data["agent_id"],
+                timestamp,
+                decision_data["description"],
+                decision_data.get("rationale"),
+                decision_data.get("category"),
+                decision_data.get("impact_level", "medium"),
+                json.dumps(decision_data.get("context", {})),
+                json.dumps(decision_data.get("artifacts", [])),
+                decision_data.get("source_session_id"),
+                decision_data.get("source_project_path"),
+                decision_data.get("outcome"),
+                decision_data.get("outcome_notes"),
+                outcome_updated_at,
+            )
+        return {"id": decision_data["id"], "status": "saved"}
+
+    async def query_agent_decisions(
+        self,
+        agent_id: str,
+        category: str | None = None,
+        outcome: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Query agent decisions with optional filters."""
+        self._ensure_connected()
+
+        query = "SELECT * FROM agent_decisions WHERE agent_id = $1"
+        params: list[Any] = [agent_id]
+        param_idx = 2
+
+        if category:
+            query += f" AND category = ${param_idx}"
+            params.append(category)
+            param_idx += 1
+        if outcome:
+            query += f" AND outcome = ${param_idx}"
+            params.append(outcome)
+            param_idx += 1
+
+        query += f" ORDER BY timestamp DESC LIMIT ${param_idx}"
+        params.append(limit)
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+            return [self._from_record(row) for row in rows]
+
+    async def update_agent_decision_outcome(
+        self,
+        decision_id: str,
+        outcome: str,
+        notes: str | None = None,
+    ) -> dict[str, Any]:
+        """Update the outcome of an agent decision."""
+        self._ensure_connected()
+
+        async with self._pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE agent_decisions
+                SET outcome = $1, outcome_notes = $2, outcome_updated_at = NOW()
+                WHERE id = $3
+                """,
+                outcome,
+                notes,
+                decision_id,
+            )
+            updated = result == "UPDATE 1"
+        return {"id": decision_id, "outcome": outcome, "updated": updated}
+
+    async def save_agent_learning(
+        self, learning_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Save an agent learning."""
+        self._ensure_connected()
+
+        # Parse timestamps if strings
+        from datetime import datetime as dt
+
+        last_used_at = learning_data.get("last_used_at")
+        if isinstance(last_used_at, str):
+            last_used_at = dt.fromisoformat(last_used_at.replace("Z", "+00:00"))
+
+        created_at = learning_data.get("created_at", self._get_timestamp())
+        if isinstance(created_at, str):
+            created_at = dt.fromisoformat(created_at.replace("Z", "+00:00"))
+
+        updated_at = learning_data.get("updated_at", self._get_timestamp())
+        if isinstance(updated_at, str):
+            updated_at = dt.fromisoformat(updated_at.replace("Z", "+00:00"))
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO agent_learnings (
+                    id, agent_id, category, trigger_context, learning_content,
+                    applies_to, success_count, failure_count, last_used_at,
+                    source_session_id, source_project_path, created_at, updated_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                """,
+                learning_data["id"],
+                learning_data["agent_id"],
+                learning_data["category"],
+                learning_data.get("trigger_context"),
+                learning_data["learning_content"],
+                json.dumps(learning_data.get("applies_to", {})),
+                learning_data.get("success_count", 1),
+                learning_data.get("failure_count", 0),
+                last_used_at,
+                learning_data.get("source_session_id"),
+                learning_data.get("source_project_path"),
+                created_at,
+                updated_at,
+            )
+        return {"id": learning_data["id"], "status": "saved"}
+
+    async def query_agent_learnings(
+        self,
+        agent_id: str,
+        category: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Query agent learnings with optional category filter."""
+        self._ensure_connected()
+
+        if category:
+            query = """
+                SELECT * FROM agent_learnings
+                WHERE agent_id = $1 AND category = $2
+                ORDER BY success_count DESC, updated_at DESC
+                LIMIT $3
+            """
+            params = [agent_id, category, limit]
+        else:
+            query = """
+                SELECT * FROM agent_learnings
+                WHERE agent_id = $1
+                ORDER BY success_count DESC, updated_at DESC
+                LIMIT $2
+            """
+            params = [agent_id, limit]
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+            return [self._from_record(row) for row in rows]
+
+    async def update_agent_learning_outcome(
+        self, learning_id: str, success: bool
+    ) -> dict[str, Any]:
+        """Increment success or failure count for a learning."""
+        self._ensure_connected()
+
+        async with self._pool.acquire() as conn:
+            if success:
+                row = await conn.fetchrow(
+                    """
+                    UPDATE agent_learnings
+                    SET success_count = success_count + 1,
+                        last_used_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = $1
+                    RETURNING id, success_count, failure_count
+                    """,
+                    learning_id,
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    UPDATE agent_learnings
+                    SET failure_count = failure_count + 1,
+                        last_used_at = NOW(),
+                        updated_at = NOW()
+                    WHERE id = $1
+                    RETURNING id, success_count, failure_count
+                    """,
+                    learning_id,
+                )
+
+            if row:
+                return {
+                    "id": learning_id,
+                    "success_count": row["success_count"],
+                    "failure_count": row["failure_count"],
+                    "updated": True,
+                }
+            return {"id": learning_id, "error": "Learning not found"}
+
+    async def save_agent_notebook(
+        self, notebook_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Save an agent notebook."""
+        self._ensure_connected()
+
+        # Parse timestamps if strings
+        from datetime import datetime as dt
+
+        created_at = notebook_data.get("created_at", self._get_timestamp())
+        if isinstance(created_at, str):
+            created_at = dt.fromisoformat(created_at.replace("Z", "+00:00"))
+
+        updated_at = notebook_data.get("updated_at", self._get_timestamp())
+        if isinstance(updated_at, str):
+            updated_at = dt.fromisoformat(updated_at.replace("Z", "+00:00"))
+
+        covers_from = notebook_data.get("covers_from")
+        if isinstance(covers_from, str):
+            covers_from = dt.fromisoformat(covers_from.replace("Z", "+00:00"))
+
+        covers_to = notebook_data.get("covers_to")
+        if isinstance(covers_to, str):
+            covers_to = dt.fromisoformat(covers_to.replace("Z", "+00:00"))
+
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO agent_notebooks (
+                    id, agent_id, title, summary_markdown, notebook_type,
+                    tags, key_insights, related_sessions, created_at,
+                    updated_at, covers_from, covers_to
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                """,
+                notebook_data["id"],
+                notebook_data["agent_id"],
+                notebook_data["title"],
+                notebook_data["summary_markdown"],
+                notebook_data.get("notebook_type", "summary"),
+                json.dumps(notebook_data.get("tags", [])),
+                json.dumps(notebook_data.get("key_insights", [])),
+                json.dumps(notebook_data.get("related_sessions", [])),
+                created_at,
+                updated_at,
+                covers_from,
+                covers_to,
+            )
+        return {"id": notebook_data["id"], "status": "saved"}
+
+    async def query_agent_notebooks(
+        self,
+        agent_id: str,
+        notebook_type: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Query agent notebooks with optional type filter."""
+        self._ensure_connected()
+
+        if notebook_type:
+            query = """
+                SELECT * FROM agent_notebooks
+                WHERE agent_id = $1 AND notebook_type = $2
+                ORDER BY created_at DESC
+                LIMIT $3
+            """
+            params = [agent_id, notebook_type, limit]
+        else:
+            query = """
+                SELECT * FROM agent_notebooks
+                WHERE agent_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2
+            """
+            params = [agent_id, limit]
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
+            return [self._from_record(row) for row in rows]

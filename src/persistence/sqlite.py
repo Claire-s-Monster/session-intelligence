@@ -200,6 +200,87 @@ class SQLiteBackend(BaseDatabaseBackend):
     CREATE INDEX IF NOT EXISTS idx_errors_hash ON error_solutions(error_hash);
     CREATE INDEX IF NOT EXISTS idx_errors_category ON error_solutions(error_category);
     CREATE INDEX IF NOT EXISTS idx_errors_project ON error_solutions(project_path);
+
+    -- AGENTS TABLE (cross-session agent identity)
+    CREATE TABLE IF NOT EXISTS agents (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL UNIQUE,
+        agent_type TEXT NOT NULL,
+        display_name TEXT,
+        description TEXT,
+        metadata TEXT DEFAULT '{}',
+        capabilities TEXT DEFAULT '[]',
+        first_seen_at TEXT NOT NULL,
+        last_active_at TEXT NOT NULL,
+        total_executions INTEGER DEFAULT 0,
+        total_decisions INTEGER DEFAULT 0,
+        total_learnings INTEGER DEFAULT 0,
+        total_notebooks INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1
+    );
+    CREATE INDEX IF NOT EXISTS idx_agents_name ON agents(name);
+    CREATE INDEX IF NOT EXISTS idx_agents_type ON agents(agent_type);
+
+    -- AGENT_DECISIONS TABLE (decisions made by agents)
+    CREATE TABLE IF NOT EXISTS agent_decisions (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        description TEXT NOT NULL,
+        rationale TEXT,
+        category TEXT,
+        impact_level TEXT DEFAULT 'medium',
+        context TEXT DEFAULT '{}',
+        artifacts TEXT DEFAULT '[]',
+        source_session_id TEXT,
+        source_project_path TEXT,
+        outcome TEXT,
+        outcome_notes TEXT,
+        outcome_updated_at TEXT,
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_decisions_agent ON agent_decisions(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_agent_decisions_category ON agent_decisions(category);
+    CREATE INDEX IF NOT EXISTS idx_agent_decisions_timestamp ON agent_decisions(timestamp);
+
+    -- AGENT_LEARNINGS TABLE (knowledge accumulated by agents)
+    CREATE TABLE IF NOT EXISTS agent_learnings (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        category TEXT NOT NULL,
+        trigger_context TEXT,
+        learning_content TEXT NOT NULL,
+        applies_to TEXT DEFAULT '{}',
+        success_count INTEGER DEFAULT 1,
+        failure_count INTEGER DEFAULT 0,
+        last_used_at TEXT,
+        source_session_id TEXT,
+        source_project_path TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_learnings_agent ON agent_learnings(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_agent_learnings_category ON agent_learnings(category);
+
+    -- AGENT_NOTEBOOKS TABLE (summary documents created by agents)
+    CREATE TABLE IF NOT EXISTS agent_notebooks (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        summary_markdown TEXT NOT NULL,
+        notebook_type TEXT DEFAULT 'summary',
+        tags TEXT DEFAULT '[]',
+        key_insights TEXT DEFAULT '[]',
+        related_sessions TEXT DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        covers_from TEXT,
+        covers_to TEXT,
+        FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_notebooks_agent ON agent_notebooks(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_agent_notebooks_type ON agent_notebooks(notebook_type);
     """
 
     # FTS5 schema must be created separately (cannot use IF NOT EXISTS with virtual tables)
@@ -848,6 +929,327 @@ class SQLiteBackend(BaseDatabaseBackend):
             results.append(result)
         return results
 
+    # Agent system operations
+
+    async def save_agent(self, agent_data: dict[str, Any]) -> None:
+        """Save or update an agent."""
+        self._ensure_connected()
+
+        await self._connection.execute(
+            """
+            INSERT OR REPLACE INTO agents
+            (id, name, agent_type, display_name, description, metadata, capabilities,
+             first_seen_at, last_active_at, total_executions, total_decisions,
+             total_learnings, total_notebooks, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                agent_data["id"],
+                agent_data["name"],
+                agent_data["agent_type"],
+                agent_data.get("display_name"),
+                agent_data.get("description"),
+                self._serialize_json(agent_data.get("metadata", {})),
+                self._serialize_json(agent_data.get("capabilities", [])),
+                agent_data.get("first_seen_at", self._get_timestamp()),
+                agent_data.get("last_active_at", self._get_timestamp()),
+                agent_data.get("total_executions", 0),
+                agent_data.get("total_decisions", 0),
+                agent_data.get("total_learnings", 0),
+                agent_data.get("total_notebooks", 0),
+                1 if agent_data.get("is_active", True) else 0,
+            ),
+        )
+        await self._connection.commit()
+
+    async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
+        """Get an agent by ID."""
+        self._ensure_connected()
+
+        cursor = await self._connection.execute(
+            "SELECT * FROM agents WHERE id = ?", (agent_id,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            result = dict(row)
+            result["metadata"] = self._deserialize_json(result.get("metadata"))
+            result["capabilities"] = self._deserialize_json(result.get("capabilities"))
+            result["is_active"] = bool(result.get("is_active", 1))
+            return result
+        return None
+
+    async def get_agent_by_name(self, name: str) -> dict[str, Any] | None:
+        """Get an agent by unique name."""
+        self._ensure_connected()
+
+        cursor = await self._connection.execute(
+            "SELECT * FROM agents WHERE name = ?", (name,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            result = dict(row)
+            result["metadata"] = self._deserialize_json(result.get("metadata"))
+            result["capabilities"] = self._deserialize_json(result.get("capabilities"))
+            result["is_active"] = bool(result.get("is_active", 1))
+            return result
+        return None
+
+    async def update_agent_stats(self, agent_id: str, stat_type: str) -> None:
+        """Increment a stat counter for an agent.
+
+        Args:
+            agent_id: The agent ID
+            stat_type: One of 'executions', 'decisions', 'learnings', 'notebooks'
+        """
+        self._ensure_connected()
+
+        valid_stats = {"executions", "decisions", "learnings", "notebooks"}
+        if stat_type not in valid_stats:
+            raise ValueError(f"Invalid stat_type: {stat_type}. Must be one of {valid_stats}")
+
+        column = f"total_{stat_type}"
+        now = self._get_timestamp()
+
+        await self._connection.execute(
+            f"""
+            UPDATE agents
+            SET {column} = {column} + 1, last_active_at = ?
+            WHERE id = ?
+            """,
+            (now, agent_id),
+        )
+        await self._connection.commit()
+
+    async def save_agent_decision(self, decision_data: dict[str, Any]) -> None:
+        """Save an agent decision."""
+        self._ensure_connected()
+
+        await self._connection.execute(
+            """
+            INSERT INTO agent_decisions
+            (id, agent_id, timestamp, description, rationale, category, impact_level,
+             context, artifacts, source_session_id, source_project_path,
+             outcome, outcome_notes, outcome_updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                decision_data["id"],
+                decision_data["agent_id"],
+                decision_data.get("timestamp", self._get_timestamp()),
+                decision_data["description"],
+                decision_data.get("rationale"),
+                decision_data.get("category"),
+                decision_data.get("impact_level", "medium"),
+                self._serialize_json(decision_data.get("context", {})),
+                self._serialize_json(decision_data.get("artifacts", [])),
+                decision_data.get("source_session_id"),
+                decision_data.get("source_project_path"),
+                decision_data.get("outcome"),
+                decision_data.get("outcome_notes"),
+                decision_data.get("outcome_updated_at"),
+            ),
+        )
+        await self._connection.commit()
+
+    async def query_agent_decisions(
+        self,
+        agent_id: str,
+        category: str | None = None,
+        outcome: str | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Query decisions for an agent with optional filters."""
+        self._ensure_connected()
+
+        query = "SELECT * FROM agent_decisions WHERE agent_id = ?"
+        params: list[Any] = [agent_id]
+
+        if category:
+            query += " AND category = ?"
+            params.append(category)
+        if outcome:
+            query += " AND outcome = ?"
+            params.append(outcome)
+
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = await self._connection.execute(query, params)
+        rows = await cursor.fetchall()
+
+        results = []
+        for row in rows:
+            result = dict(row)
+            result["context"] = self._deserialize_json(result.get("context"))
+            result["artifacts"] = self._deserialize_json(result.get("artifacts"))
+            results.append(result)
+        return results
+
+    async def update_agent_decision_outcome(
+        self, decision_id: str, outcome: str, notes: str | None = None
+    ) -> None:
+        """Update the outcome of an agent decision."""
+        self._ensure_connected()
+
+        now = self._get_timestamp()
+        await self._connection.execute(
+            """
+            UPDATE agent_decisions
+            SET outcome = ?, outcome_notes = ?, outcome_updated_at = ?
+            WHERE id = ?
+            """,
+            (outcome, notes, now, decision_id),
+        )
+        await self._connection.commit()
+
+    async def save_agent_learning(self, learning_data: dict[str, Any]) -> None:
+        """Save an agent learning."""
+        self._ensure_connected()
+
+        now = self._get_timestamp()
+        await self._connection.execute(
+            """
+            INSERT INTO agent_learnings
+            (id, agent_id, category, trigger_context, learning_content, applies_to,
+             success_count, failure_count, last_used_at, source_session_id,
+             source_project_path, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                learning_data["id"],
+                learning_data["agent_id"],
+                learning_data["category"],
+                learning_data.get("trigger_context"),
+                learning_data["learning_content"],
+                self._serialize_json(learning_data.get("applies_to", {})),
+                learning_data.get("success_count", 1),
+                learning_data.get("failure_count", 0),
+                learning_data.get("last_used_at"),
+                learning_data.get("source_session_id"),
+                learning_data.get("source_project_path"),
+                learning_data.get("created_at", now),
+                learning_data.get("updated_at", now),
+            ),
+        )
+        await self._connection.commit()
+
+    async def query_agent_learnings(
+        self,
+        agent_id: str,
+        category: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Query learnings for an agent with optional category filter."""
+        self._ensure_connected()
+
+        query = "SELECT * FROM agent_learnings WHERE agent_id = ?"
+        params: list[Any] = [agent_id]
+
+        if category:
+            query += " AND category = ?"
+            params.append(category)
+
+        query += " ORDER BY success_count DESC, updated_at DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = await self._connection.execute(query, params)
+        rows = await cursor.fetchall()
+
+        results = []
+        for row in rows:
+            result = dict(row)
+            result["applies_to"] = self._deserialize_json(result.get("applies_to"))
+            results.append(result)
+        return results
+
+    async def update_agent_learning_outcome(
+        self, learning_id: str, success: bool
+    ) -> None:
+        """Increment success or failure count for an agent learning."""
+        self._ensure_connected()
+
+        now = self._get_timestamp()
+        if success:
+            await self._connection.execute(
+                """
+                UPDATE agent_learnings
+                SET success_count = success_count + 1, last_used_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, now, learning_id),
+            )
+        else:
+            await self._connection.execute(
+                """
+                UPDATE agent_learnings
+                SET failure_count = failure_count + 1, last_used_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (now, now, learning_id),
+            )
+        await self._connection.commit()
+
+    async def save_agent_notebook(self, notebook_data: dict[str, Any]) -> None:
+        """Save an agent notebook."""
+        self._ensure_connected()
+
+        now = self._get_timestamp()
+        await self._connection.execute(
+            """
+            INSERT INTO agent_notebooks
+            (id, agent_id, title, summary_markdown, notebook_type, tags,
+             key_insights, related_sessions, created_at, updated_at,
+             covers_from, covers_to)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                notebook_data["id"],
+                notebook_data["agent_id"],
+                notebook_data["title"],
+                notebook_data["summary_markdown"],
+                notebook_data.get("notebook_type", "summary"),
+                self._serialize_json(notebook_data.get("tags", [])),
+                self._serialize_json(notebook_data.get("key_insights", [])),
+                self._serialize_json(notebook_data.get("related_sessions", [])),
+                notebook_data.get("created_at", now),
+                notebook_data.get("updated_at", now),
+                notebook_data.get("covers_from"),
+                notebook_data.get("covers_to"),
+            ),
+        )
+        await self._connection.commit()
+
+    async def query_agent_notebooks(
+        self,
+        agent_id: str,
+        notebook_type: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Query notebooks for an agent with optional type filter."""
+        self._ensure_connected()
+
+        query = "SELECT * FROM agent_notebooks WHERE agent_id = ?"
+        params: list[Any] = [agent_id]
+
+        if notebook_type:
+            query += " AND notebook_type = ?"
+            params.append(notebook_type)
+
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
+        cursor = await self._connection.execute(query, params)
+        rows = await cursor.fetchall()
+
+        results = []
+        for row in rows:
+            result = dict(row)
+            result["tags"] = self._deserialize_json(result.get("tags"))
+            result["key_insights"] = self._deserialize_json(result.get("key_insights"))
+            result["related_sessions"] = self._deserialize_json(result.get("related_sessions"))
+            results.append(result)
+        return results
+
     # Full-text search operations
 
     async def _update_search_index(self, session_id: str) -> None:
@@ -1223,7 +1625,11 @@ class SQLiteBackend(BaseDatabaseBackend):
         stats: dict[str, Any] = {"backend": "sqlite", "path": str(self.db_path)}
 
         # Get table counts
-        tables = ["sessions", "decisions", "metrics", "notes", "file_operations", "agent_executions", "mcp_sessions", "session_summaries"]
+        tables = [
+            "sessions", "decisions", "metrics", "notes", "file_operations",
+            "agent_executions", "mcp_sessions", "session_summaries",
+            "agents", "agent_decisions", "agent_learnings", "agent_notebooks",
+        ]
         for table in tables:
             cursor = await self._connection.execute(f"SELECT COUNT(*) FROM {table}")
             row = await cursor.fetchone()

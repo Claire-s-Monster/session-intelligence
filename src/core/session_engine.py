@@ -2147,7 +2147,34 @@ class SessionIntelligenceEngine:
             # Convert to AgentDecision models
             decisions = []
             for row in decision_rows:
-                context_data = row.get("context", {})
+                # Parse context - may be JSON string from PostgreSQL
+                context_raw = row.get("context", {})
+                if isinstance(context_raw, str):
+                    try:
+                        context_data = json.loads(context_raw)
+                    except (json.JSONDecodeError, TypeError):
+                        context_data = {"situation": context_raw}
+                else:
+                    context_data = context_raw if isinstance(context_raw, dict) else {}
+
+                # Parse artifacts - may be JSON string from PostgreSQL
+                artifacts_raw = row.get("artifacts", [])
+                if isinstance(artifacts_raw, str):
+                    try:
+                        artifacts = json.loads(artifacts_raw)
+                    except (json.JSONDecodeError, TypeError):
+                        artifacts = []
+                else:
+                    artifacts = artifacts_raw if isinstance(artifacts_raw, list) else []
+
+                # Convert datetime to ISO string if needed
+                created_at = row.get("timestamp")
+                if hasattr(created_at, 'isoformat'):
+                    created_at = created_at.isoformat()
+                updated_at = row.get("outcome_updated_at")
+                if hasattr(updated_at, 'isoformat'):
+                    updated_at = updated_at.isoformat()
+
                 decisions.append(AgentDecision(
                     id=row["id"],
                     agent_id=row["agent_id"],
@@ -2159,9 +2186,9 @@ class SessionIntelligenceEngine:
                     confidence=0.8,  # Default, not stored in current schema
                     outcome=row.get("outcome"),
                     outcome_success=None,  # Would need to parse outcome
-                    tags=row.get("artifacts", []) if isinstance(row.get("artifacts"), list) else [],
-                    created_at=row.get("timestamp"),
-                    updated_at=row.get("outcome_updated_at"),
+                    tags=artifacts,
+                    created_at=created_at,
+                    updated_at=updated_at,
                 ))
 
             return decisions
@@ -2344,7 +2371,16 @@ class SessionIntelligenceEngine:
             # Convert to AgentLearning models
             learnings = []
             for row in learning_rows:
-                applies_to = row.get("applies_to", {})
+                # Parse applies_to - may be JSON string from PostgreSQL
+                applies_to_raw = row.get("applies_to", {})
+                if isinstance(applies_to_raw, str):
+                    try:
+                        applies_to = json.loads(applies_to_raw)
+                    except (json.JSONDecodeError, TypeError):
+                        applies_to = {}
+                else:
+                    applies_to = applies_to_raw if isinstance(applies_to_raw, dict) else {}
+
                 content = row.get("learning_content", "")
 
                 # Parse title from content if it starts with "# "
@@ -2360,6 +2396,14 @@ class SessionIntelligenceEngine:
                 total = success_count + failure_count
                 success_rate = success_count / total if total > 0 else 0.0
 
+                # Convert datetime to ISO string if needed
+                created_at = row.get("created_at")
+                if hasattr(created_at, 'isoformat'):
+                    created_at = created_at.isoformat()
+                updated_at = row.get("updated_at")
+                if hasattr(updated_at, 'isoformat'):
+                    updated_at = updated_at.isoformat()
+
                 learnings.append(AgentLearning(
                     id=row["id"],
                     agent_id=row["agent_id"],
@@ -2372,8 +2416,8 @@ class SessionIntelligenceEngine:
                     times_applied=success_count + failure_count,
                     success_rate=success_rate,
                     tags=applies_to.get("tags", []) if isinstance(applies_to, dict) else [],
-                    created_at=row.get("created_at"),
-                    updated_at=row.get("updated_at"),
+                    created_at=created_at,
+                    updated_at=updated_at,
                 ))
 
             return learnings

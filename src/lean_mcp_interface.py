@@ -1148,13 +1148,61 @@ class LeanMCPInterface:
             pattern: str = ""
         ) -> dict[str, Any]:
             """
-            Tools available with session-intelligence MCP server.
-            
+            [STEP 1] Discover available tools in the session-intelligence MCP server.
+
+            USE WHEN:
+            - You need to find session management operations (create, resume, finalize)
+            - You want to log decisions, learnings, or track agent execution
+            - You need to search across session notebooks or agent knowledge
+            - You're exploring what session/agent operations are available
+            - You don't know the exact tool name for an operation
+
+            COMMON TASKS:
+            - Session lifecycle: session_manage_lifecycle, session_monitor_health
+            - Execution tracking: session_track_execution, session_track_file_operation
+            - Decision/learning: session_log_decision, session_log_learning, agent_log_decision
+            - Agent registry: agent_register, agent_get_info, agent_query_decisions
+            - Search: session_search, agent_search_all
+
+            This lean interface provides 28 tools across 3 domains (session, agent, knowledge),
+            saving ~25k tokens vs loading all tool schemas upfront.
+
+            WORKFLOW:
+            1. discover_tools(pattern) <- YOU ARE HERE
+            2. get_tool_spec(tool_name) <- Get schema/parameters for a specific tool
+            3. execute_tool(tool_name, params) <- Execute the operation
+
             Args:
-                pattern: Filter by name pattern (substring match, empty string for all tools)
-            
+                pattern: Filter tools by name (e.g., "session", "agent", "learning")
+                         Leave empty "" to see all 28 tools
+
             Returns:
-                Compact tool list with names and brief descriptions
+                Dictionary containing:
+                - available_tools: List of tools, each with:
+                  * name: Tool name to use in get_tool_spec() or execute_tool()
+                  * description: What the tool does
+                - total_tools: Total tools in registry (28)
+                - filtered_count: How many matched your pattern
+
+                Example output for discover_tools("session"):
+                {
+                  "available_tools": [
+                    {"name": "session_manage_lifecycle", "description": "Complete session lifecycle management with recovery"},
+                    {"name": "session_track_execution", "description": "Track agent execution with pattern detection"},
+                    {"name": "session_log_decision", "description": "Log decisions with context and impact analysis"}
+                  ],
+                  "filtered_count": 12,
+                  "total_tools": 28
+                }
+
+            Examples:
+                discover_tools("")              # List all 28 tools
+                discover_tools("session")       # Find session management tools (12 tools)
+                discover_tools("agent")         # Find agent registry tools (11 tools)
+                discover_tools("learning")      # Find learning/knowledge tools
+
+            MISSING TOOL? If you need an operation that's not available:
+            File an issue at https://github.com/MementoRC/session-intelligence
             """
             tools = []
 
@@ -1177,13 +1225,76 @@ class LeanMCPInterface:
         @self.app.tool()
         def get_tool_spec(tool_name: str) -> dict[str, Any]:
             """
-            Get full specification for specific session-intelligence tool including schema and examples.
-            
+            [STEP 2] Get detailed schema and parameters for a specific tool.
+
+            USE WHEN:
+            - You found a tool via discover_tools() but need to see its parameters
+            - You need to understand required vs optional parameters before calling execute_tool()
+            - You want to see parameter types and valid values (enums, defaults, etc.)
+            - You're debugging parameter validation errors from execute_tool()
+
+            DON'T SKIP THIS STEP! Calling execute_tool() without checking the schema first
+            will likely fail parameter validation. This tool shows you exactly what to pass.
+
+            WORKFLOW:
+            1. discover_tools(pattern) <- Already done
+            2. get_tool_spec(tool_name) <- YOU ARE HERE
+            3. execute_tool(tool_name, params) <- Execute with correct parameters
+
             Args:
-                tool_name: Name of tool to get specification for
-            
+                tool_name: Exact tool name from discover_tools() output
+                           Examples: "session_manage_lifecycle", "agent_log_decision"
+
             Returns:
-                Complete tool specification with schema, examples, and usage notes
+                Dictionary containing:
+                - name: Tool name (same as input)
+                - description: What the tool does
+                - schema: JSON Schema with:
+                  * properties: Each parameter's type, description, default value
+                  * required: List of required parameters
+                - examples: Usage examples showing common parameter combinations
+
+                Example output for get_tool_spec("session_manage_lifecycle"):
+                {
+                  "name": "session_manage_lifecycle",
+                  "description": "Complete session lifecycle management with recovery",
+                  "schema": {
+                    "properties": {
+                      "operation": {"type": "string", "enum": ["create", "resume", "finalize", "validate"]},
+                      "mode": {"type": "string", "enum": ["local", "remote", "hybrid", "auto"], "default": "local"},
+                      "project_name": {"type": "string", "description": "Project context (optional)"}
+                    },
+                    "required": ["operation"]
+                  },
+                  "examples": [
+                    {"operation": "create", "project_name": "my-project"},
+                    {"operation": "resume", "mode": "hybrid"}
+                  ]
+                }
+
+                Example for get_tool_spec("agent_log_decision"):
+                {
+                  "name": "agent_log_decision",
+                  "schema": {
+                    "properties": {
+                      "agent_name": {"type": "string"},
+                      "decision_type": {"type": "string"},
+                      "context": {"type": "string"},
+                      "decision": {"type": "string"},
+                      "confidence": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.8}
+                    },
+                    "required": ["agent_name", "decision_type", "context", "decision"]
+                  }
+                }
+
+            Examples:
+                get_tool_spec("session_manage_lifecycle")  # See lifecycle operations
+                get_tool_spec("agent_log_decision")        # See decision logging params
+                get_tool_spec("session_search")            # See search query options
+
+            TOOL NOT FOUND? Use discover_tools() first to find available tools.
+            If the tool should exist but doesn't, file a feature request at:
+            https://github.com/MementoRC/session-intelligence
             """
             if tool_name not in self.tool_registry:
                 available_tools = list(self.tool_registry.keys())
@@ -1203,14 +1314,70 @@ class LeanMCPInterface:
         @self.app.tool()
         async def execute_tool(tool_name: str, parameters: dict[str, Any]) -> dict[str, Any]:
             """
-            Execute session-intelligence tool with parameters using dynamic dispatch.
+            [STEP 3] Execute a session-intelligence operation.
+
+            USE WHEN: You have the tool name and parameters ready to perform an operation.
+
+            WORKFLOW:
+            1. discover_tools(pattern) <- Found the right tool
+            2. get_tool_spec(tool_name) <- Got the parameter schema
+            3. execute_tool(tool_name, params) <- YOU ARE HERE
+
+            VALIDATION: Parameters are validated against the tool schema before execution.
+            Unexpected parameters will be rejected with an error listing valid parameters.
 
             Args:
-                tool_name: Name of tool to execute
-                parameters: Tool parameters as object
+                tool_name: Exact tool name from discover_tools() or get_tool_spec()
+                parameters: Dictionary of parameters matching the tool schema
+                           Use get_tool_spec() if unsure what parameters are needed
 
             Returns:
-                Tool execution result with standard error handling
+                SUCCESS: Tool execution result containing:
+                - tool: Name of tool that was executed
+                - status: "success"
+                - result: Tool-specific output, varies by tool:
+                  * session_manage_lifecycle: {"session_id": "...", "status": "active", "mode": "local"}
+                  * session_log_decision: {"decision_id": "dec_abc123", "logged": true}
+                  * session_log_learning: {"learning_id": "learn_xyz789", "category": "error_fix"}
+                  * agent_register: {"agent_id": "uuid", "name": "agent-name", "registered": true}
+                  * session_search: {"results": [...], "total_matches": 15}
+                  * session_get_dashboard: {"overview": {...}, "health": {...}, "metrics": {...}}
+
+                ERROR: Validation/execution failure with:
+                - tool: Name of tool that failed
+                - status: "error"
+                - error: Error message explaining what went wrong
+                - (if tool not found): available_tools list
+
+            Examples:
+                # Create a new session
+                execute_tool("session_manage_lifecycle", {
+                    "operation": "create",
+                    "project_name": "my-project"
+                })
+
+                # Log a decision made by an agent
+                execute_tool("agent_log_decision", {
+                    "agent_name": "focused-quality-resolver",
+                    "decision_type": "tool_selection",
+                    "context": "Multiple lint errors found",
+                    "decision": "Use ruff --fix for auto-fixable issues",
+                    "confidence": 0.9
+                })
+
+                # Search across session notebooks
+                execute_tool("session_search", {
+                    "query": "authentication bug fix",
+                    "search_type": "fulltext",
+                    "limit": 10
+                })
+
+            DON'T KNOW WHAT TOOL TO USE?
+            Call discover_tools(pattern) first to find the right tool for your task.
+
+            FOUND A BUG OR MISSING FEATURE?
+            File an issue at https://github.com/MementoRC/session-intelligence
+            Include: tool name, parameters used, error message, expected vs actual behavior
             """
             import inspect
 

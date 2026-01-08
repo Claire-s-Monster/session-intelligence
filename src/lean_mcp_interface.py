@@ -1143,7 +1143,13 @@ class LeanMCPInterface:
     def _setup_meta_tools(self):
         """Setup the 3 meta-tools for dynamic discovery."""
 
-        @self.app.tool()
+        @self.app.tool(
+            description=(
+                "Discover session lifecycle, decision logging, agent tracking, "
+                "and learning tools (28 total). "
+                "USE WHEN: starting sessions, logging decisions, searching learnings"
+            )
+        )
         def discover_tools(
             pattern: str = ""
         ) -> dict[str, Any]:
@@ -1222,7 +1228,12 @@ class LeanMCPInterface:
                 "filtered_count": len(tools)
             }
 
-        @self.app.tool()
+        @self.app.tool(
+            description=(
+                "Get parameter schema for session/agent/learning tools. "
+                "USE WHEN: need exact parameters, debugging validation errors"
+            )
+        )
         def get_tool_spec(tool_name: str) -> dict[str, Any]:
             """
             [STEP 2] Get detailed schema and parameters for a specific tool.
@@ -1311,7 +1322,12 @@ class LeanMCPInterface:
                 "examples": tool_info["examples"]
             }
 
-        @self.app.tool()
+        @self.app.tool(
+            description=(
+                "Execute session management, agent tracking, or knowledge operations. "
+                "Returns domain-specific results for sessions, agents, and learnings"
+            )
+        )
         async def execute_tool(tool_name: str, parameters: dict[str, Any]) -> dict[str, Any]:
             """
             [STEP 3] Execute a session-intelligence operation.

@@ -37,6 +37,7 @@ class DataclassJSONEncoder(json.JSONEncoder):
             return obj.__dict__
         return super().default(obj)
 
+
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -63,9 +64,7 @@ class NotificationManager:
     def __init__(self) -> None:
         self._subscribers: dict[str, asyncio.Queue[dict[str, Any]]] = {}
 
-    async def subscribe(
-        self, mcp_session_id: str
-    ) -> AsyncGenerator[dict[str, Any], None]:
+    async def subscribe(self, mcp_session_id: str) -> AsyncGenerator[dict[str, Any], None]:
         """Subscribe to notifications for an MCP session."""
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._subscribers[mcp_session_id] = queue
@@ -78,16 +77,16 @@ class NotificationManager:
             if mcp_session_id in self._subscribers:
                 del self._subscribers[mcp_session_id]
 
-    async def notify(
-        self, mcp_session_id: str, event_type: str, data: dict[str, Any]
-    ) -> None:
+    async def notify(self, mcp_session_id: str, event_type: str, data: dict[str, Any]) -> None:
         """Send notification to a specific MCP session."""
         if mcp_session_id in self._subscribers:
-            await self._subscribers[mcp_session_id].put({
-                "type": event_type,
-                "data": data,
-                "timestamp": datetime.now().isoformat(),
-            })
+            await self._subscribers[mcp_session_id].put(
+                {
+                    "type": event_type,
+                    "data": data,
+                    "timestamp": datetime.now().isoformat(),
+                }
+            )
 
     async def broadcast(self, event_type: str, data: dict[str, Any]) -> None:
         """Broadcast notification to all connected sessions."""
@@ -130,12 +129,15 @@ class HTTPSessionIntelligenceServer:
         # For backwards compatibility, db_path overrides config
         if db_path:
             from pathlib import Path
+
             self.db_config.sqlite_path = Path(db_path)
             self.db_config.backend = "sqlite"
 
         # Display path for logging
         if self.db_config.backend == "postgresql":
-            self.db_path = self.db_config.postgresql_dsn or "postgresql://localhost/session_intelligence"
+            self.db_path = (
+                self.db_config.postgresql_dsn or "postgresql://localhost/session_intelligence"
+            )
         else:
             self.db_path = str(self.db_config.sqlite_path or DEFAULT_DATA_DIR / "sessions.db")
 
@@ -163,13 +165,14 @@ class HTTPSessionIntelligenceServer:
         )
 
         # Session continuity: Check for active session for this project
-        active_session = await self.database.get_active_session_for_project(
-            self.repository_path
-        )
+        active_session = await self.database.get_active_session_for_project(self.repository_path)
         if active_session:
-            logger.info(f"Resuming active session: {active_session['id']} for {self.repository_path}")
+            logger.info(
+                f"Resuming active session: {active_session['id']} for {self.repository_path}"
+            )
             # Load session into engine cache for continuity
             from models.session_models import Session
+
             try:
                 session = Session.model_validate(active_session)
                 self.session_engine.session_cache[session.id] = session
@@ -177,7 +180,9 @@ class HTTPSessionIntelligenceServer:
             except Exception as e:
                 logger.warning(f"Could not restore session from database: {e}")
         else:
-            logger.info(f"No active session found for {self.repository_path}, will create new on demand")
+            logger.info(
+                f"No active session found for {self.repository_path}, will create new on demand"
+            )
 
         self.lean_interface = LeanMCPInterface(self.session_engine)
         self.mcp_session_manager = MCPSessionManager(self.database)
@@ -208,9 +213,7 @@ class HTTPSessionIntelligenceServer:
         if self.security_config.localhost_only:
             app.add_middleware(LocalhostOnlyMiddleware)
 
-        app.add_middleware(
-            get_origin_validation_middleware(self.security_config.allowed_origins)
-        )
+        app.add_middleware(get_origin_validation_middleware(self.security_config.allowed_origins))
 
         app.add_middleware(
             CORSMiddleware,
@@ -245,7 +248,11 @@ class HTTPSessionIntelligenceServer:
             except json.JSONDecodeError:
                 return JSONResponse(
                     status_code=400,
-                    content={"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}},
+                    content={
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32700, "message": "Parse error"},
+                    },
                 )
 
             method = body.get("method")
@@ -265,7 +272,11 @@ class HTTPSessionIntelligenceServer:
                         "id": req_id,
                         "result": {
                             "protocolVersion": self.MCP_PROTOCOL_VERSION,
-                            "capabilities": {"resources": {"subscribe": True, "listChanged": True}, "tools": {"listChanged": True}, "prompts": {"listChanged": True}},
+                            "capabilities": {
+                                "resources": {"subscribe": True, "listChanged": True},
+                                "tools": {"listChanged": True},
+                                "prompts": {"listChanged": True},
+                            },
                             "serverInfo": {"name": "session-intelligence", "version": "1.0.0"},
                         },
                     }
@@ -277,25 +288,39 @@ class HTTPSessionIntelligenceServer:
             if not mcp_session_id:
                 return JSONResponse(
                     status_code=400,
-                    content={"jsonrpc": "2.0", "id": req_id, "error": {"code": -32600, "message": "Missing MCP-Session-Id"}},
+                    content={
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32600, "message": "Missing MCP-Session-Id"},
+                    },
                 )
 
             if not await mcp_manager.validate_session(mcp_session_id):
                 return JSONResponse(
                     status_code=401,
-                    content={"jsonrpc": "2.0", "id": req_id, "error": {"code": -32600, "message": "Invalid MCP-Session-Id"}},
+                    content={
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32600, "message": "Invalid MCP-Session-Id"},
+                    },
                 )
 
             await mcp_manager.update_activity(mcp_session_id)
 
             try:
-                result = await self._handle_mcp_method(method, params, mcp_session_id, lean_interface, request)
+                result = await self._handle_mcp_method(
+                    method, params, mcp_session_id, lean_interface, request
+                )
                 return JSONResponse(content={"jsonrpc": "2.0", "id": req_id, "result": result})
             except Exception as e:
                 logger.exception(f"Error handling MCP method {method}")
                 return JSONResponse(
                     status_code=500,
-                    content={"jsonrpc": "2.0", "id": req_id, "error": {"code": -32603, "message": str(e)}},
+                    content={
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "error": {"code": -32603, "message": str(e)},
+                    },
                 )
 
         @app.get("/mcp")
@@ -329,17 +354,37 @@ class HTTPSessionIntelligenceServer:
             )
 
     async def _handle_mcp_method(
-        self, method: str, params: dict[str, Any], mcp_session_id: str,
-        lean_interface: LeanMCPInterface, request: Request,
+        self,
+        method: str,
+        params: dict[str, Any],
+        mcp_session_id: str,
+        lean_interface: LeanMCPInterface,
+        request: Request,
     ) -> dict[str, Any]:
         """Handle individual MCP methods."""
         if method == "resources/templates/list":
             return {
                 "resourceTemplates": [
-                    {"uriTemplate": "notes://session/{date}", "name": "session-notes", "description": "Session notes by date"},
-                    {"uriTemplate": "decisions://category/{category}", "name": "decisions", "description": "Decisions by category"},
-                    {"uriTemplate": "metrics://branch/{branch}", "name": "metrics", "description": "Metrics by branch"},
-                    {"uriTemplate": "context://session/{session_id}", "name": "context", "description": "Session context"},
+                    {
+                        "uriTemplate": "notes://session/{date}",
+                        "name": "session-notes",
+                        "description": "Session notes by date",
+                    },
+                    {
+                        "uriTemplate": "decisions://category/{category}",
+                        "name": "decisions",
+                        "description": "Decisions by category",
+                    },
+                    {
+                        "uriTemplate": "metrics://branch/{branch}",
+                        "name": "metrics",
+                        "description": "Metrics by branch",
+                    },
+                    {
+                        "uriTemplate": "context://session/{session_id}",
+                        "name": "context",
+                        "description": "Session context",
+                    },
                 ]
             }
 
@@ -352,9 +397,45 @@ class HTTPSessionIntelligenceServer:
         if method == "tools/list":
             return {
                 "tools": [
-                    {"name": "discover_tools", "description": "Get available tools", "inputSchema": {"type": "object", "properties": {"pattern": {"type": "string", "default": ""}}}},
-                    {"name": "get_tool_spec", "description": "Get tool specification", "inputSchema": {"type": "object", "properties": {"tool_name": {"type": "string"}}, "required": ["tool_name"]}},
-                    {"name": "execute_tool", "description": "Execute a tool", "inputSchema": {"type": "object", "properties": {"tool_name": {"type": "string"}, "parameters": {"type": "object"}}, "required": ["tool_name", "parameters"]}},
+                    {
+                        "name": "discover_tools",
+                        "description": (
+                            "Discover session lifecycle, decision logging, agent tracking, "
+                            "and learning tools (28 total). "
+                            "USE WHEN: starting sessions, logging decisions, searching learnings"
+                        ),
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"pattern": {"type": "string", "default": ""}},
+                        },
+                    },
+                    {
+                        "name": "get_tool_spec",
+                        "description": (
+                            "Get parameter schema for session/agent/learning tools. "
+                            "USE WHEN: need exact parameters, debugging validation errors"
+                        ),
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"tool_name": {"type": "string"}},
+                            "required": ["tool_name"],
+                        },
+                    },
+                    {
+                        "name": "execute_tool",
+                        "description": (
+                            "Execute session management, agent tracking, or knowledge operations. "
+                            "Returns domain-specific results for sessions, agents, and learnings"
+                        ),
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "tool_name": {"type": "string"},
+                                "parameters": {"type": "object"},
+                            },
+                            "required": ["tool_name", "parameters"],
+                        },
+                    },
                 ]
             }
 
@@ -372,7 +453,9 @@ class HTTPSessionIntelligenceServer:
 
         raise ValueError(f"Unknown method: {method}")
 
-    async def _handle_resource_read(self, params: dict[str, Any], request: Request) -> dict[str, Any]:
+    async def _handle_resource_read(
+        self, params: dict[str, Any], request: Request
+    ) -> dict[str, Any]:
         """Handle resources/read request."""
         uri = params.get("uri", "")
         database = request.app.state.database
@@ -380,22 +463,38 @@ class HTTPSessionIntelligenceServer:
         if uri.startswith("notes://session/"):
             date = uri.replace("notes://session/", "")
             notes = await database.query_notes_by_date(date)
-            return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(notes)}]}
+            return {
+                "contents": [
+                    {"uri": uri, "mimeType": "application/json", "text": json.dumps(notes)}
+                ]
+            }
 
         if uri.startswith("decisions://category/"):
             category = uri.replace("decisions://category/", "")
             decisions = await database.query_decisions_by_category(category)
-            return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(decisions)}]}
+            return {
+                "contents": [
+                    {"uri": uri, "mimeType": "application/json", "text": json.dumps(decisions)}
+                ]
+            }
 
         if uri.startswith("metrics://branch/"):
             branch = uri.replace("metrics://branch/", "")
             metrics = await database.query_metrics_by_branch(branch)
-            return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(metrics)}]}
+            return {
+                "contents": [
+                    {"uri": uri, "mimeType": "application/json", "text": json.dumps(metrics)}
+                ]
+            }
 
         if uri.startswith("context://session/"):
             session_id = uri.replace("context://session/", "")
             session = await database.get_session(session_id)
-            return {"contents": [{"uri": uri, "mimeType": "application/json", "text": json.dumps(session or {})}]}
+            return {
+                "contents": [
+                    {"uri": uri, "mimeType": "application/json", "text": json.dumps(session or {})}
+                ]
+            }
 
         return {"contents": []}
 
@@ -415,7 +514,9 @@ class HTTPSessionIntelligenceServer:
                 # Also persist decisions
                 for decision in session.decisions:
                     try:
-                        decision_data = decision.model_dump() if hasattr(decision, 'model_dump') else decision
+                        decision_data = (
+                            decision.model_dump() if hasattr(decision, "model_dump") else decision
+                        )
                         decision_data["session_id"] = session_id
                         await database.save_decision(decision_data)
                     except Exception as e:
@@ -424,13 +525,19 @@ class HTTPSessionIntelligenceServer:
                 # Also persist agent executions
                 for agent_exec in session.agents_executed:
                     try:
-                        exec_data = agent_exec.model_dump() if hasattr(agent_exec, 'model_dump') else agent_exec
+                        exec_data = (
+                            agent_exec.model_dump()
+                            if hasattr(agent_exec, "model_dump")
+                            else agent_exec
+                        )
                         exec_data["session_id"] = session_id
                         await database.save_agent_execution(exec_data)
                     except Exception as e:
                         logger.warning(f"Failed to persist agent execution: {e}")
 
-                logger.debug(f"Persisted session {session_id} with {len(session.decisions)} decisions")
+                logger.debug(
+                    f"Persisted session {session_id} with {len(session.decisions)} decisions"
+                )
             except Exception as e:
                 logger.error(f"Failed to persist session {session_id}: {e}")
 
@@ -445,7 +552,9 @@ class HTTPSessionIntelligenceServer:
 
         # If cache already has sessions, no need to load
         if session_engine.session_cache:
-            logger.debug(f"Session cache has {len(session_engine.session_cache)} sessions, skipping DB load")
+            logger.debug(
+                f"Session cache has {len(session_engine.session_cache)} sessions, skipping DB load"
+            )
             return
 
         # Get project path from engine
@@ -472,28 +581,48 @@ class HTTPSessionIntelligenceServer:
             session_id = session_data["id"]
             session = Session(
                 id=session_id,
-                started=datetime.fromisoformat(session_data["started"]) if isinstance(session_data["started"], str) else session_data["started"],
-                completed=datetime.fromisoformat(session_data["completed"]) if session_data.get("completed") and isinstance(session_data["completed"], str) else session_data.get("completed"),
+                started=datetime.fromisoformat(session_data["started"])
+                if isinstance(session_data["started"], str)
+                else session_data["started"],
+                completed=datetime.fromisoformat(session_data["completed"])
+                if session_data.get("completed") and isinstance(session_data["completed"], str)
+                else session_data.get("completed"),
                 mode=session_data.get("mode", "local"),
                 project_name=session_data.get("project_name", ""),
                 project_path=session_data.get("project_path", project_path),
                 status=SessionStatus(session_data.get("status", "active")),
-                metadata=SessionMetadata(**session_data.get("metadata", {"session_type": "development", "environment": "local", "user": "user"})),
-                health_status=HealthStatus(**session_data.get("health_status", {})) if session_data.get("health_status") else HealthStatus(),
-                performance_metrics=PerformanceMetrics(**session_data.get("performance_metrics", {})) if session_data.get("performance_metrics") else PerformanceMetrics(),
+                metadata=SessionMetadata(
+                    **session_data.get(
+                        "metadata",
+                        {"session_type": "development", "environment": "local", "user": "user"},
+                    )
+                ),
+                health_status=HealthStatus(**session_data.get("health_status", {}))
+                if session_data.get("health_status")
+                else HealthStatus(),
+                performance_metrics=PerformanceMetrics(
+                    **session_data.get("performance_metrics", {})
+                )
+                if session_data.get("performance_metrics")
+                else PerformanceMetrics(),
             )
 
             # Load decisions for this session
             decisions = await database.query_decisions_by_session(session_id)
             if decisions:
                 from models.session_models import Decision, DecisionContext, ImpactLevel
+
                 for dec_data in decisions:
                     try:
                         decision = Decision(
                             decision_id=dec_data.get("id", dec_data.get("decision_id", "")),
-                            timestamp=datetime.fromisoformat(dec_data["timestamp"]) if isinstance(dec_data["timestamp"], str) else dec_data["timestamp"],
+                            timestamp=datetime.fromisoformat(dec_data["timestamp"])
+                            if isinstance(dec_data["timestamp"], str)
+                            else dec_data["timestamp"],
                             description=dec_data.get("description", ""),
-                            context=DecisionContext(session_id=session_id, project_state=dec_data.get("context", {})),
+                            context=DecisionContext(
+                                session_id=session_id, project_state=dec_data.get("context", {})
+                            ),
                             impact_level=ImpactLevel(dec_data.get("impact_level", "medium")),
                             artifacts=dec_data.get("artifacts", []),
                         )
@@ -504,14 +633,19 @@ class HTTPSessionIntelligenceServer:
             # Add to cache
             session_engine.session_cache[session_id] = session
             session_engine._current_session_id = session_id
-            logger.info(f"Loaded session {session_id} from database with {len(session.decisions)} decisions")
+            logger.info(
+                f"Loaded session {session_id} from database with {len(session.decisions)} decisions"
+            )
 
         except Exception as e:
             logger.error(f"Failed to load sessions from database: {e}")
 
     async def _handle_tool_call(
-        self, params: dict[str, Any], mcp_session_id: str,
-        lean_interface: LeanMCPInterface, request: Request,
+        self,
+        params: dict[str, Any],
+        mcp_session_id: str,
+        lean_interface: LeanMCPInterface,
+        request: Request,
     ) -> dict[str, Any]:
         """Handle tools/call request."""
         tool_name = params.get("name")
@@ -520,33 +654,57 @@ class HTTPSessionIntelligenceServer:
 
         if tool_name == "discover_tools":
             pattern = arguments.get("pattern", "")
-            tools = [{"name": n, "description": i["description"]} for n, i in tool_registry.items() if not pattern or pattern.lower() in n.lower()]
-            result = {"available_tools": tools, "total_tools": len(tool_registry), "filtered_count": len(tools)}
+            tools = [
+                {"name": n, "description": i["description"]}
+                for n, i in tool_registry.items()
+                if not pattern or pattern.lower() in n.lower()
+            ]
+            result = {
+                "available_tools": tools,
+                "total_tools": len(tool_registry),
+                "filtered_count": len(tools),
+            }
 
         elif tool_name == "get_tool_spec":
             target = arguments.get("tool_name")
             if target not in tool_registry:
-                result = {"error": f"Tool '{target}' not found", "available_tools": list(tool_registry.keys())}
+                result = {
+                    "error": f"Tool '{target}' not found",
+                    "available_tools": list(tool_registry.keys()),
+                }
             else:
                 info = tool_registry[target]
-                result = {"name": target, "description": info["description"], "schema": info["schema"], "examples": info.get("examples", [])}
+                result = {
+                    "name": target,
+                    "description": info["description"],
+                    "schema": info["schema"],
+                    "examples": info.get("examples", []),
+                }
 
         elif tool_name == "execute_tool":
             target = arguments.get("tool_name")
             tool_params = arguments.get("parameters", {})
             if target not in tool_registry:
-                result = {"error": f"Tool '{target}' not found", "available_tools": list(tool_registry.keys())}
+                result = {
+                    "error": f"Tool '{target}' not found",
+                    "available_tools": list(tool_registry.keys()),
+                }
             else:
                 # Tools that read/write session state - need DB sync
                 session_modifying_tools = {
-                    "session_manage_lifecycle", "session_track_execution",
-                    "session_log_decision", "session_coordinate_agents",
-                    "session_log_learning", "session_find_solution",
-                    "session_update_solution_outcome", "session_track_file_operation"
+                    "session_manage_lifecycle",
+                    "session_track_execution",
+                    "session_log_decision",
+                    "session_coordinate_agents",
+                    "session_log_learning",
+                    "session_find_solution",
+                    "session_update_solution_outcome",
+                    "session_track_file_operation",
                 }
 
                 try:
                     import inspect
+
                     # Pre-load sessions from database before session-modifying tools
                     # This ensures decisions/executions can find their session even after
                     # the engine cache is cleared between HTTP requests
@@ -562,7 +720,11 @@ class HTTPSessionIntelligenceServer:
 
                     # Handle knowledge system tools - persist to database
                     database = request.app.state.database
-                    if target == "session_log_learning" and hasattr(tool_result, 'learning') and tool_result.learning:
+                    if (
+                        target == "session_log_learning"
+                        and hasattr(tool_result, "learning")
+                        and tool_result.learning
+                    ):
                         learning = tool_result.learning
                         # Validate source_session_id exists before FK insert, else use None
                         valid_session_id = None
@@ -573,12 +735,16 @@ class HTTPSessionIntelligenceServer:
                         await database.save_project_learning(
                             learning_id=learning.id,
                             project_path=learning.project_path,
-                            category=learning.category.value if hasattr(learning.category, 'value') else learning.category,
+                            category=learning.category.value
+                            if hasattr(learning.category, "value")
+                            else learning.category,
                             learning_content=learning.learning_content,
                             trigger_context=learning.trigger_context,
                             source_session_id=valid_session_id,
                         )
-                        tool_result = tool_result.model_copy(update={"status": "saved", "message": "Learning saved to database"})
+                        tool_result = tool_result.model_copy(
+                            update={"status": "saved", "message": "Learning saved to database"}
+                        )
 
                     elif target == "session_find_solution":
                         # Query database for solutions
@@ -588,6 +754,7 @@ class HTTPSessionIntelligenceServer:
                             include_universal=tool_params.get("include_universal", True),
                         )
                         from models.session_models import ErrorSolution, SolutionSearchResult
+
                         # Convert datetime fields to strings for Pydantic
                         for s in solutions:
                             if s.get("created_at") and hasattr(s["created_at"], "isoformat"):
@@ -598,7 +765,9 @@ class HTTPSessionIntelligenceServer:
                             error_text=tool_params.get("error_text", ""),
                             total_found=len(solutions),
                             solutions=[ErrorSolution(**s) for s in solutions] if solutions else [],
-                            project_specific_count=sum(1 for s in solutions if s.get("project_path")),
+                            project_specific_count=sum(
+                                1 for s in solutions if s.get("project_path")
+                            ),
                             universal_count=sum(1 for s in solutions if not s.get("project_path")),
                         )
 
@@ -608,26 +777,35 @@ class HTTPSessionIntelligenceServer:
                             success=tool_params.get("success", False),
                         )
                         from models.session_models import SolutionResult
+
                         tool_result = SolutionResult(
                             id=tool_params.get("solution_id", ""),
                             status="updated" if db_result.get("updated") else "error",
-                            message=f"Success rate: {db_result.get('success_rate', 0):.2f}" if db_result.get("updated") else db_result.get("error", ""),
+                            message=f"Success rate: {db_result.get('success_rate', 0):.2f}"
+                            if db_result.get("updated")
+                            else db_result.get("error", ""),
                         )
 
                     elif target == "session_track_file_operation":
                         # Persist file operation to database
-                        if hasattr(tool_result, 'operation') and tool_result.operation:
+                        if hasattr(tool_result, "operation") and tool_result.operation:
                             op = tool_result.operation
-                            await database.save_file_operation({
-                                "session_id": op.session_id,
-                                "timestamp": op.timestamp.isoformat() if hasattr(op.timestamp, 'isoformat') else str(op.timestamp),
-                                "operation": op.operation_type.value if hasattr(op.operation_type, 'value') else op.operation_type,
-                                "file_path": op.file_path,
-                                "lines_added": op.lines_added or 0,
-                                "lines_removed": op.lines_removed or 0,
-                                "summary": op.description or "",
-                                "tool_name": op.tool_name or "",
-                            })
+                            await database.save_file_operation(
+                                {
+                                    "session_id": op.session_id,
+                                    "timestamp": op.timestamp.isoformat()
+                                    if hasattr(op.timestamp, "isoformat")
+                                    else str(op.timestamp),
+                                    "operation": op.operation_type.value
+                                    if hasattr(op.operation_type, "value")
+                                    else op.operation_type,
+                                    "file_path": op.file_path,
+                                    "lines_added": op.lines_added or 0,
+                                    "lines_removed": op.lines_removed or 0,
+                                    "summary": op.description or "",
+                                    "tool_name": op.tool_name or "",
+                                }
+                            )
                             tool_result = tool_result.model_copy(update={"status": "saved"})
 
                     limited = apply_token_limits(tool_result, target)
@@ -666,14 +844,22 @@ class HTTPSessionIntelligenceServer:
         """Add REST endpoints for session queries."""
 
         @app.get("/api/sessions")
-        async def list_sessions(request: Request, limit: int = 50, x_api_key: str | None = Header(None, alias="X-API-Key")) -> dict[str, Any]:
+        async def list_sessions(
+            request: Request,
+            limit: int = 50,
+            x_api_key: str | None = Header(None, alias="X-API-Key"),
+        ) -> dict[str, Any]:
             if self.security_config.require_api_key and self.security_config.api_key:
                 validate_api_key(x_api_key, self.security_config.api_key)
             sessions = await request.app.state.database.query_sessions(limit=limit)
             return {"sessions": sessions, "count": len(sessions)}
 
         @app.get("/api/sessions/{session_id}")
-        async def get_session(request: Request, session_id: str, x_api_key: str | None = Header(None, alias="X-API-Key")) -> dict[str, Any]:
+        async def get_session(
+            request: Request,
+            session_id: str,
+            x_api_key: str | None = Header(None, alias="X-API-Key"),
+        ) -> dict[str, Any]:
             if self.security_config.require_api_key and self.security_config.api_key:
                 validate_api_key(x_api_key, self.security_config.api_key)
             session = await request.app.state.database.get_session(session_id)
@@ -684,6 +870,8 @@ class HTTPSessionIntelligenceServer:
     async def run(self) -> None:
         """Run the HTTP server."""
         app = self.create_app()
-        config = uvicorn.Config(app=app, host=self.host, port=self.port, log_level="info", access_log=True)
+        config = uvicorn.Config(
+            app=app, host=self.host, port=self.port, log_level="info", access_log=True
+        )
         server = uvicorn.Server(config)
         await server.serve()

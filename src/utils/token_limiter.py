@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from pydantic import BaseModel
+
 logger = logging.getLogger(__name__)
 
 
@@ -338,10 +340,23 @@ class SessionTokenLimiter:
 
         logger.info(f"SessionTokenLimiter initialized with default limit: {default_limit}")
 
+    def _to_dict(self, obj: Any) -> Any:
+        """Convert Pydantic models and nested structures to plain dicts."""
+        if isinstance(obj, BaseModel):
+            return obj.model_dump()
+        elif isinstance(obj, dict):
+            return {k: self._to_dict(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [self._to_dict(item) for item in obj]
+        return obj
+
     def limit_response(
-        self, response: dict[str, Any], operation: str = "unknown"
+        self, response: dict[str, Any] | BaseModel, operation: str = "unknown"
     ) -> dict[str, Any]:
         """Limit response size by truncating content if necessary."""
+        # Convert Pydantic models to dicts first
+        response = self._to_dict(response)
+
         if not self.enable_truncation:
             return response
 

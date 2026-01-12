@@ -2,12 +2,22 @@
 
 import asyncio
 import pytest
-from src.persistence.postgresql import PostgreSQLBackend
+
+# Check if asyncpg is available
+try:
+    import asyncpg
+    HAS_ASYNCPG = True
+except ImportError:
+    HAS_ASYNCPG = False
 
 
 @pytest.mark.asyncio
+@pytest.mark.postgresql
+@pytest.mark.skipif(not HAS_ASYNCPG, reason="asyncpg not installed")
 async def test_schema():
     """Test agent system using PostgreSQL backend."""
+    from src.persistence.postgresql import PostgreSQLBackend
+
     # Use test database
     db = PostgreSQLBackend(dsn="postgresql://localhost/session_intelligence")
     await db.initialize()

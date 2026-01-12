@@ -13,8 +13,10 @@ from pydantic import BaseModel, Field
 
 # ===== ENUMS =====
 
+
 class SessionStatus(str, Enum):
     """Session status enumeration."""
+
     ACTIVE = "active"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -23,6 +25,7 @@ class SessionStatus(str, Enum):
 
 class ExecutionStatus(str, Enum):
     """Execution step status enumeration."""
+
     PENDING = "pending"
     RUNNING = "running"
     SUCCESS = "success"
@@ -32,6 +35,7 @@ class ExecutionStatus(str, Enum):
 
 class ImpactLevel(str, Enum):
     """Decision impact level enumeration."""
+
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -40,6 +44,7 @@ class ImpactLevel(str, Enum):
 
 class PatternType(str, Enum):
     """Pattern analysis type enumeration."""
+
     EXECUTION = "execution"
     ERROR = "error"
     PERFORMANCE = "performance"
@@ -48,6 +53,7 @@ class PatternType(str, Enum):
 
 class WorkflowType(str, Enum):
     """Workflow type enumeration."""
+
     TDD = "tdd"
     ATOMIC = "atomic"
     QUALITY = "quality"
@@ -57,6 +63,7 @@ class WorkflowType(str, Enum):
 
 class DashboardType(str, Enum):
     """Dashboard view type enumeration."""
+
     OVERVIEW = "overview"
     PERFORMANCE = "performance"
     AGENTS = "agents"
@@ -66,6 +73,7 @@ class DashboardType(str, Enum):
 
 class AnalysisScope(str, Enum):
     """Pattern analysis scope enumeration."""
+
     CURRENT = "current"
     RECENT = "recent"
     HISTORICAL = "historical"
@@ -74,6 +82,7 @@ class AnalysisScope(str, Enum):
 
 class ExecutionMode(str, Enum):
     """Agent execution mode enumeration."""
+
     SEQUENTIAL = "sequential"
     PARALLEL = "parallel"
     ADAPTIVE = "adaptive"
@@ -81,6 +90,7 @@ class ExecutionMode(str, Enum):
 
 class OptimizationLevel(str, Enum):
     """Optimization level enumeration."""
+
     CONSERVATIVE = "conservative"
     BALANCED = "balanced"
     AGGRESSIVE = "aggressive"
@@ -88,8 +98,10 @@ class OptimizationLevel(str, Enum):
 
 # ===== CORE SESSION MODELS =====
 
+
 class SessionMetadata(BaseModel):
     """Session metadata and configuration."""
+
     session_type: str
     environment: str
     user: str
@@ -103,6 +115,7 @@ class SessionMetadata(BaseModel):
 
 class PerformanceMetrics(BaseModel):
     """Session performance metrics."""
+
     total_execution_time_ms: int = 0
     agents_executed: int = 0
     successful_executions: int = 0
@@ -115,6 +128,7 @@ class PerformanceMetrics(BaseModel):
 
 class HealthStatus(BaseModel):
     """Session health status."""
+
     overall_score: float = Field(default=100.0, ge=0.0, le=100.0)
     continuity_valid: bool = True
     files_valid: bool = True
@@ -127,6 +141,7 @@ class HealthStatus(BaseModel):
 
 class CommandExecution(BaseModel):
     """Command execution details."""
+
     command: str
     started: datetime
     completed: datetime | None = None
@@ -139,6 +154,7 @@ class CommandExecution(BaseModel):
 
 class FileOperation(BaseModel):
     """File operation tracking for session notebooks."""
+
     session_id: str
     timestamp: datetime
     operation: str  # create, edit, delete, read
@@ -151,6 +167,7 @@ class FileOperation(BaseModel):
 
 class Pattern(BaseModel):
     """Detected execution pattern."""
+
     pattern_id: str
     pattern_type: PatternType
     description: str
@@ -161,6 +178,7 @@ class Pattern(BaseModel):
 
 class Optimization(BaseModel):
     """Available optimization suggestion."""
+
     optimization_id: str
     description: str
     potential_impact: str
@@ -171,6 +189,7 @@ class Optimization(BaseModel):
 
 class ExecutionStep(BaseModel):
     """Detailed execution step tracking."""
+
     step_id: str
     step_number: int
     agent: str
@@ -190,8 +209,10 @@ class ExecutionStep(BaseModel):
 
 # ===== AGENT AND WORKFLOW MODELS =====
 
+
 class AgentContext(BaseModel):
     """Agent execution context."""
+
     session_id: str
     project_path: str
     working_directory: str
@@ -202,6 +223,7 @@ class AgentContext(BaseModel):
 
 class AgentPerformance(BaseModel):
     """Agent performance metrics."""
+
     total_execution_time_ms: int = 0
     successful_steps: int = 0
     failed_steps: int = 0
@@ -213,6 +235,7 @@ class AgentPerformance(BaseModel):
 
 class AgentError(BaseModel):
     """Agent execution error details."""
+
     error_id: str
     timestamp: datetime
     error_type: str
@@ -225,6 +248,7 @@ class AgentError(BaseModel):
 
 class AgentExecution(BaseModel):
     """Agent execution tracking."""
+
     agent_name: str
     agent_type: str
     execution_id: str
@@ -240,6 +264,7 @@ class AgentExecution(BaseModel):
 
 class StateMachine(BaseModel):
     """Workflow state machine representation."""
+
     current_state: str
     available_transitions: list[str] = Field(default_factory=list)
     state_data: dict[str, Any] = Field(default_factory=dict)
@@ -248,6 +273,7 @@ class StateMachine(BaseModel):
 
 class ParallelExecution(BaseModel):
     """Parallel execution tracking."""
+
     execution_id: str
     agents: list[str]
     started: datetime
@@ -258,6 +284,7 @@ class ParallelExecution(BaseModel):
 
 class WorkflowState(BaseModel):
     """Workflow state management."""
+
     workflow_type: WorkflowType
     current_phase: str
     phases_completed: list[str] = Field(default_factory=list)
@@ -269,8 +296,10 @@ class WorkflowState(BaseModel):
 
 # ===== DECISION MODELS =====
 
+
 class DecisionContext(BaseModel):
     """Decision context and rationale."""
+
     session_id: str
     agent_name: str | None = None
     workflow_phase: str | None = None
@@ -281,6 +310,7 @@ class DecisionContext(BaseModel):
 
 class DecisionOutcome(BaseModel):
     """Decision outcome tracking."""
+
     outcome_id: str
     timestamp: datetime
     actual_result: str
@@ -292,6 +322,7 @@ class DecisionOutcome(BaseModel):
 
 class Decision(BaseModel):
     """Decision tracking and analysis."""
+
     decision_id: str
     timestamp: datetime
     description: str
@@ -305,8 +336,10 @@ class Decision(BaseModel):
 
 # ===== ANALYTICS AND INTELLIGENCE MODELS =====
 
+
 class Recommendation(BaseModel):
     """Optimization recommendation."""
+
     recommendation_id: str
     description: str
     rationale: str
@@ -318,6 +351,7 @@ class Recommendation(BaseModel):
 
 class PatternAnalysis(BaseModel):
     """Pattern analysis results."""
+
     pattern_id: str
     pattern_type: PatternType
     frequency: int
@@ -331,6 +365,7 @@ class PatternAnalysis(BaseModel):
 
 class Bottleneck(BaseModel):
     """Performance bottleneck identification."""
+
     bottleneck_id: str
     description: str
     location: str  # agent, workflow, command, etc.
@@ -341,6 +376,7 @@ class Bottleneck(BaseModel):
 
 class PredictedIssue(BaseModel):
     """Predicted issue based on patterns."""
+
     issue_id: str
     description: str
     probability: float = Field(ge=0.0, le=1.0)
@@ -351,6 +387,7 @@ class PredictedIssue(BaseModel):
 
 class LearningInsight(BaseModel):
     """Machine learning insight."""
+
     insight_id: str
     description: str
     model_confidence: float = Field(ge=0.0, le=1.0)
@@ -361,6 +398,7 @@ class LearningInsight(BaseModel):
 
 class Trend(BaseModel):
     """Cross-session trend analysis."""
+
     trend_id: str
     description: str
     trend_direction: str  # improving, declining, stable
@@ -371,6 +409,7 @@ class Trend(BaseModel):
 
 class SessionIntelligence(BaseModel):
     """Session intelligence analytics."""
+
     session_id: str
     efficiency_score: float = Field(ge=0.0, le=100.0)
     patterns_detected: list[PatternAnalysis] = Field(default_factory=list)
@@ -383,6 +422,7 @@ class SessionIntelligence(BaseModel):
 
 class CommandAlternative(BaseModel):
     """Command alternative suggestion."""
+
     alternative_command: str
     expected_improvement: str
     risk_level: str = "low"  # low, medium, high
@@ -391,6 +431,7 @@ class CommandAlternative(BaseModel):
 
 class CommandAnalysis(BaseModel):
     """Command execution analysis."""
+
     command: str
     frequency: int = 0
     average_duration_ms: float = 0.0
@@ -403,8 +444,10 @@ class CommandAnalysis(BaseModel):
 
 # ===== MAIN SESSION MODEL =====
 
+
 class Session(BaseModel):
     """Complete session representation."""
+
     id: str
     started: datetime
     completed: datetime | None = None
@@ -422,8 +465,10 @@ class Session(BaseModel):
 
 # ===== RESULT MODELS FOR MCP FUNCTIONS =====
 
+
 class SessionResult(BaseModel):
     """Result from session lifecycle management."""
+
     session_id: str
     operation: str
     status: str
@@ -435,6 +480,7 @@ class SessionResult(BaseModel):
 
 class ExecutionTrackingResult(BaseModel):
     """Result from execution tracking."""
+
     step_id: str
     session_id: str
     agent_name: str
@@ -446,6 +492,7 @@ class ExecutionTrackingResult(BaseModel):
 
 class CoordinationResult(BaseModel):
     """Result from agent coordination."""
+
     coordination_id: str
     session_id: str
     execution_plan: dict[str, Any]
@@ -456,6 +503,7 @@ class CoordinationResult(BaseModel):
 
 class DecisionResult(BaseModel):
     """Result from decision logging."""
+
     decision_id: str
     session_id: str
     impact_analysis: dict[str, Any] = Field(default_factory=dict)
@@ -465,6 +513,7 @@ class DecisionResult(BaseModel):
 
 class PatternAnalysisResult(BaseModel):
     """Result from pattern analysis."""
+
     analysis_id: str
     scope: AnalysisScope
     patterns: list[PatternAnalysis] = Field(default_factory=list)
@@ -475,6 +524,7 @@ class PatternAnalysisResult(BaseModel):
 
 class SessionHealthResult(BaseModel):
     """Result from session health monitoring."""
+
     session_id: str
     health_score: float = Field(ge=0.0, le=100.0)
     issues: list[str] = Field(default_factory=list)
@@ -485,6 +535,7 @@ class SessionHealthResult(BaseModel):
 
 class WorkflowResult(BaseModel):
     """Result from workflow orchestration."""
+
     workflow_id: str
     session_id: str
     execution_plan: dict[str, Any]
@@ -495,6 +546,7 @@ class WorkflowResult(BaseModel):
 
 class CommandAnalysisResult(BaseModel):
     """Result from command analysis."""
+
     session_id: str
     analysis_period: str
     patterns: list[str] = Field(default_factory=list)
@@ -505,6 +557,7 @@ class CommandAnalysisResult(BaseModel):
 
 class MissingFunctionResult(BaseModel):
     """Result from missing function tracking."""
+
     session_id: str
     functions: list[str] = Field(default_factory=list)
     priorities: dict[str, int] = Field(default_factory=dict)
@@ -514,6 +567,7 @@ class MissingFunctionResult(BaseModel):
 
 class DashboardResult(BaseModel):
     """Result from dashboard generation."""
+
     dashboard_type: DashboardType
     session_id: str | None = None
     metrics: dict[str, Any] = Field(default_factory=dict)
@@ -525,8 +579,10 @@ class DashboardResult(BaseModel):
 
 # ===== SESSION NOTEBOOK MODELS =====
 
+
 class SessionSummary(BaseModel):
     """Session summary for notebook generation."""
+
     session_id: str
     title: str
     summary_markdown: str
@@ -537,6 +593,7 @@ class SessionSummary(BaseModel):
 
 class NotebookSection(BaseModel):
     """A section of the session notebook."""
+
     heading: str
     content: str
     level: int = 2  # Markdown heading level (##, ###, etc.)
@@ -544,6 +601,7 @@ class NotebookSection(BaseModel):
 
 class SessionNotebook(BaseModel):
     """Complete session notebook/summary document."""
+
     session_id: str
     title: str
     created_at: str
@@ -560,6 +618,7 @@ class SessionNotebook(BaseModel):
 
 class NotebookResult(BaseModel):
     """Result from session_create_notebook tool."""
+
     session_id: str
     status: str
     notebook: SessionNotebook | None = None
@@ -571,6 +630,7 @@ class NotebookResult(BaseModel):
 
 class SearchResult(BaseModel):
     """Result from session search."""
+
     session_id: str
     title: str | None = None
     snippet: str = ""
@@ -583,6 +643,7 @@ class SearchResult(BaseModel):
 
 class SearchResults(BaseModel):
     """Collection of search results."""
+
     query: str
     total_results: int
     results: list[SearchResult] = Field(default_factory=list)
@@ -593,6 +654,7 @@ class SearchResults(BaseModel):
 
 class LearningCategory(str, Enum):
     """Learning category enumeration."""
+
     ERROR_FIX = "error_fix"
     PATTERN = "pattern"
     PREFERENCE = "preference"
@@ -601,6 +663,7 @@ class LearningCategory(str, Enum):
 
 class ErrorCategory(str, Enum):
     """Error category enumeration."""
+
     COMPILE = "compile"
     RUNTIME = "runtime"
     CONFIG = "config"
@@ -611,6 +674,7 @@ class ErrorCategory(str, Enum):
 
 class ProjectLearning(BaseModel):
     """Project-specific learning record."""
+
     id: str
     project_path: str
     category: LearningCategory
@@ -626,6 +690,7 @@ class ProjectLearning(BaseModel):
 
 class LearningResult(BaseModel):
     """Result of a learning operation."""
+
     id: str
     status: str
     message: str = ""
@@ -634,6 +699,7 @@ class LearningResult(BaseModel):
 
 class LearningsQueryResult(BaseModel):
     """Result of querying learnings."""
+
     project_path: str
     category: str | None = None
     total_count: int
@@ -642,6 +708,7 @@ class LearningsQueryResult(BaseModel):
 
 class ErrorSolution(BaseModel):
     """Error→Solution mapping."""
+
     id: str
     error_pattern: str
     error_hash: str | None = None
@@ -658,6 +725,7 @@ class ErrorSolution(BaseModel):
 
 class SolutionResult(BaseModel):
     """Result of a solution operation."""
+
     id: str
     status: str
     error_hash: str | None = None
@@ -667,6 +735,7 @@ class SolutionResult(BaseModel):
 
 class SolutionSearchResult(BaseModel):
     """Result of searching for solutions."""
+
     error_text: str
     total_found: int
     solutions: list[ErrorSolution] = Field(default_factory=list)
@@ -681,6 +750,7 @@ class SolutionSearchResult(BaseModel):
 
 class Agent(BaseModel):
     """Agent registry entry for tracking sub-agents globally."""
+
     id: str
     name: str
     agent_type: str  # meta, domain, specialized, etc.
@@ -699,6 +769,7 @@ class Agent(BaseModel):
 
 class AgentRegistrationResult(BaseModel):
     """Result of registering an agent."""
+
     agent_id: str
     name: str
     status: str  # created, updated, exists
@@ -707,6 +778,7 @@ class AgentRegistrationResult(BaseModel):
 
 class AgentDecision(BaseModel):
     """Agent decision record for tracking decisions globally."""
+
     id: str
     agent_id: str
     decision_type: str  # architecture, implementation, pattern, etc.
@@ -724,6 +796,7 @@ class AgentDecision(BaseModel):
 
 class AgentDecisionResult(BaseModel):
     """Result of logging an agent decision."""
+
     decision_id: str
     agent_id: str
     status: str
@@ -732,6 +805,7 @@ class AgentDecisionResult(BaseModel):
 
 class AgentLearning(BaseModel):
     """Agent learning record for tracking learnings globally."""
+
     id: str
     agent_id: str
     learning_type: str  # pattern, anti-pattern, technique, preference, etc.
@@ -749,6 +823,7 @@ class AgentLearning(BaseModel):
 
 class AgentLearningResult(BaseModel):
     """Result of logging an agent learning."""
+
     learning_id: str
     agent_id: str
     status: str
@@ -757,6 +832,7 @@ class AgentLearningResult(BaseModel):
 
 class AgentNotebook(BaseModel):
     """Agent notebook record for tracking agent-specific notebooks globally."""
+
     id: str
     agent_id: str
     title: str
@@ -773,6 +849,7 @@ class AgentNotebook(BaseModel):
 
 class AgentNotebookResult(BaseModel):
     """Result of creating an agent notebook."""
+
     notebook_id: str
     agent_id: str
     title: str

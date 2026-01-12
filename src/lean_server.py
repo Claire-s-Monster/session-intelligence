@@ -12,7 +12,7 @@ Context Consumption Comparison:
 
 Usage:
 - Agents use discover_tools() to find relevant tools
-- Agents use get_tool_spec() to get full schemas only when needed  
+- Agents use get_tool_spec() to get full schemas only when needed
 - Agents use execute_tool() for actual execution
 - Zero functionality loss, massive context savings
 """
@@ -26,6 +26,7 @@ from lean_mcp_interface import create_lean_interface
 
 logger = logging.getLogger(__name__)
 
+
 def parse_args():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser(description="Lean Session Intelligence MCP Server")
@@ -33,23 +34,25 @@ def parse_args():
         "--repository",
         type=str,
         default=".",
-        help="Repository root path (default: current directory)"
+        help="Repository root path (default: current directory)",
     )
     parser.add_argument(
         "--log-level",
         type=str,
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Logging level (default: INFO)"
+        help="Logging level (default: INFO)",
     )
     return parser.parse_args()
+
 
 def setup_logging(log_level: str):
     """Setup logging configuration."""
     logging.basicConfig(
         level=getattr(logging, log_level),
-        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
 
 def main():
     """Main entry point for the lean MCP server."""
@@ -78,6 +81,7 @@ def main():
     except Exception as e:
         logger.error(f"Server error: {e}")
         raise
+
 
 if __name__ == "__main__":
     main()

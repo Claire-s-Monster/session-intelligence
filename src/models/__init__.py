@@ -66,7 +66,6 @@ __all__ = [
     "SessionMetadata",
     "SessionResult",
     "ExecutionStep",
-
     # Agent and Workflow Models
     "AgentExecution",
     "AgentContext",
@@ -76,13 +75,11 @@ __all__ = [
     "WorkflowResult",
     "StateMachine",
     "ParallelExecution",
-
     # Decision Models
     "Decision",
     "DecisionContext",
     "DecisionOutcome",
     "DecisionResult",
-
     # Analytics and Intelligence Models
     "PatternAnalysis",
     "SessionIntelligence",
@@ -94,22 +91,18 @@ __all__ = [
     "Trend",
     "Recommendation",
     "CommandAlternative",
-
     # Health and Monitoring Models
     "HealthStatus",
     "PerformanceMetrics",
     "SessionHealthResult",
-
     # Dashboard and Reporting Models
     "DashboardResult",
-
     # Function Result Models
     "ExecutionTrackingResult",
     "CoordinationResult",
     "PatternAnalysisResult",
     "MissingFunctionResult",
     "CommandAnalysisResult",
-
     # Enums
     "SessionStatus",
     "ExecutionStatus",

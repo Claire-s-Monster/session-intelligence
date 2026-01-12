@@ -45,7 +45,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from core.session_engine import SessionIntelligenceEngine
 from lean_mcp_interface import LeanMCPInterface
-from persistence import DEFAULT_DATA_DIR, DatabaseConfig, create_database
+from persistence import DEFAULT_DATA_DIR, DatabaseConfig, create_database, sanitize_dsn
 from transport.mcp_session_manager import MCPSessionManager
 from transport.security import (
     LocalhostOnlyMiddleware,
@@ -152,7 +152,9 @@ class HTTPSessionIntelligenceServer:
         """Application lifespan manager."""
         logger.info(f"Starting HTTP server on {self.host}:{self.port}")
         logger.info(f"Database backend: {self.db_config.backend}")
-        logger.info(f"Database: {self.db_path}")
+        # Sanitize DSN if PostgreSQL backend to avoid logging credentials
+        safe_db_path = sanitize_dsn(self.db_path) if self.db_config.backend == "postgresql" else self.db_path
+        logger.info(f"Database: {safe_db_path}")
 
         # Create and initialize database using factory
         self.database = create_database(config=self.db_config)
@@ -581,12 +583,16 @@ class HTTPSessionIntelligenceServer:
             session_id = session_data["id"]
             session = Session(
                 id=session_id,
-                started=datetime.fromisoformat(session_data["started"])
-                if isinstance(session_data["started"], str)
-                else session_data["started"],
-                completed=datetime.fromisoformat(session_data["completed"])
-                if session_data.get("completed") and isinstance(session_data["completed"], str)
-                else session_data.get("completed"),
+                started=(
+                    datetime.fromisoformat(session_data["started"])
+                    if isinstance(session_data["started"], str)
+                    else session_data["started"]
+                ),
+                completed=(
+                    datetime.fromisoformat(session_data["completed"])
+                    if session_data.get("completed") and isinstance(session_data["completed"], str)
+                    else session_data.get("completed")
+                ),
                 mode=session_data.get("mode", "local"),
                 project_name=session_data.get("project_name", ""),
                 project_path=session_data.get("project_path", project_path),
@@ -597,14 +603,16 @@ class HTTPSessionIntelligenceServer:
                         {"session_type": "development", "environment": "local", "user": "user"},
                     )
                 ),
-                health_status=HealthStatus(**session_data.get("health_status", {}))
-                if session_data.get("health_status")
-                else HealthStatus(),
-                performance_metrics=PerformanceMetrics(
-                    **session_data.get("performance_metrics", {})
-                )
-                if session_data.get("performance_metrics")
-                else PerformanceMetrics(),
+                health_status=(
+                    HealthStatus(**session_data.get("health_status", {}))
+                    if session_data.get("health_status")
+                    else HealthStatus()
+                ),
+                performance_metrics=(
+                    PerformanceMetrics(**session_data.get("performance_metrics", {}))
+                    if session_data.get("performance_metrics")
+                    else PerformanceMetrics()
+                ),
             )
 
             # Load decisions for this session
@@ -616,9 +624,11 @@ class HTTPSessionIntelligenceServer:
                     try:
                         decision = Decision(
                             decision_id=dec_data.get("id", dec_data.get("decision_id", "")),
-                            timestamp=datetime.fromisoformat(dec_data["timestamp"])
-                            if isinstance(dec_data["timestamp"], str)
-                            else dec_data["timestamp"],
+                            timestamp=(
+                                datetime.fromisoformat(dec_data["timestamp"])
+                                if isinstance(dec_data["timestamp"], str)
+                                else dec_data["timestamp"]
+                            ),
                             description=dec_data.get("description", ""),
                             context=DecisionContext(
                                 session_id=session_id, project_state=dec_data.get("context", {})
@@ -735,9 +745,11 @@ class HTTPSessionIntelligenceServer:
                         await database.save_project_learning(
                             learning_id=learning.id,
                             project_path=learning.project_path,
-                            category=learning.category.value
-                            if hasattr(learning.category, "value")
-                            else learning.category,
+                            category=(
+                                learning.category.value
+                                if hasattr(learning.category, "value")
+                                else learning.category
+                            ),
                             learning_content=learning.learning_content,
                             trigger_context=learning.trigger_context,
                             source_session_id=valid_session_id,
@@ -781,9 +793,11 @@ class HTTPSessionIntelligenceServer:
                         tool_result = SolutionResult(
                             id=tool_params.get("solution_id", ""),
                             status="updated" if db_result.get("updated") else "error",
-                            message=f"Success rate: {db_result.get('success_rate', 0):.2f}"
-                            if db_result.get("updated")
-                            else db_result.get("error", ""),
+                            message=(
+                                f"Success rate: {db_result.get('success_rate', 0):.2f}"
+                                if db_result.get("updated")
+                                else db_result.get("error", "")
+                            ),
                         )
 
                     elif target == "session_track_file_operation":
@@ -793,12 +807,16 @@ class HTTPSessionIntelligenceServer:
                             await database.save_file_operation(
                                 {
                                     "session_id": op.session_id,
-                                    "timestamp": op.timestamp.isoformat()
-                                    if hasattr(op.timestamp, "isoformat")
-                                    else str(op.timestamp),
-                                    "operation": op.operation_type.value
-                                    if hasattr(op.operation_type, "value")
-                                    else op.operation_type,
+                                    "timestamp": (
+                                        op.timestamp.isoformat()
+                                        if hasattr(op.timestamp, "isoformat")
+                                        else str(op.timestamp)
+                                    ),
+                                    "operation": (
+                                        op.operation_type.value
+                                        if hasattr(op.operation_type, "value")
+                                        else op.operation_type
+                                    ),
                                     "file_path": op.file_path,
                                     "lines_added": op.lines_added or 0,
                                     "lines_removed": op.lines_removed or 0,

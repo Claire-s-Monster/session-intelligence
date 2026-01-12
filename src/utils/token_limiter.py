@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 class ContentType(Enum):
     """Types of content for different truncation strategies."""
+
     TEXT = "text"
     JSON = "json"
     STRUCTURED = "structured"
@@ -28,6 +29,7 @@ class ContentType(Enum):
 @dataclass
 class TokenEstimate:
     """Token estimation result."""
+
     estimated_tokens: int
     char_count: int
     content_type: ContentType
@@ -37,6 +39,7 @@ class TokenEstimate:
 @dataclass
 class TruncationResult:
     """Result of content truncation operation."""
+
     content: str
     original_tokens: int
     final_tokens: int
@@ -49,14 +52,16 @@ class TokenEstimator:
 
     # Token estimation ratios (characters per token) by content type
     RATIOS = {
-        ContentType.TEXT: 4.0,      # Regular text ~4 chars/token
-        ContentType.JSON: 3.5,      # JSON is more dense ~3.5 chars/token
-        ContentType.STRUCTURED: 4.5, # Structured data ~4.5 chars/token
-        ContentType.LOG: 3.0,       # Logs are dense ~3 chars/token
-        ContentType.METRICS: 2.5,   # Metrics/numbers are very dense ~2.5 chars/token
+        ContentType.TEXT: 4.0,  # Regular text ~4 chars/token
+        ContentType.JSON: 3.5,  # JSON is more dense ~3.5 chars/token
+        ContentType.STRUCTURED: 4.5,  # Structured data ~4.5 chars/token
+        ContentType.LOG: 3.0,  # Logs are dense ~3 chars/token
+        ContentType.METRICS: 2.5,  # Metrics/numbers are very dense ~2.5 chars/token
     }
 
-    def estimate_tokens(self, content: str, content_type: ContentType = ContentType.TEXT) -> TokenEstimate:
+    def estimate_tokens(
+        self, content: str, content_type: ContentType = ContentType.TEXT
+    ) -> TokenEstimate:
         """Estimate token count for content."""
         if not content:
             return TokenEstimate(0, 0, content_type)
@@ -66,9 +71,7 @@ class TokenEstimator:
         estimated_tokens = int(char_count / ratio)
 
         return TokenEstimate(
-            estimated_tokens=estimated_tokens,
-            char_count=char_count,
-            content_type=content_type
+            estimated_tokens=estimated_tokens, char_count=char_count, content_type=content_type
         )
 
     def detect_content_type(self, content: str) -> ContentType:
@@ -84,13 +87,13 @@ class TokenEstimator:
             pass
 
         # Check for common patterns
-        if re.search(r'\d{4}-\d{2}-\d{2}.*\d{2}:\d{2}:\d{2}', content):
+        if re.search(r"\d{4}-\d{2}-\d{2}.*\d{2}:\d{2}:\d{2}", content):
             return ContentType.LOG
 
         if re.search(r'("[\w_]+"\s*:\s*([\d.]+|"[^"]*"))', content):
             return ContentType.METRICS
 
-        if re.search(r'^[\s]*[\{\[]', content.strip()):
+        if re.search(r"^[\s]*[\{\[]", content.strip()):
             return ContentType.STRUCTURED
 
         return ContentType.TEXT
@@ -102,7 +105,9 @@ class IntelligentTruncator:
     def __init__(self):
         self.token_estimator = TokenEstimator()
 
-    def truncate_content(self, content: str, max_tokens: int, content_type: ContentType = None) -> TruncationResult:
+    def truncate_content(
+        self, content: str, max_tokens: int, content_type: ContentType = None
+    ) -> TruncationResult:
         """Truncate content intelligently to fit within token limit."""
         if not content:
             return TruncationResult(
@@ -110,7 +115,7 @@ class IntelligentTruncator:
                 original_tokens=0,
                 final_tokens=0,
                 truncated=False,
-                truncation_summary=""
+                truncation_summary="",
             )
 
         # Auto-detect content type if not provided
@@ -126,7 +131,7 @@ class IntelligentTruncator:
                 original_tokens=original_estimate.estimated_tokens,
                 final_tokens=original_estimate.estimated_tokens,
                 truncated=False,
-                truncation_summary=""
+                truncation_summary="",
             )
 
         # Apply content-type specific truncation
@@ -152,7 +157,7 @@ class IntelligentTruncator:
             original_tokens=original_estimate.estimated_tokens,
             final_tokens=final_estimate.estimated_tokens,
             truncated=True,
-            truncation_summary=truncation_summary
+            truncation_summary=truncation_summary,
         )
 
     def _truncate_json(self, content: str, max_tokens: int) -> str:
@@ -163,9 +168,15 @@ class IntelligentTruncator:
             # For dictionaries, prioritize certain keys
             if isinstance(data, dict):
                 priority_keys = [
-                    'session_id', 'status', 'error', 'message',
-                    'operation', 'summary', 'health_score',
-                    'recommendations', 'next_steps'
+                    "session_id",
+                    "status",
+                    "error",
+                    "message",
+                    "operation",
+                    "summary",
+                    "health_score",
+                    "recommendations",
+                    "next_steps",
                 ]
 
                 # Keep priority keys first
@@ -179,13 +190,20 @@ class IntelligentTruncator:
                 for key in remaining_keys:
                     test_data = {**truncated_data, key: data[key]}
                     test_content = json.dumps(test_data, indent=2)
-                    if self.token_estimator.estimate_tokens(test_content, ContentType.JSON).estimated_tokens > max_tokens:
+                    if (
+                        self.token_estimator.estimate_tokens(
+                            test_content, ContentType.JSON
+                        ).estimated_tokens
+                        > max_tokens
+                    ):
                         break
                     truncated_data[key] = data[key]
 
                 # Add truncation indicator
                 if len(truncated_data) < len(data):
-                    truncated_data['_truncated'] = f"... {len(data) - len(truncated_data)} more fields"
+                    truncated_data["_truncated"] = (
+                        f"... {len(data) - len(truncated_data)} more fields"
+                    )
 
                 return json.dumps(truncated_data, indent=2)
 
@@ -195,7 +213,12 @@ class IntelligentTruncator:
                 for i, item in enumerate(data):
                     test_list = truncated_list + [item]
                     test_content = json.dumps(test_list, indent=2)
-                    if self.token_estimator.estimate_tokens(test_content, ContentType.JSON).estimated_tokens > max_tokens:
+                    if (
+                        self.token_estimator.estimate_tokens(
+                            test_content, ContentType.JSON
+                        ).estimated_tokens
+                        > max_tokens
+                    ):
                         break
                     truncated_list.append(item)
 
@@ -213,23 +236,28 @@ class IntelligentTruncator:
 
     def _truncate_structured(self, content: str, max_tokens: int) -> str:
         """Truncate structured content by lines."""
-        lines = content.split('\n')
+        lines = content.split("\n")
         truncated_lines = []
 
         for line in lines:
-            test_content = '\n'.join(truncated_lines + [line])
-            if self.token_estimator.estimate_tokens(test_content, ContentType.STRUCTURED).estimated_tokens > max_tokens:
+            test_content = "\n".join(truncated_lines + [line])
+            if (
+                self.token_estimator.estimate_tokens(
+                    test_content, ContentType.STRUCTURED
+                ).estimated_tokens
+                > max_tokens
+            ):
                 break
             truncated_lines.append(line)
 
         if len(truncated_lines) < len(lines):
             truncated_lines.append(f"... {len(lines) - len(truncated_lines)} more lines truncated")
 
-        return '\n'.join(truncated_lines)
+        return "\n".join(truncated_lines)
 
     def _truncate_log(self, content: str, max_tokens: int) -> str:
         """Truncate log content, keeping beginning and end."""
-        lines = content.split('\n')
+        lines = content.split("\n")
 
         if len(lines) <= 20:  # Small logs, truncate normally
             return self._truncate_structured(content, max_tokens)
@@ -238,12 +266,17 @@ class IntelligentTruncator:
         head_lines = lines[:10]
         tail_lines = lines[-5:]
 
-        truncated_content = '\n'.join(head_lines)
-        truncated_content += f'\n\n... {len(lines) - 15} lines truncated ...\n\n'
-        truncated_content += '\n'.join(tail_lines)
+        truncated_content = "\n".join(head_lines)
+        truncated_content += f"\n\n... {len(lines) - 15} lines truncated ...\n\n"
+        truncated_content += "\n".join(tail_lines)
 
         # If still too long, fall back to basic truncation
-        if self.token_estimator.estimate_tokens(truncated_content, ContentType.LOG).estimated_tokens > max_tokens:
+        if (
+            self.token_estimator.estimate_tokens(
+                truncated_content, ContentType.LOG
+            ).estimated_tokens
+            > max_tokens
+        ):
             return self._truncate_text(truncated_content, max_tokens)
 
         return truncated_content
@@ -255,7 +288,6 @@ class IntelligentTruncator:
             data = json.loads(content)
             if isinstance(data, dict):
                 # Keep key metrics
-                priority_keys = ['health_score', 'status', 'count', 'total', 'average', 'error_rate']
                 return self._truncate_json(content, max_tokens)
         except (json.JSONDecodeError, TypeError):
             pass
@@ -273,14 +305,16 @@ class IntelligentTruncator:
 
         # Find last word boundary before limit
         truncation_point = char_limit
-        while truncation_point > 0 and content[truncation_point] != ' ':
+        while truncation_point > 0 and content[truncation_point] != " ":
             truncation_point -= 1
 
         if truncation_point == 0:  # No word boundary found, hard truncate
             truncation_point = char_limit - 20  # Leave room for indicator
 
         truncated = content[:truncation_point].rstrip()
-        truncated += f"\n\n... [Content truncated: {len(content) - truncation_point} more characters]"
+        truncated += (
+            f"\n\n... [Content truncated: {len(content) - truncation_point} more characters]"
+        )
 
         return truncated
 
@@ -296,15 +330,17 @@ class SessionTokenLimiter:
 
         # Operation-specific limits (lower limits for typically verbose operations)
         self.operation_limits = {
-            'session_get_dashboard': 20000,
-            'session_analyze_patterns': 15000,
-            'session_monitor_health': 20000,
-            'quality_execute_comprehensive_suite': 15000,  # This was the problematic one
+            "session_get_dashboard": 20000,
+            "session_analyze_patterns": 15000,
+            "session_monitor_health": 20000,
+            "quality_execute_comprehensive_suite": 15000,  # This was the problematic one
         }
 
         logger.info(f"SessionTokenLimiter initialized with default limit: {default_limit}")
 
-    def limit_response(self, response: dict[str, Any], operation: str = "unknown") -> dict[str, Any]:
+    def limit_response(
+        self, response: dict[str, Any], operation: str = "unknown"
+    ) -> dict[str, Any]:
         """Limit response size by truncating content if necessary."""
         if not self.enable_truncation:
             return response
@@ -318,13 +354,19 @@ class SessionTokenLimiter:
 
         # If under limit, return as-is
         if estimate.estimated_tokens <= token_limit:
-            logger.debug(f"Response for {operation}: {estimate.estimated_tokens} tokens (under limit)")
+            logger.debug(
+                f"Response for {operation}: {estimate.estimated_tokens} tokens (under limit)"
+            )
             return response
 
-        logger.info(f"Response for {operation}: {estimate.estimated_tokens} tokens exceeds limit of {token_limit}, truncating...")
+        logger.info(
+            f"Response for {operation}: {estimate.estimated_tokens} tokens exceeds limit of {token_limit}, truncating..."
+        )
 
         # Truncate the response
-        truncation_result = self.truncator.truncate_content(response_json, token_limit, ContentType.JSON)
+        truncation_result = self.truncator.truncate_content(
+            response_json, token_limit, ContentType.JSON
+        )
 
         try:
             # Parse back to dict
@@ -332,26 +374,28 @@ class SessionTokenLimiter:
 
             # Add metadata about truncation
             if isinstance(truncated_response, dict):
-                truncated_response['_token_limit_info'] = {
-                    'original_tokens': truncation_result.original_tokens,
-                    'final_tokens': truncation_result.final_tokens,
-                    'truncated': truncation_result.truncated,
-                    'operation': operation,
-                    'limit': token_limit,
-                    'summary': truncation_result.truncation_summary
+                truncated_response["_token_limit_info"] = {
+                    "original_tokens": truncation_result.original_tokens,
+                    "final_tokens": truncation_result.final_tokens,
+                    "truncated": truncation_result.truncated,
+                    "operation": operation,
+                    "limit": token_limit,
+                    "summary": truncation_result.truncation_summary,
                 }
 
-            logger.info(f"Successfully truncated {operation}: {truncation_result.original_tokens} -> {truncation_result.final_tokens} tokens")
+            logger.info(
+                f"Successfully truncated {operation}: {truncation_result.original_tokens} -> {truncation_result.final_tokens} tokens"
+            )
             return truncated_response
 
         except (json.JSONDecodeError, TypeError) as e:
             logger.error(f"Failed to parse truncated response: {e}")
             # Return minimal error response
             return {
-                'error': 'Response too large and truncation failed',
-                'original_size_tokens': estimate.estimated_tokens,
-                'limit': token_limit,
-                'operation': operation
+                "error": "Response too large and truncation failed",
+                "original_size_tokens": estimate.estimated_tokens,
+                "limit": token_limit,
+                "operation": operation,
             }
 
     def update_limits(self, **operation_limits):

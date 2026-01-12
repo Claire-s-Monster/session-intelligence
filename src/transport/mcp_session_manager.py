@@ -28,9 +28,7 @@ class MCPSessionManager:
         self.database = database
         self._active_sessions: dict[str, dict[str, Any]] = {}
 
-    async def create_mcp_session(
-        self, client_info: dict[str, Any] | None = None
-    ) -> str:
+    async def create_mcp_session(self, client_info: dict[str, Any] | None = None) -> str:
         """Create a new MCP session."""
         mcp_session_id = f"mcp-{uuid.uuid4().hex[:16]}"
         now = datetime.now(UTC).isoformat()
@@ -70,18 +68,14 @@ class MCPSessionManager:
 
         return None
 
-    async def link_engine_session(
-        self, mcp_session_id: str, engine_session_id: str
-    ) -> None:
+    async def link_engine_session(self, mcp_session_id: str, engine_session_id: str) -> None:
         """Link an MCP session to an engine session."""
         if mcp_session_id in self._active_sessions:
             self._active_sessions[mcp_session_id]["engine_session_id"] = engine_session_id
 
         if self.database:
             try:
-                await self.database.link_mcp_to_engine_session(
-                    mcp_session_id, engine_session_id
-                )
+                await self.database.link_mcp_to_engine_session(mcp_session_id, engine_session_id)
             except Exception as e:
                 logger.warning(f"Failed to persist engine session link: {e}")
 

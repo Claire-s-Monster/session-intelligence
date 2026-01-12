@@ -112,9 +112,7 @@ class MigrationManager:
 
         for category in categories:
             if category:
-                decisions = await self.source.query_decisions_by_category(
-                    category, limit=10000
-                )
+                decisions = await self.source.query_decisions_by_category(category, limit=10000)
             else:
                 # Get all decisions not in known categories via session
                 sessions = await self.source.query_sessions(limit=10000)
@@ -130,9 +128,7 @@ class MigrationManager:
                     await self.target.save_decision(decision)
                     self.stats["decisions"] += 1
                 except Exception as e:
-                    logger.warning(
-                        f"Failed to migrate decision {decision.get('id')}: {e}"
-                    )
+                    logger.warning(f"Failed to migrate decision {decision.get('id')}: {e}")
 
         logger.info(f"  Migrated {self.stats['decisions']} decisions")
 
@@ -143,9 +139,7 @@ class MigrationManager:
         # Get metrics via sessions
         sessions = await self.source.query_sessions(limit=10000)
         for session in sessions:
-            metrics = await self.source.query_metrics_by_session(
-                session["id"], limit=1000
-            )
+            metrics = await self.source.query_metrics_by_session(session["id"], limit=1000)
             for metric in metrics:
                 try:
                     await self.target.save_metrics(metric)
@@ -185,9 +179,7 @@ class MigrationManager:
                 await self.target.save_agent_execution(execution)
                 self.stats["agent_executions"] += 1
             except Exception as e:
-                logger.warning(
-                    f"Failed to migrate agent execution {execution.get('id')}: {e}"
-                )
+                logger.warning(f"Failed to migrate agent execution {execution.get('id')}: {e}")
 
         logger.info(f"  Migrated {self.stats['agent_executions']} agent executions")
 
@@ -299,17 +291,15 @@ async def export_to_json(
 
         # Add related data for each session
         for session in data["sessions"]:
-            session["decisions"] = await db.query_decisions_by_session(
-                session["id"], limit=1000
-            )
-            session["metrics"] = await db.query_metrics_by_session(
-                session["id"], limit=1000
-            )
+            session["decisions"] = await db.query_decisions_by_session(session["id"], limit=1000)
+            session["metrics"] = await db.query_metrics_by_session(session["id"], limit=1000)
             session["agent_executions"] = await db.query_agent_executions(
                 session_id=session["id"], limit=1000
             )
 
-        output_path = output_path or Path(f"session-export-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json")
+        output_path = output_path or Path(
+            f"session-export-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
+        )
 
         with open(output_path, "w") as f:
             json.dump(data, f, indent=2, default=str)
@@ -383,9 +373,7 @@ def main() -> None:
     if args.command == "local-to-global":
         result = asyncio.run(migrate_local_to_global(args.source))
     elif args.command == "sqlite-to-postgres":
-        result = asyncio.run(
-            migrate_sqlite_to_postgres(args.source, args.dsn)
-        )
+        result = asyncio.run(migrate_sqlite_to_postgres(args.source, args.dsn))
     elif args.command == "export":
         result = asyncio.run(export_to_json(output_path=args.output))
     else:

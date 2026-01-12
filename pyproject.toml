@@ -56,6 +56,8 @@ pandas = ">=2.0.0"
 # HTTP transport dependencies
 aiosqlite = ">=0.19.0"
 sse-starlette = ">=2.0.0"
+# Resilience
+tenacity = ">=8.2.0"
 
 [tool.pixi.tasks]
 lean-server = { cmd = "python src/lean_server.py", env = { PYTHONPATH = "src" } }
@@ -72,9 +74,15 @@ migrate-local-to-global = { cmd = "python -m persistence.migration local-to-glob
 migrate-to-postgres = { cmd = "python -m persistence.migration sqlite-to-postgres", env = { PYTHONPATH = "src" } }
 db-export = { cmd = "python -m persistence.migration export", env = { PYTHONPATH = "src" } }
 # Quality tasks
-test = "pytest . -v --ignore=.pixi"
+test = "pytest tests/ -v --ignore=tests/live --ignore=tests/debug"
+test-unit = "pytest tests/unit -v"
+test-integration = "pytest tests/integration -v"
+test-debug = "pytest tests/debug -v"
+test-live = "pytest tests/live -v"
+test-all = "pytest tests/ -v"
+test-cov = "pytest tests/ -v --cov=src --cov-report=term-missing --cov-report=html"
 lint = "ruff check src/ --fix"
-format = "black src/ ."
+format = "black src/ tests/"
 type-check = "mypy src/"
 quality = { depends-on = ["lint", "type-check"] }
 check-all = { depends-on = ["test", "quality"] }
@@ -107,3 +115,71 @@ python_version = "3.11"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
+
+# ============================================================================
+# Pytest Configuration
+# ============================================================================
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--ignore=.pixi",
+    "--ignore=scripts",
+]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: integration tests requiring full setup",
+    "live: live server tests (manual execution only)",
+    "debug: debug/diagnostic tests",
+    "unit: unit tests for isolated components",
+    "asyncio: async tests",
+    "postgresql: tests requiring PostgreSQL",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+# ============================================================================
+# Coverage Configuration
+# ============================================================================
+
+[tool.coverage.run]
+source = ["src"]
+branch = true
+parallel = true
+omit = [
+    "*/tests/*",
+    "*/__pycache__/*",
+    "*/site-packages/*",
+    "src/session/server.py",  # Legacy server
+]
+
+[tool.coverage.paths]
+source = ["src"]
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "@abstractmethod",
+]
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.coverage.xml]
+output = "coverage.xml"

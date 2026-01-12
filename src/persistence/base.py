@@ -257,15 +257,24 @@ class BaseDatabaseBackend:
             return obj
         return json.dumps(obj, default=str)
 
-    def _deserialize_json(self, json_str: str | None) -> dict[str, Any]:
-        """Deserialize JSON string to dict."""
+    def _deserialize_json(self, json_str: str | dict | list | None) -> dict[str, Any]:
+        """Deserialize JSON string to dict.
+
+        Handles both string JSON and already-parsed dicts (from PostgreSQL JSONB).
+        """
         import json
 
         if not json_str:
             return {}
+        # Already a dict (PostgreSQL JSONB returns native Python types)
+        if isinstance(json_str, dict):
+            return json_str
+        # Already a list - wrap in dict for consistency
+        if isinstance(json_str, list):
+            return {"items": json_str}
         try:
             return json.loads(json_str)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, TypeError):
             return {}
 
     def _normalize_session_data(self, row: dict[str, Any]) -> dict[str, Any]:

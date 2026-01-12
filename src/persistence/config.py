@@ -1,14 +1,14 @@
 """
 Database configuration and factory for session persistence.
 
+Uses PostgreSQL as the only backend for production-grade session management.
+
 Supports configuration via:
 - Environment variables
 - Configuration file (~/.claude/session-intelligence/config.json)
 - Constructor arguments
 
 Environment Variables:
-    SESSION_DB_BACKEND: sqlite | postgresql (default: sqlite)
-    SESSION_DB_PATH: SQLite file path (default: ~/.claude/session-intelligence/sessions.db)
     SESSION_DB_DSN: PostgreSQL connection string
     SESSION_DB_POOL_MIN: PostgreSQL pool minimum size (default: 2)
     SESSION_DB_POOL_MAX: PostgreSQL pool maximum size (default: 10)
@@ -21,7 +21,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from .base import (
     DEFAULT_DATA_DIR,
@@ -32,18 +32,10 @@ from .base import (
 
 logger = logging.getLogger(__name__)
 
-BackendType = Literal["sqlite", "postgresql"]
-
 
 @dataclass
 class DatabaseConfig:
-    """Configuration for database backend."""
-
-    # Backend selection
-    backend: BackendType = "sqlite"
-
-    # SQLite settings
-    sqlite_path: Path | None = None
+    """Configuration for PostgreSQL database backend."""
 
     # PostgreSQL settings
     postgresql_dsn: str | None = None
@@ -57,16 +49,7 @@ class DatabaseConfig:
     @classmethod
     def from_env(cls) -> DatabaseConfig:
         """Create configuration from environment variables."""
-        backend = os.environ.get("SESSION_DB_BACKEND", "sqlite").lower()
-        if backend not in ("sqlite", "postgresql"):
-            logger.warning(f"Invalid backend '{backend}', defaulting to sqlite")
-            backend = "sqlite"
-
-        config = cls(backend=backend)  # type: ignore
-
-        # SQLite settings
-        if sqlite_path := os.environ.get("SESSION_DB_PATH"):
-            config.sqlite_path = Path(sqlite_path)
+        config = cls()
 
         # PostgreSQL settings
         if dsn := os.environ.get("SESSION_DB_DSN"):
@@ -98,13 +81,6 @@ class DatabaseConfig:
 
             config = cls()
 
-            if backend := data.get("backend"):
-                if backend in ("sqlite", "postgresql"):
-                    config.backend = backend
-
-            if sqlite_path := data.get("sqlite_path"):
-                config.sqlite_path = Path(sqlite_path)
-
             if dsn := data.get("postgresql_dsn"):
                 config.postgresql_dsn = dsn
             if pool_min := data.get("postgresql_pool_min"):
@@ -131,10 +107,6 @@ class DatabaseConfig:
         env_config = cls.from_env()
 
         # Merge (env takes precedence)
-        if os.environ.get("SESSION_DB_BACKEND"):
-            config.backend = env_config.backend
-        if os.environ.get("SESSION_DB_PATH"):
-            config.sqlite_path = env_config.sqlite_path
         if os.environ.get("SESSION_DB_DSN"):
             config.postgresql_dsn = env_config.postgresql_dsn
         if os.environ.get("SESSION_DB_POOL_MIN"):
@@ -152,8 +124,6 @@ class DatabaseConfig:
             config_path = get_default_data_dir() / "config.json"
 
         data = {
-            "backend": self.backend,
-            "sqlite_path": str(self.sqlite_path) if self.sqlite_path else None,
             "postgresql_dsn": self.postgresql_dsn,
             "postgresql_pool_min": self.postgresql_pool_min,
             "postgresql_pool_max": self.postgresql_pool_max,
@@ -168,62 +138,44 @@ class DatabaseConfig:
 
 def create_database(
     config: DatabaseConfig | None = None,
-    backend: BackendType | None = None,
     **kwargs: Any,
 ) -> DatabaseBackend:
-    """Factory function to create the appropriate database backend.
+    """Factory function to create the PostgreSQL database backend.
 
     Args:
         config: DatabaseConfig instance. If None, loads from env/file.
-        backend: Override backend type.
         **kwargs: Additional arguments passed to backend constructor.
 
     Returns:
-        Configured database backend (not yet initialized).
+        Configured PostgreSQL database backend (not yet initialized).
 
     Usage:
-        # Auto-detect from environment
+        # Auto-detect from environment/config
         db = create_database()
         await db.initialize()
 
-        # Explicit SQLite
-        db = create_database(backend="sqlite", db_path="/path/to/db.sqlite")
-
-        # Explicit PostgreSQL
-        db = create_database(backend="postgresql", dsn="postgresql://...")
+        # Explicit DSN
+        db = create_database(dsn="postgresql://localhost/session_intelligence")
     """
     if config is None:
         config = DatabaseConfig.load()
 
-    # Allow override
-    actual_backend = backend or config.backend
+    from .postgresql import PostgreSQLBackend
 
-    if actual_backend == "postgresql":
-        from .postgresql import PostgreSQLBackend
-
-        dsn = kwargs.pop("dsn", None) or config.postgresql_dsn or DEFAULT_POSTGRES_DSN
-        pool_kwargs = {
-            "min_size": kwargs.pop("min_size", config.postgresql_pool_min),
-            "max_size": kwargs.pop("max_size", config.postgresql_pool_max),
-        }
-        pool_kwargs.update(kwargs)
-        return PostgreSQLBackend(dsn=dsn, **pool_kwargs)
-
-    else:  # sqlite (default)
-        from .sqlite import SQLiteBackend
-
-        db_path = kwargs.pop("db_path", None)
-        if db_path is None:
-            db_path = str(config.sqlite_path) if config.sqlite_path else None
-        return SQLiteBackend(db_path=db_path)
+    dsn = kwargs.pop("dsn", None) or config.postgresql_dsn or DEFAULT_POSTGRES_DSN
+    pool_kwargs = {
+        "min_size": kwargs.pop("min_size", config.postgresql_pool_min),
+        "max_size": kwargs.pop("max_size", config.postgresql_pool_max),
+    }
+    pool_kwargs.update(kwargs)
+    return PostgreSQLBackend(dsn=dsn, **pool_kwargs)
 
 
 async def get_database(
     config: DatabaseConfig | None = None,
-    backend: BackendType | None = None,
     **kwargs: Any,
 ) -> DatabaseBackend:
-    """Create and initialize database backend.
+    """Create and initialize PostgreSQL database backend.
 
     Convenience function that creates and initializes in one call.
 
@@ -231,6 +183,6 @@ async def get_database(
         db = await get_database()
         sessions = await db.query_sessions()
     """
-    db = create_database(config=config, backend=backend, **kwargs)
+    db = create_database(config=config, **kwargs)
     await db.initialize()
     return db

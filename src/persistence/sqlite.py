@@ -362,18 +362,26 @@ class SQLiteBackend(BaseDatabaseBackend):
             self._is_connected = False
             logger.info("SQLite connection closed")
 
-    def _ensure_connected(self) -> None:
-        """Raise error if not connected."""
-        if not self._connection:
-            raise RuntimeError("Database not initialized")
+    def _ensure_connected(self) -> aiosqlite.Connection:
+        """Return database connection or raise if not connected.
+
+        Returns:
+            The aiosqlite database connection.
+
+        Raises:
+            RuntimeError: If database not initialized.
+        """
+        if self._connection is None:
+            raise RuntimeError("Database not initialized. Call initialize() first.")
+        return self._connection
 
     # Session operations
 
     async def save_session(self, session_data: dict[str, Any]) -> None:
         """Save or update a session."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT OR REPLACE INTO sessions
             (id, started_at, ended_at, project_path, project_name, mode, status,
@@ -393,13 +401,13 @@ class SQLiteBackend(BaseDatabaseBackend):
                 self._serialize_json(session_data.get("health_status", {})),
             ),
         )
-        await self._connection.commit()
+        await conn.commit()
 
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
         """Get a session by ID."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             "SELECT * FROM sessions WHERE id = ?", (session_id,)
         )
         row = await cursor.fetchone()
@@ -414,7 +422,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         status: str | None = None,
     ) -> list[dict[str, Any]]:
         """Query sessions with optional filters."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         query = "SELECT * FROM sessions WHERE 1=1"
         params: list[Any] = []
@@ -429,17 +437,15 @@ class SQLiteBackend(BaseDatabaseBackend):
         query += " ORDER BY started_at DESC LIMIT ?"
         params.append(limit)
 
-        cursor = await self._connection.execute(query, params)
+        cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
         return [self._normalize_session_data(dict(row)) for row in rows]
 
-    async def get_active_session_for_project(
-        self, project_path: str
-    ) -> dict[str, Any] | None:
+    async def get_active_session_for_project(self, project_path: str) -> dict[str, Any] | None:
         """Get the most recent active session for a project path."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             """
             SELECT * FROM sessions
             WHERE project_path = ? AND status = 'active'
@@ -455,38 +461,30 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def delete_session(self, session_id: str) -> bool:
         """Delete a session by ID."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         # Delete related records first (cascade)
-        await self._connection.execute(
-            "DELETE FROM decisions WHERE session_id = ?", (session_id,)
-        )
-        await self._connection.execute(
-            "DELETE FROM metrics WHERE session_id = ?", (session_id,)
-        )
-        await self._connection.execute(
-            "DELETE FROM notes WHERE session_id = ?", (session_id,)
-        )
-        await self._connection.execute(
+        await conn.execute("DELETE FROM decisions WHERE session_id = ?", (session_id,))
+        await conn.execute("DELETE FROM metrics WHERE session_id = ?", (session_id,))
+        await conn.execute("DELETE FROM notes WHERE session_id = ?", (session_id,))
+        await conn.execute(
             "DELETE FROM file_operations WHERE session_id = ?", (session_id,)
         )
-        await self._connection.execute(
+        await conn.execute(
             "DELETE FROM agent_executions WHERE session_id = ?", (session_id,)
         )
 
-        cursor = await self._connection.execute(
-            "DELETE FROM sessions WHERE id = ?", (session_id,)
-        )
-        await self._connection.commit()
+        cursor = await conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+        await conn.commit()
         return cursor.rowcount > 0
 
     # Decision operations
 
     async def save_decision(self, decision_data: dict[str, Any]) -> None:
         """Save a decision."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT INTO decisions
             (id, session_id, timestamp, category, description, rationale,
@@ -505,15 +503,15 @@ class SQLiteBackend(BaseDatabaseBackend):
                 self._serialize_json(decision_data.get("artifacts", [])),
             ),
         )
-        await self._connection.commit()
+        await conn.commit()
 
     async def query_decisions_by_category(
         self, category: str, limit: int = 100
     ) -> list[dict[str, Any]]:
         """Query decisions by category across sessions."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             """
             SELECT d.*, s.project_name
             FROM decisions d
@@ -531,9 +529,9 @@ class SQLiteBackend(BaseDatabaseBackend):
         self, session_id: str, limit: int = 100
     ) -> list[dict[str, Any]]:
         """Query decisions for a specific session."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             """
             SELECT * FROM decisions
             WHERE session_id = ?
@@ -549,9 +547,9 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def save_metrics(self, metrics_data: dict[str, Any]) -> None:
         """Save metrics snapshot."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT INTO metrics
             (session_id, branch, timestamp, coverage, complexity, test_count,
@@ -570,15 +568,13 @@ class SQLiteBackend(BaseDatabaseBackend):
                 self._serialize_json(metrics_data.get("custom_metrics", {})),
             ),
         )
-        await self._connection.commit()
+        await conn.commit()
 
-    async def query_metrics_by_branch(
-        self, branch: str, limit: int = 100
-    ) -> list[dict[str, Any]]:
+    async def query_metrics_by_branch(self, branch: str, limit: int = 100) -> list[dict[str, Any]]:
         """Query metrics by branch across sessions."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             """
             SELECT * FROM metrics
             WHERE branch = ?
@@ -594,9 +590,9 @@ class SQLiteBackend(BaseDatabaseBackend):
         self, session_id: str, limit: int = 100
     ) -> list[dict[str, Any]]:
         """Query metrics for a specific session."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             """
             SELECT * FROM metrics
             WHERE session_id = ?
@@ -612,9 +608,9 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def save_note(self, note_data: dict[str, Any]) -> None:
         """Save a session note."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT INTO notes (session_id, date, content, tags)
             VALUES (?, ?, ?, ?)
@@ -626,15 +622,13 @@ class SQLiteBackend(BaseDatabaseBackend):
                 self._serialize_json(note_data.get("tags", [])),
             ),
         )
-        await self._connection.commit()
+        await conn.commit()
 
-    async def query_notes_by_date(
-        self, date: str, limit: int = 100
-    ) -> list[dict[str, Any]]:
+    async def query_notes_by_date(self, date: str, limit: int = 100) -> list[dict[str, Any]]:
         """Query notes by date across sessions."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             """
             SELECT n.*, s.project_name
             FROM notes n
@@ -652,9 +646,9 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def save_file_operation(self, file_op_data: dict[str, Any]) -> None:
         """Save a file operation record."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT INTO file_operations
             (session_id, timestamp, operation, file_path, lines_added, lines_removed, summary, tool_name)
@@ -671,15 +665,15 @@ class SQLiteBackend(BaseDatabaseBackend):
                 file_op_data.get("tool_name"),
             ),
         )
-        await self._connection.commit()
+        await conn.commit()
 
     async def query_file_operations_by_session(
         self, session_id: str, limit: int = 100
     ) -> list[dict[str, Any]]:
         """Query file operations for a specific session."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             """
             SELECT * FROM file_operations
             WHERE session_id = ?
@@ -695,9 +689,9 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def save_session_summary(self, summary_data: dict[str, Any]) -> None:
         """Save or update a session summary/notebook."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT OR REPLACE INTO session_summaries
             (session_id, title, summary_markdown, key_changes, tags, created_at)
@@ -712,26 +706,84 @@ class SQLiteBackend(BaseDatabaseBackend):
                 summary_data.get("created_at", self._get_timestamp()),
             ),
         )
-        await self._connection.commit()
+        await conn.commit()
 
     async def get_session_summary(self, session_id: str) -> dict[str, Any] | None:
         """Retrieve a session summary by session ID."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             "SELECT * FROM session_summaries WHERE session_id = ?",
             (session_id,),
         )
         row = await cursor.fetchone()
         return dict(row) if row else None
 
+    async def query_session_summaries(
+        self,
+        project_path: str | None = None,
+        tags: list[str] | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Query session summaries/notebooks with optional filters."""
+        conn = self._ensure_connected()
+
+        if tags:
+            # Query by tags
+            query = """
+                SELECT ss.*, s.project_path, s.project_name
+                FROM session_summaries ss
+                JOIN sessions s ON ss.session_id = s.id
+                WHERE EXISTS (
+                    SELECT 1 FROM json_each(ss.tags) WHERE value = ?
+                )
+            """
+            params: list[Any] = [tags[0]]  # Match first tag
+            if project_path:
+                query += " AND s.project_path = ?"
+                params.append(project_path)
+            query += " ORDER BY ss.created_at DESC LIMIT ?"
+            params.append(limit)
+        elif project_path:
+            # Query by project
+            query = """
+                SELECT ss.*, s.project_path, s.project_name
+                FROM session_summaries ss
+                JOIN sessions s ON ss.session_id = s.id
+                WHERE s.project_path = ?
+                ORDER BY ss.created_at DESC
+                LIMIT ?
+            """
+            params = [project_path, limit]
+        else:
+            # Query all recent
+            query = """
+                SELECT ss.*, s.project_path, s.project_name
+                FROM session_summaries ss
+                JOIN sessions s ON ss.session_id = s.id
+                ORDER BY ss.created_at DESC
+                LIMIT ?
+            """
+            params = [limit]
+
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+
+        results = []
+        for row in rows:
+            result = dict(row)
+            result["key_changes"] = self._deserialize_json(result.get("key_changes"))
+            result["tags"] = self._deserialize_json(result.get("tags"))
+            results.append(result)
+        return results
+
     # Agent execution operations
 
     async def save_agent_execution(self, execution_data: dict[str, Any]) -> None:
         """Save agent execution record."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT OR REPLACE INTO agent_executions
             (id, session_id, agent_name, agent_type, started_at, completed_at,
@@ -751,7 +803,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 self._serialize_json(execution_data.get("errors", [])),
             ),
         )
-        await self._connection.commit()
+        await conn.commit()
 
     async def query_agent_executions(
         self,
@@ -760,7 +812,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Query agent executions with optional filters."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         query = "SELECT * FROM agent_executions WHERE 1=1"
         params: list[Any] = []
@@ -775,7 +827,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         query += " ORDER BY started_at DESC LIMIT ?"
         params.append(limit)
 
-        cursor = await self._connection.execute(query, params)
+        cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
@@ -783,9 +835,9 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def save_mcp_session(self, mcp_session_data: dict[str, Any]) -> None:
         """Save MCP session mapping."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT OR REPLACE INTO mcp_sessions
             (mcp_session_id, engine_session_id, created_at, last_activity, client_info)
@@ -799,13 +851,13 @@ class SQLiteBackend(BaseDatabaseBackend):
                 self._serialize_json(mcp_session_data.get("client_info", {})),
             ),
         )
-        await self._connection.commit()
+        await conn.commit()
 
     async def get_mcp_session(self, mcp_session_id: str) -> dict[str, Any] | None:
         """Get MCP session by ID."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             "SELECT * FROM mcp_sessions WHERE mcp_session_id = ?",
             (mcp_session_id,),
         )
@@ -816,33 +868,31 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def update_mcp_session_activity(self, mcp_session_id: str) -> None:
         """Update last activity timestamp for MCP session."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        await self._connection.execute(
+        await conn.execute(
             "UPDATE mcp_sessions SET last_activity = ? WHERE mcp_session_id = ?",
             (self._get_timestamp(), mcp_session_id),
         )
-        await self._connection.commit()
+        await conn.commit()
 
-    async def link_mcp_to_engine_session(
-        self, mcp_session_id: str, engine_session_id: str
-    ) -> None:
+    async def link_mcp_to_engine_session(self, mcp_session_id: str, engine_session_id: str) -> None:
         """Link MCP session to engine session."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        await self._connection.execute(
+        await conn.execute(
             "UPDATE mcp_sessions SET engine_session_id = ? WHERE mcp_session_id = ?",
             (engine_session_id, mcp_session_id),
         )
-        await self._connection.commit()
+        await conn.commit()
 
     # Session summary operations
 
     async def save_session_summary(self, summary_data: dict[str, Any]) -> None:
         """Save or update a session summary."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT OR REPLACE INTO session_summaries
             (session_id, title, summary_markdown, key_changes, tags, created_at)
@@ -857,16 +907,16 @@ class SQLiteBackend(BaseDatabaseBackend):
                 summary_data.get("created_at", self._get_timestamp()),
             ),
         )
-        await self._connection.commit()
+        await conn.commit()
 
         # Update FTS index
         await self._update_search_index(summary_data["session_id"])
 
     async def get_session_summary(self, session_id: str) -> dict[str, Any] | None:
         """Get session summary by session ID."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             "SELECT * FROM session_summaries WHERE session_id = ?", (session_id,)
         )
         row = await cursor.fetchone()
@@ -877,14 +927,12 @@ class SQLiteBackend(BaseDatabaseBackend):
             return result
         return None
 
-    async def query_summaries_by_tag(
-        self, tag: str, limit: int = 50
-    ) -> list[dict[str, Any]]:
+    async def query_summaries_by_tag(self, tag: str, limit: int = 50) -> list[dict[str, Any]]:
         """Query session summaries that contain a specific tag."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         # SQLite JSON search using json_each
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             """
             SELECT ss.*, s.project_name, s.project_path
             FROM session_summaries ss
@@ -908,9 +956,9 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def query_recent_summaries(self, limit: int = 20) -> list[dict[str, Any]]:
         """Get most recent session summaries."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             """
             SELECT ss.*, s.project_name, s.project_path
             FROM session_summaries ss
@@ -933,9 +981,9 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def save_agent(self, agent_data: dict[str, Any]) -> None:
         """Save or update an agent."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT OR REPLACE INTO agents
             (id, name, agent_type, display_name, description, metadata, capabilities,
@@ -960,15 +1008,13 @@ class SQLiteBackend(BaseDatabaseBackend):
                 1 if agent_data.get("is_active", True) else 0,
             ),
         )
-        await self._connection.commit()
+        await conn.commit()
 
     async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
         """Get an agent by ID."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        cursor = await self._connection.execute(
-            "SELECT * FROM agents WHERE id = ?", (agent_id,)
-        )
+        cursor = await conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,))
         row = await cursor.fetchone()
         if row:
             result = dict(row)
@@ -980,11 +1026,9 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def get_agent_by_name(self, name: str) -> dict[str, Any] | None:
         """Get an agent by unique name."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        cursor = await self._connection.execute(
-            "SELECT * FROM agents WHERE name = ?", (name,)
-        )
+        cursor = await conn.execute("SELECT * FROM agents WHERE name = ?", (name,))
         row = await cursor.fetchone()
         if row:
             result = dict(row)
@@ -1001,7 +1045,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             agent_id: The agent ID
             stat_type: One of 'executions', 'decisions', 'learnings', 'notebooks'
         """
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         valid_stats = {"executions", "decisions", "learnings", "notebooks"}
         if stat_type not in valid_stats:
@@ -1010,7 +1054,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         column = f"total_{stat_type}"
         now = self._get_timestamp()
 
-        await self._connection.execute(
+        await conn.execute(
             f"""
             UPDATE agents
             SET {column} = {column} + 1, last_active_at = ?
@@ -1018,13 +1062,13 @@ class SQLiteBackend(BaseDatabaseBackend):
             """,
             (now, agent_id),
         )
-        await self._connection.commit()
+        await conn.commit()
 
     async def save_agent_decision(self, decision_data: dict[str, Any]) -> None:
         """Save an agent decision."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT INTO agent_decisions
             (id, agent_id, timestamp, description, rationale, category, impact_level,
@@ -1049,7 +1093,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 decision_data.get("outcome_updated_at"),
             ),
         )
-        await self._connection.commit()
+        await conn.commit()
 
     async def query_agent_decisions(
         self,
@@ -1059,7 +1103,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Query decisions for an agent with optional filters."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         query = "SELECT * FROM agent_decisions WHERE agent_id = ?"
         params: list[Any] = [agent_id]
@@ -1074,7 +1118,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         query += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
 
-        cursor = await self._connection.execute(query, params)
+        cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
 
         results = []
@@ -1089,10 +1133,10 @@ class SQLiteBackend(BaseDatabaseBackend):
         self, decision_id: str, outcome: str, notes: str | None = None
     ) -> None:
         """Update the outcome of an agent decision."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         now = self._get_timestamp()
-        await self._connection.execute(
+        await conn.execute(
             """
             UPDATE agent_decisions
             SET outcome = ?, outcome_notes = ?, outcome_updated_at = ?
@@ -1100,14 +1144,14 @@ class SQLiteBackend(BaseDatabaseBackend):
             """,
             (outcome, notes, now, decision_id),
         )
-        await self._connection.commit()
+        await conn.commit()
 
     async def save_agent_learning(self, learning_data: dict[str, Any]) -> None:
         """Save an agent learning."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         now = self._get_timestamp()
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT INTO agent_learnings
             (id, agent_id, category, trigger_context, learning_content, applies_to,
@@ -1131,7 +1175,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 learning_data.get("updated_at", now),
             ),
         )
-        await self._connection.commit()
+        await conn.commit()
 
     async def query_agent_learnings(
         self,
@@ -1140,7 +1184,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         """Query learnings for an agent with optional category filter."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         query = "SELECT * FROM agent_learnings WHERE agent_id = ?"
         params: list[Any] = [agent_id]
@@ -1152,7 +1196,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         query += " ORDER BY success_count DESC, updated_at DESC LIMIT ?"
         params.append(limit)
 
-        cursor = await self._connection.execute(query, params)
+        cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
 
         results = []
@@ -1162,15 +1206,13 @@ class SQLiteBackend(BaseDatabaseBackend):
             results.append(result)
         return results
 
-    async def update_agent_learning_outcome(
-        self, learning_id: str, success: bool
-    ) -> None:
+    async def update_agent_learning_outcome(self, learning_id: str, success: bool) -> None:
         """Increment success or failure count for an agent learning."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         now = self._get_timestamp()
         if success:
-            await self._connection.execute(
+            await conn.execute(
                 """
                 UPDATE agent_learnings
                 SET success_count = success_count + 1, last_used_at = ?, updated_at = ?
@@ -1179,7 +1221,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 (now, now, learning_id),
             )
         else:
-            await self._connection.execute(
+            await conn.execute(
                 """
                 UPDATE agent_learnings
                 SET failure_count = failure_count + 1, last_used_at = ?, updated_at = ?
@@ -1187,14 +1229,14 @@ class SQLiteBackend(BaseDatabaseBackend):
                 """,
                 (now, now, learning_id),
             )
-        await self._connection.commit()
+        await conn.commit()
 
     async def save_agent_notebook(self, notebook_data: dict[str, Any]) -> None:
         """Save an agent notebook."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         now = self._get_timestamp()
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT INTO agent_notebooks
             (id, agent_id, title, summary_markdown, notebook_type, tags,
@@ -1217,7 +1259,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 notebook_data.get("covers_to"),
             ),
         )
-        await self._connection.commit()
+        await conn.commit()
 
     async def query_agent_notebooks(
         self,
@@ -1226,7 +1268,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         """Query notebooks for an agent with optional type filter."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         query = "SELECT * FROM agent_notebooks WHERE agent_id = ?"
         params: list[Any] = [agent_id]
@@ -1238,7 +1280,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
 
-        cursor = await self._connection.execute(query, params)
+        cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
 
         results = []
@@ -1254,10 +1296,10 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def _update_search_index(self, session_id: str) -> None:
         """Update FTS index for a session."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         # Gather all searchable content for this session
-        session = await self.get_session(session_id)
+        await self.get_session(session_id)
         summary = await self.get_session_summary(session_id)
         decisions = await self.query_decisions_by_session(session_id)
 
@@ -1269,7 +1311,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
 
         # Get notes for this session
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             "SELECT content FROM notes WHERE session_id = ?", (session_id,)
         )
         notes_rows = await cursor.fetchall()
@@ -1278,35 +1320,38 @@ class SQLiteBackend(BaseDatabaseBackend):
         tags_text = " ".join(summary.get("tags", [])) if summary else ""
 
         # Delete existing entry and insert new one
-        await self._connection.execute(
+        await conn.execute(
             "DELETE FROM session_search WHERE session_id = ?", (session_id,)
         )
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT INTO session_search (session_id, title, summary, decisions, notes, tags)
             VALUES (?, ?, ?, ?, ?, ?)
         """,
             (session_id, title, summary_text, decisions_text, notes_text, tags_text),
         )
-        await self._connection.commit()
+        await conn.commit()
 
-    async def search_sessions(
-        self, query: str, limit: int = 20
-    ) -> list[dict[str, Any]]:
+    async def search_sessions(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
         """Full-text search across sessions."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         # Use FTS5 MATCH syntax for full-text search
-        cursor = await self._connection.execute(
+        # JOIN with sessions table to avoid N+1 query pattern
+        cursor = await conn.execute(
             """
             SELECT
                 ss.session_id,
                 ss.title,
                 ss.summary,
                 ss.tags,
+                s.project_name,
+                s.project_path,
+                s.started_at,
                 bm25(session_search) as relevance,
                 snippet(session_search, 2, '<mark>', '</mark>', '...', 32) as snippet
             FROM session_search ss
+            JOIN sessions s ON ss.session_id = s.id
             WHERE session_search MATCH ?
             ORDER BY relevance
             LIMIT ?
@@ -1315,27 +1360,16 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
         rows = await cursor.fetchall()
 
-        results = []
-        for row in rows:
-            result = dict(row)
-            # Enrich with session data
-            session = await self.get_session(result["session_id"])
-            if session:
-                result["project_name"] = session.get("project_name")
-                result["project_path"] = session.get("project_path")
-                result["started_at"] = session.get("started_at")
-            results.append(result)
-
-        return results
+        return [dict(row) for row in rows]
 
     async def search_by_file_change(
         self, file_pattern: str, limit: int = 20
     ) -> list[dict[str, Any]]:
         """Search sessions by file changes."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         # Search in key_changes JSON array
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             """
             SELECT ss.*, s.project_name, s.project_path
             FROM session_summaries ss
@@ -1370,10 +1404,10 @@ class SQLiteBackend(BaseDatabaseBackend):
         source_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Save a project-specific learning."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         now = datetime.now(UTC).isoformat()
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT INTO project_learnings (
                 id, project_path, category, trigger_context, learning_content,
@@ -1396,7 +1430,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 now,
             ),
         )
-        await self._connection.commit()
+        await conn.commit()
         return {"id": learning_id, "status": "saved"}
 
     async def query_project_learnings(
@@ -1406,10 +1440,10 @@ class SQLiteBackend(BaseDatabaseBackend):
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         """Query learnings for a project."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         if category:
-            cursor = await self._connection.execute(
+            cursor = await conn.execute(
                 """
                 SELECT * FROM project_learnings
                 WHERE project_path = ? AND category = ?
@@ -1419,7 +1453,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 (project_path, category, limit),
             )
         else:
-            cursor = await self._connection.execute(
+            cursor = await conn.execute(
                 """
                 SELECT * FROM project_learnings
                 WHERE project_path = ?
@@ -1432,15 +1466,13 @@ class SQLiteBackend(BaseDatabaseBackend):
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
-    async def update_learning_usage(
-        self, learning_id: str, success: bool
-    ) -> dict[str, Any]:
+    async def update_learning_usage(self, learning_id: str, success: bool) -> dict[str, Any]:
         """Update success/failure count for a learning."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         now = datetime.now(UTC).isoformat()
         if success:
-            await self._connection.execute(
+            await conn.execute(
                 """
                 UPDATE project_learnings
                 SET success_count = success_count + 1, last_used = ?
@@ -1449,7 +1481,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 (now, learning_id),
             )
         else:
-            await self._connection.execute(
+            await conn.execute(
                 """
                 UPDATE project_learnings
                 SET failure_count = failure_count + 1, last_used = ?
@@ -1457,7 +1489,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             """,
                 (now, learning_id),
             )
-        await self._connection.commit()
+        await conn.commit()
         return {"id": learning_id, "updated": True, "success": success}
 
     # Error Solutions operations
@@ -1473,13 +1505,13 @@ class SQLiteBackend(BaseDatabaseBackend):
         source_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Save an error→solution mapping."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
         import hashlib
 
         now = datetime.now(UTC).isoformat()
         error_hash = hashlib.sha256(error_pattern.encode()).hexdigest()[:16]
 
-        await self._connection.execute(
+        await conn.execute(
             """
             INSERT INTO error_solutions (
                 id, error_pattern, error_hash, error_category, solution_steps,
@@ -1504,7 +1536,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 now,
             ),
         )
-        await self._connection.commit()
+        await conn.commit()
         return {"id": solution_id, "error_hash": error_hash, "status": "saved"}
 
     async def find_error_solutions(
@@ -1515,11 +1547,11 @@ class SQLiteBackend(BaseDatabaseBackend):
         limit: int = 5,
     ) -> list[dict[str, Any]]:
         """Find solutions matching an error pattern."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         # Build query based on scope
         if project_path and include_universal:
-            cursor = await self._connection.execute(
+            cursor = await conn.execute(
                 """
                 SELECT * FROM error_solutions
                 WHERE (project_path = ? OR project_path IS NULL)
@@ -1533,7 +1565,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 (project_path, f"%{error_text[:100]}%", error_text, project_path, limit),
             )
         elif project_path:
-            cursor = await self._connection.execute(
+            cursor = await conn.execute(
                 """
                 SELECT * FROM error_solutions
                 WHERE project_path = ?
@@ -1544,7 +1576,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 (project_path, f"%{error_text[:100]}%", error_text, limit),
             )
         else:
-            cursor = await self._connection.execute(
+            cursor = await conn.execute(
                 """
                 SELECT * FROM error_solutions
                 WHERE project_path IS NULL
@@ -1566,16 +1598,14 @@ class SQLiteBackend(BaseDatabaseBackend):
             results.append(result)
         return results
 
-    async def update_solution_outcome(
-        self, solution_id: str, success: bool
-    ) -> dict[str, Any]:
+    async def update_solution_outcome(self, solution_id: str, success: bool) -> dict[str, Any]:
         """Update success rate for a solution."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         now = datetime.now(UTC).isoformat()
 
         # Get current stats
-        cursor = await self._connection.execute(
+        cursor = await conn.execute(
             "SELECT usage_count, success_rate FROM error_solutions WHERE id = ?",
             (solution_id,),
         )
@@ -1593,7 +1623,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         else:
             new_rate = (current_rate * usage_count) / new_usage
 
-        await self._connection.execute(
+        await conn.execute(
             """
             UPDATE error_solutions
             SET usage_count = ?, success_rate = ?, last_used = ?
@@ -1601,7 +1631,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         """,
             (new_usage, new_rate, now, solution_id),
         )
-        await self._connection.commit()
+        await conn.commit()
         return {
             "id": solution_id,
             "usage_count": new_usage,
@@ -1613,25 +1643,34 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def vacuum(self) -> None:
         """Optimize database storage."""
-        self._ensure_connected()
-        await self._connection.execute("VACUUM")
-        await self._connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn = self._ensure_connected()
+        await conn.execute("VACUUM")
+        await conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         logger.info("SQLite database vacuumed")
 
     async def get_statistics(self) -> dict[str, Any]:
         """Get database statistics for monitoring."""
-        self._ensure_connected()
+        conn = self._ensure_connected()
 
         stats: dict[str, Any] = {"backend": "sqlite", "path": str(self.db_path)}
 
         # Get table counts
         tables = [
-            "sessions", "decisions", "metrics", "notes", "file_operations",
-            "agent_executions", "mcp_sessions", "session_summaries",
-            "agents", "agent_decisions", "agent_learnings", "agent_notebooks",
+            "sessions",
+            "decisions",
+            "metrics",
+            "notes",
+            "file_operations",
+            "agent_executions",
+            "mcp_sessions",
+            "session_summaries",
+            "agents",
+            "agent_decisions",
+            "agent_learnings",
+            "agent_notebooks",
         ]
         for table in tables:
-            cursor = await self._connection.execute(f"SELECT COUNT(*) FROM {table}")
+            cursor = await conn.execute(f"SELECT COUNT(*) FROM {table}")
             row = await cursor.fetchone()
             stats[f"{table}_count"] = row[0] if row else 0
 

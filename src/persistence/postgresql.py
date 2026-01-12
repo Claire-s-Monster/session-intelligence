@@ -25,7 +25,7 @@ try:
 except ImportError:
     asyncpg = None  # type: ignore
 
-from .base import DEFAULT_POSTGRES_DSN, BaseDatabaseBackend
+from .base import DEFAULT_POSTGRES_DSN, BaseDatabaseBackend, db_retry, sanitize_dsn
 
 logger = logging.getLogger(__name__)
 
@@ -328,8 +328,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
         if asyncpg is None:
             raise ImportError(
-                "asyncpg is required for PostgreSQL backend. "
-                "Install with: pixi add asyncpg"
+                "asyncpg is required for PostgreSQL backend. " "Install with: pixi add asyncpg"
             )
 
         self.dsn = dsn or DEFAULT_POSTGRES_DSN
@@ -338,9 +337,20 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     async def initialize(self) -> None:
         """Initialize database connection pool and apply schema."""
+        # Default pool configuration for production use
+        # These can be overridden via __init__ kwargs
+        pool_defaults = {
+            "min_size": 2,        # Minimum connections to maintain
+            "max_size": 10,       # Maximum connections allowed
+            "timeout": 30,        # Connection acquisition timeout (seconds)
+            "command_timeout": 60,  # Command execution timeout (seconds)
+        }
+        # Merge defaults with user-provided kwargs (user kwargs take precedence)
+        pool_config = {**pool_defaults, **self._pool_kwargs}
+
         self._pool = await asyncpg.create_pool(
             self.dsn,
-            **self._pool_kwargs,
+            **pool_config,
         )
 
         # Apply schema
@@ -366,7 +376,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             )
 
         self._is_connected = True
-        logger.info(f"PostgreSQL database initialized: {self.dsn.split('@')[-1]}")
+        logger.info(f"PostgreSQL database initialized: {sanitize_dsn(self.dsn)}")
 
     async def close(self) -> None:
         """Close database connection pool."""
@@ -376,10 +386,18 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             self._is_connected = False
             logger.info("PostgreSQL connection pool closed")
 
-    def _ensure_connected(self) -> None:
-        """Raise error if not connected."""
-        if not self._pool:
-            raise RuntimeError("Database not initialized")
+    def _ensure_connected(self) -> "asyncpg.Pool":
+        """Return connection pool or raise if not connected.
+
+        Returns:
+            The asyncpg connection pool.
+
+        Raises:
+            RuntimeError: If database not initialized.
+        """
+        if self._pool is None:
+            raise RuntimeError("Database not initialized. Call initialize() first.")
+        return self._pool
 
     def _to_jsonb(self, obj: Any) -> Any:
         """Convert object to JSONB-compatible format."""
@@ -393,16 +411,40 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         return obj
 
     def _from_record(self, record: asyncpg.Record) -> dict[str, Any]:
-        """Convert asyncpg Record to dict."""
-        return dict(record)
+        """Convert asyncpg Record to dict, parsing JSON strings for JSONB fields."""
+        result = dict(record)
+
+        # Parse JSON strings that should be dicts/lists (JSONB fields stored as strings)
+        json_fields = [
+            "metadata",
+            "capabilities",
+            "tags",
+            "alternatives",
+            "applicability",
+            "context",
+            "decisions_referenced",
+            "learnings_referenced",
+            "performance_metrics",
+            "health_status",
+        ]
+
+        for field in json_fields:
+            if field in result and isinstance(result[field], str):
+                try:
+                    result[field] = json.loads(result[field])
+                except (json.JSONDecodeError, TypeError):
+                    pass  # Keep as string if parsing fails
+
+        return result
 
     # Session operations
 
+    @db_retry
     async def save_session(self, session_data: dict[str, Any]) -> None:
         """Save or update a session."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO sessions
@@ -434,18 +476,18 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 json.dumps({"session_id": session_data["id"], "action": "upsert"}),
             )
 
+    @db_retry
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
         """Get a session by ID."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT * FROM sessions WHERE id = $1", session_id
-            )
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT * FROM sessions WHERE id = $1", session_id)
             if row:
                 return self._normalize_session_data(self._from_record(row))
             return None
 
+    @db_retry
     async def query_sessions(
         self,
         limit: int = 50,
@@ -453,7 +495,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         status: str | None = None,
     ) -> list[dict[str, Any]]:
         """Query sessions with optional filters."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
         query = "SELECT * FROM sessions WHERE 1=1"
         params: list[Any] = []
@@ -471,17 +513,16 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         query += f" ORDER BY started_at DESC LIMIT ${param_idx}"
         params.append(limit)
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
             return [self._normalize_session_data(self._from_record(row)) for row in rows]
 
-    async def get_active_session_for_project(
-        self, project_path: str
-    ) -> dict[str, Any] | None:
+    @db_retry
+    async def get_active_session_for_project(self, project_path: str) -> dict[str, Any] | None:
         """Get the most recent active session for a project path."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT * FROM sessions
@@ -495,14 +536,13 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 return self._normalize_session_data(self._from_record(row))
             return None
 
+    @db_retry
     async def delete_session(self, session_id: str) -> bool:
         """Delete a session by ID (cascades to related tables)."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
-            result = await conn.execute(
-                "DELETE FROM sessions WHERE id = $1", session_id
-            )
+        async with pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM sessions WHERE id = $1", session_id)
             deleted = result == "DELETE 1"
 
             if deleted:
@@ -515,11 +555,12 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     # Decision operations
 
+    @db_retry
     async def save_decision(self, decision_data: dict[str, Any]) -> None:
         """Save a decision."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO decisions
@@ -542,13 +583,14 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 json.dumps(decision_data.get("artifacts", [])),
             )
 
+    @db_retry
     async def query_decisions_by_category(
         self, category: str, limit: int = 100
     ) -> list[dict[str, Any]]:
         """Query decisions by category across sessions."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT d.*, s.project_name
@@ -567,9 +609,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         self, session_id: str, limit: int = 100
     ) -> list[dict[str, Any]]:
         """Query decisions for a specific session."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT * FROM decisions
@@ -584,11 +626,12 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     # Metrics operations
 
+    @db_retry
     async def save_metrics(self, metrics_data: dict[str, Any]) -> None:
         """Save metrics snapshot."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO metrics
@@ -607,13 +650,11 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 json.dumps(metrics_data.get("custom_metrics", {})),
             )
 
-    async def query_metrics_by_branch(
-        self, branch: str, limit: int = 100
-    ) -> list[dict[str, Any]]:
+    async def query_metrics_by_branch(self, branch: str, limit: int = 100) -> list[dict[str, Any]]:
         """Query metrics by branch across sessions."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT * FROM metrics
@@ -630,9 +671,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         self, session_id: str, limit: int = 100
     ) -> list[dict[str, Any]]:
         """Query metrics for a specific session."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT * FROM metrics
@@ -649,9 +690,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     async def save_note(self, note_data: dict[str, Any]) -> None:
         """Save a session note."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO notes (session_id, date, content, tags)
@@ -663,13 +704,11 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 json.dumps(note_data.get("tags", [])),
             )
 
-    async def query_notes_by_date(
-        self, date: str, limit: int = 100
-    ) -> list[dict[str, Any]]:
+    async def query_notes_by_date(self, date: str, limit: int = 100) -> list[dict[str, Any]]:
         """Query notes by date across sessions."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT n.*, s.project_name
@@ -688,15 +727,16 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     async def save_file_operation(self, file_op_data: dict[str, Any]) -> None:
         """Save a file operation record."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
         # Parse timestamp if string
         timestamp = file_op_data.get("timestamp", self._get_timestamp())
         if isinstance(timestamp, str):
             from datetime import datetime
+
             timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO file_operations
@@ -717,9 +757,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         self, session_id: str, limit: int = 100
     ) -> list[dict[str, Any]]:
         """Query file operations for a specific session."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
                 SELECT * FROM file_operations
@@ -736,15 +776,16 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     async def save_session_summary(self, summary_data: dict[str, Any]) -> None:
         """Save or update a session summary/notebook."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
         # Parse timestamp if string
         created_at = summary_data.get("created_at", self._get_timestamp())
         if isinstance(created_at, str):
             from datetime import datetime
+
             created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO session_summaries
@@ -767,22 +808,78 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     async def get_session_summary(self, session_id: str) -> dict[str, Any] | None:
         """Retrieve a session summary by session ID."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM session_summaries WHERE session_id = $1",
                 session_id,
             )
             return self._from_record(row) if row else None
 
+    async def query_session_summaries(
+        self,
+        project_path: str | None = None,
+        tags: list[str] | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Query session summaries/notebooks with optional filters."""
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            if tags:
+                # Query by tags using JSONB containment
+                if project_path:
+                    query = """
+                        SELECT ss.*, s.project_path, s.project_name
+                        FROM session_summaries ss
+                        JOIN sessions s ON ss.session_id = s.id
+                        WHERE ss.tags @> $1::jsonb AND s.project_path = $2
+                        ORDER BY ss.created_at DESC
+                        LIMIT $3
+                    """
+                    rows = await conn.fetch(query, json.dumps([tags[0]]), project_path, limit)
+                else:
+                    query = """
+                        SELECT ss.*, s.project_path, s.project_name
+                        FROM session_summaries ss
+                        JOIN sessions s ON ss.session_id = s.id
+                        WHERE ss.tags @> $1::jsonb
+                        ORDER BY ss.created_at DESC
+                        LIMIT $2
+                    """
+                    rows = await conn.fetch(query, json.dumps([tags[0]]), limit)
+            elif project_path:
+                # Query by project
+                query = """
+                    SELECT ss.*, s.project_path, s.project_name
+                    FROM session_summaries ss
+                    JOIN sessions s ON ss.session_id = s.id
+                    WHERE s.project_path = $1
+                    ORDER BY ss.created_at DESC
+                    LIMIT $2
+                """
+                rows = await conn.fetch(query, project_path, limit)
+            else:
+                # Query all recent
+                query = """
+                    SELECT ss.*, s.project_path, s.project_name
+                    FROM session_summaries ss
+                    JOIN sessions s ON ss.session_id = s.id
+                    ORDER BY ss.created_at DESC
+                    LIMIT $1
+                """
+                rows = await conn.fetch(query, limit)
+
+            return [self._from_record(row) for row in rows]
+
     # Agent execution operations
 
     async def save_agent_execution(self, execution_data: dict[str, Any]) -> None:
         """Save agent execution record."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO agent_executions
@@ -815,7 +912,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         """Query agent executions with optional filters."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
         query = "SELECT * FROM agent_executions WHERE 1=1"
         params: list[Any] = []
@@ -833,28 +930,31 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         query += f" ORDER BY started_at DESC LIMIT ${param_idx}"
         params.append(limit)
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
             return [self._from_record(row) for row in rows]
 
     # MCP session operations
 
+    @db_retry
     async def save_mcp_session(self, mcp_session_data: dict[str, Any]) -> None:
         """Save MCP session mapping."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
         # Parse timestamps if strings (MCP session manager passes ISO strings)
         created_at = mcp_session_data.get("created_at", self._get_timestamp())
         if isinstance(created_at, str):
             from datetime import datetime
+
             created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
 
         last_activity = mcp_session_data.get("last_activity", self._get_timestamp())
         if isinstance(last_activity, str):
             from datetime import datetime
+
             last_activity = datetime.fromisoformat(last_activity.replace("Z", "+00:00"))
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO mcp_sessions
@@ -872,11 +972,12 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 json.dumps(mcp_session_data.get("client_info", {})),
             )
 
+    @db_retry
     async def get_mcp_session(self, mcp_session_id: str) -> dict[str, Any] | None:
         """Get MCP session by ID."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM mcp_sessions WHERE mcp_session_id = $1",
                 mcp_session_id,
@@ -887,21 +988,19 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     async def update_mcp_session_activity(self, mcp_session_id: str) -> None:
         """Update last activity timestamp for MCP session."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 "UPDATE mcp_sessions SET last_activity = NOW() WHERE mcp_session_id = $1",
                 mcp_session_id,
             )
 
-    async def link_mcp_to_engine_session(
-        self, mcp_session_id: str, engine_session_id: str
-    ) -> None:
+    async def link_mcp_to_engine_session(self, mcp_session_id: str, engine_session_id: str) -> None:
         """Link MCP session to engine session."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 "UPDATE mcp_sessions SET engine_session_id = $1 WHERE mcp_session_id = $2",
                 engine_session_id,
@@ -912,23 +1011,23 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     async def vacuum(self) -> None:
         """Optimize database storage (VACUUM ANALYZE)."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             # Use ANALYZE instead of VACUUM (VACUUM requires exclusive access)
             await conn.execute("ANALYZE")
         logger.info("PostgreSQL database analyzed")
 
     async def get_statistics(self) -> dict[str, Any]:
         """Get database statistics for monitoring."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
         stats: dict[str, Any] = {
             "backend": "postgresql",
-            "dsn": self.dsn.split("@")[-1] if "@" in self.dsn else self.dsn,
+            "dsn": sanitize_dsn(self.dsn),
         }
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             # Get table counts
             tables = [
                 "sessions",
@@ -947,15 +1046,13 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 stats[f"{table}_count"] = row["count"] if row else 0
 
             # Get database size
-            row = await conn.fetchrow(
-                "SELECT pg_database_size(current_database()) as size"
-            )
+            row = await conn.fetchrow("SELECT pg_database_size(current_database()) as size")
             if row:
                 stats["size_bytes"] = row["size"]
 
             # Get pool stats
-            stats["pool_size"] = self._pool.get_size()
-            stats["pool_free"] = self._pool.get_idle_size()
+            stats["pool_size"] = pool.get_size()
+            stats["pool_free"] = pool.get_idle_size()
 
         return stats
 
@@ -965,7 +1062,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         self, project_path: str | None = None, limit: int = 100
     ) -> list[dict[str, Any]]:
         """Get session analytics from the pre-built view."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
         query = "SELECT * FROM session_analytics"
         params: list[Any] = []
@@ -979,15 +1076,15 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         query += f" ORDER BY started_at DESC LIMIT ${param_idx}"
         params.append(limit)
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
             return [self._from_record(row) for row in rows]
 
     async def get_agent_performance_summary(self) -> list[dict[str, Any]]:
         """Get agent performance summary from the pre-built view."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM agent_performance_summary ORDER BY total_executions DESC"
             )
@@ -995,12 +1092,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     async def get_decision_summary(self) -> list[dict[str, Any]]:
         """Get decision summary from the pre-built view."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT * FROM decision_summary ORDER BY count DESC"
-            )
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT * FROM decision_summary ORDER BY count DESC")
             return [self._from_record(row) for row in rows]
 
     async def subscribe_to_changes(self, callback: Any) -> None:
@@ -1008,9 +1103,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
         This enables analysis agents to react to new data in real-time.
         """
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.add_listener("session_changes", callback)
             logger.info("Subscribed to session_changes notifications")
 
@@ -1026,9 +1121,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         source_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Save a project-specific learning."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO project_learnings (
@@ -1041,8 +1136,12 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     trigger_context = EXCLUDED.trigger_context,
                     last_used = NOW()
                 """,
-                learning_id, project_path, category, trigger_context,
-                learning_content, source_session_id,
+                learning_id,
+                project_path,
+                category,
+                trigger_context,
+                learning_content,
+                source_session_id,
             )
         return {"id": learning_id, "status": "saved"}
 
@@ -1053,9 +1152,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         """Query learnings for a project."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             if category:
                 rows = await conn.fetch(
                     """
@@ -1064,7 +1163,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     ORDER BY success_count DESC, last_used DESC
                     LIMIT $3
                     """,
-                    project_path, category, limit,
+                    project_path,
+                    category,
+                    limit,
                 )
             else:
                 rows = await conn.fetch(
@@ -1074,17 +1175,16 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     ORDER BY success_count DESC, last_used DESC
                     LIMIT $2
                     """,
-                    project_path, limit,
+                    project_path,
+                    limit,
                 )
             return [self._from_record(row) for row in rows]
 
-    async def update_learning_usage(
-        self, learning_id: str, success: bool
-    ) -> dict[str, Any]:
+    async def update_learning_usage(self, learning_id: str, success: bool) -> dict[str, Any]:
         """Update success/failure count for a learning."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             if success:
                 await conn.execute(
                     """
@@ -1116,12 +1216,12 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         source_session_id: str | None = None,
     ) -> dict[str, Any]:
         """Save an error→solution mapping."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
         import hashlib
 
         error_hash = hashlib.sha256(error_pattern.encode()).hexdigest()[:16]
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO error_solutions (
@@ -1134,10 +1234,14 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     context_requirements = EXCLUDED.context_requirements,
                     last_used = NOW()
                 """,
-                solution_id, error_pattern, error_hash, error_category,
+                solution_id,
+                error_pattern,
+                error_hash,
+                error_category,
                 json.dumps(solution_steps),
                 json.dumps(context_requirements) if context_requirements else None,
-                project_path, source_session_id,
+                project_path,
+                source_session_id,
             )
         return {"id": solution_id, "error_hash": error_hash, "status": "saved"}
 
@@ -1149,9 +1253,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         limit: int = 5,
     ) -> list[dict[str, Any]]:
         """Find solutions matching an error pattern."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             if project_path and include_universal:
                 rows = await conn.fetch(
                     """
@@ -1164,7 +1268,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                         usage_count DESC
                     LIMIT $4
                     """,
-                    project_path, f"%{error_text[:100]}%", error_text, limit,
+                    project_path,
+                    f"%{error_text[:100]}%",
+                    error_text,
+                    limit,
                 )
             elif project_path:
                 rows = await conn.fetch(
@@ -1175,7 +1282,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     ORDER BY success_rate DESC, usage_count DESC
                     LIMIT $4
                     """,
-                    project_path, f"%{error_text[:100]}%", error_text, limit,
+                    project_path,
+                    f"%{error_text[:100]}%",
+                    error_text,
+                    limit,
                 )
             else:
                 rows = await conn.fetch(
@@ -1186,26 +1296,34 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     ORDER BY success_rate DESC, usage_count DESC
                     LIMIT $3
                     """,
-                    f"%{error_text[:100]}%", error_text, limit,
+                    f"%{error_text[:100]}%",
+                    error_text,
+                    limit,
                 )
 
             results = []
             for row in rows:
                 result = self._from_record(row)
                 if result.get("solution_steps"):
-                    result["solution_steps"] = json.loads(result["solution_steps"]) if isinstance(result["solution_steps"], str) else result["solution_steps"]
+                    result["solution_steps"] = (
+                        json.loads(result["solution_steps"])
+                        if isinstance(result["solution_steps"], str)
+                        else result["solution_steps"]
+                    )
                 if result.get("context_requirements"):
-                    result["context_requirements"] = json.loads(result["context_requirements"]) if isinstance(result["context_requirements"], str) else result["context_requirements"]
+                    result["context_requirements"] = (
+                        json.loads(result["context_requirements"])
+                        if isinstance(result["context_requirements"], str)
+                        else result["context_requirements"]
+                    )
                 results.append(result)
             return results
 
-    async def update_solution_outcome(
-        self, solution_id: str, success: bool
-    ) -> dict[str, Any]:
+    async def update_solution_outcome(self, solution_id: str, success: bool) -> dict[str, Any]:
         """Update success rate for a solution."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT usage_count, success_rate FROM error_solutions WHERE id = $1",
                 solution_id,
@@ -1228,7 +1346,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 SET usage_count = $1, success_rate = $2, last_used = NOW()
                 WHERE id = $3
                 """,
-                new_usage, new_rate, solution_id,
+                new_usage,
+                new_rate,
+                solution_id,
             )
 
         return {
@@ -1240,22 +1360,25 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     # ===== Agent System Operations =====
 
+    @db_retry
     async def save_agent(self, agent_data: dict[str, Any]) -> dict[str, Any]:
         """Save or update an agent (ON CONFLICT DO UPDATE)."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
         # Parse timestamps if strings
         first_seen_at = agent_data.get("first_seen_at", self._get_timestamp())
         if isinstance(first_seen_at, str):
             from datetime import datetime
+
             first_seen_at = datetime.fromisoformat(first_seen_at.replace("Z", "+00:00"))
 
         last_active_at = agent_data.get("last_active_at", self._get_timestamp())
         if isinstance(last_active_at, str):
             from datetime import datetime
+
             last_active_at = datetime.fromisoformat(last_active_at.replace("Z", "+00:00"))
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO agents (
@@ -1291,11 +1414,12 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             )
         return {"id": agent_data["id"], "status": "saved"}
 
+    @db_retry
     async def get_agent(self, agent_id: str) -> dict[str, Any] | None:
         """Get agent by ID."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM agents WHERE id = $1",
                 agent_id,
@@ -1304,18 +1428,16 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     async def get_agent_by_name(self, name: str) -> dict[str, Any] | None:
         """Get agent by unique name."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT * FROM agents WHERE name = $1",
                 name,
             )
             return self._from_record(row) if row else None
 
-    async def update_agent_stats(
-        self, agent_id: str, stat_type: str
-    ) -> dict[str, Any]:
+    async def update_agent_stats(self, agent_id: str, stat_type: str) -> dict[str, Any]:
         """Increment total_* counters for an agent.
 
         Args:
@@ -1325,7 +1447,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         Returns:
             Updated stats dict
         """
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
         column_map = {
             "executions": "total_executions",
@@ -1339,7 +1461,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
         column = column_map[stat_type]
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 f"""
                 UPDATE agents
@@ -1358,24 +1480,25 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 }
             return {"id": agent_id, "error": "Agent not found"}
 
-    async def save_agent_decision(
-        self, decision_data: dict[str, Any]
-    ) -> dict[str, Any]:
+    @db_retry
+    async def save_agent_decision(self, decision_data: dict[str, Any]) -> dict[str, Any]:
         """Save an agent decision."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
         # Parse timestamps if strings
         timestamp = decision_data.get("timestamp", self._get_timestamp())
         if isinstance(timestamp, str):
             from datetime import datetime
+
             timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
 
         outcome_updated_at = decision_data.get("outcome_updated_at")
         if isinstance(outcome_updated_at, str):
             from datetime import datetime
+
             outcome_updated_at = datetime.fromisoformat(outcome_updated_at.replace("Z", "+00:00"))
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO agent_decisions (
@@ -1409,7 +1532,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Query agent decisions with optional filters."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
         query = "SELECT * FROM agent_decisions WHERE agent_id = $1"
         params: list[Any] = [agent_id]
@@ -1427,7 +1550,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         query += f" ORDER BY timestamp DESC LIMIT ${param_idx}"
         params.append(limit)
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
             return [self._from_record(row) for row in rows]
 
@@ -1438,9 +1561,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         notes: str | None = None,
     ) -> dict[str, Any]:
         """Update the outcome of an agent decision."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             result = await conn.execute(
                 """
                 UPDATE agent_decisions
@@ -1454,11 +1577,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             updated = result == "UPDATE 1"
         return {"id": decision_id, "outcome": outcome, "updated": updated}
 
-    async def save_agent_learning(
-        self, learning_data: dict[str, Any]
-    ) -> dict[str, Any]:
+    @db_retry
+    async def save_agent_learning(self, learning_data: dict[str, Any]) -> dict[str, Any]:
         """Save an agent learning."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
         # Parse timestamps if strings
         from datetime import datetime as dt
@@ -1475,7 +1597,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         if isinstance(updated_at, str):
             updated_at = dt.fromisoformat(updated_at.replace("Z", "+00:00"))
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO agent_learnings (
@@ -1507,7 +1629,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         """Query agent learnings with optional category filter."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
         if category:
             query = """
@@ -1526,7 +1648,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             """
             params = [agent_id, limit]
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
             return [self._from_record(row) for row in rows]
 
@@ -1534,9 +1656,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         self, learning_id: str, success: bool
     ) -> dict[str, Any]:
         """Increment success or failure count for a learning."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             if success:
                 row = await conn.fetchrow(
                     """
@@ -1571,11 +1693,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 }
             return {"id": learning_id, "error": "Learning not found"}
 
-    async def save_agent_notebook(
-        self, notebook_data: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def save_agent_notebook(self, notebook_data: dict[str, Any]) -> dict[str, Any]:
         """Save an agent notebook."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
         # Parse timestamps if strings
         from datetime import datetime as dt
@@ -1596,7 +1716,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         if isinstance(covers_to, str):
             covers_to = dt.fromisoformat(covers_to.replace("Z", "+00:00"))
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO agent_notebooks (
@@ -1627,7 +1747,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         """Query agent notebooks with optional type filter."""
-        self._ensure_connected()
+        pool = self._ensure_connected()
 
         if notebook_type:
             query = """
@@ -1646,6 +1766,60 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             """
             params = [agent_id, limit]
 
-        async with self._pool.acquire() as conn:
+        async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
             return [self._from_record(row) for row in rows]
+
+    async def search_sessions(
+        self, query: str, search_type: str = "fulltext", limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """
+        Search session summaries using PostgreSQL full-text search.
+
+        Args:
+            query: Search query string
+            search_type: Type of search - "fulltext", "tag", or "file" (only fulltext supported)
+            limit: Maximum results to return
+
+        Returns:
+            List of dicts with session_id, title, summary, tags, relevance, snippet
+        """
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            # PostgreSQL full-text search using to_tsvector and plainto_tsquery
+            # Search in both title and summary_markdown fields
+            # JOIN with sessions table to avoid N+1 query pattern
+            rows = await conn.fetch(
+                """
+                SELECT
+                    ss.session_id,
+                    ss.title,
+                    ss.summary_markdown as summary,
+                    ss.tags,
+                    ss.created_at,
+                    s.project_name,
+                    s.project_path,
+                    s.started_at,
+                    ts_rank(
+                        to_tsvector('english', coalesce(ss.title, '') || ' ' || coalesce(ss.summary_markdown, '')),
+                        plainto_tsquery('english', $1)
+                    ) as relevance,
+                    ts_headline(
+                        'english',
+                        coalesce(ss.summary_markdown, ''),
+                        plainto_tsquery('english', $1),
+                        'MaxWords=50, MinWords=25, MaxFragments=1'
+                    ) as snippet
+                FROM session_summaries ss
+                JOIN sessions s ON ss.session_id = s.id
+                WHERE to_tsvector('english', coalesce(ss.title, '') || ' ' || coalesce(ss.summary_markdown, ''))
+                      @@ plainto_tsquery('english', $1)
+                ORDER BY relevance DESC
+                LIMIT $2
+                """,
+                query,
+                limit,
+            )
+
+        return [dict(row) for row in rows]

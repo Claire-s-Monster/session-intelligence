@@ -28,10 +28,11 @@ from utils.token_limiter import apply_token_limits
 
 logger = logging.getLogger(__name__)
 
+
 class LeanMCPInterface:
     """
     Lean MCP Interface implementing the meta-tool pattern for dynamic tool discovery.
-    
+
     Instead of exposing 10+ verbose tool definitions (20-50K tokens),
     exposes only 3 compact meta-tools (~500 tokens) with on-demand discovery.
     """
@@ -49,12 +50,12 @@ class LeanMCPInterface:
     def _build_tool_registry(self) -> dict[str, dict[str, Any]]:
         """
         Build comprehensive tool registry with metadata for dynamic discovery.
-        
+
         Each tool entry contains:
         - implementation: The actual function
         - schema: Full parameter schema
         - domain: Tool domain (session, workflow, analytics, etc.)
-        - complexity: Tool complexity (micro, focused, comprehensive) 
+        - complexity: Tool complexity (micro, focused, comprehensive)
         - description: Brief description
         - examples: Usage examples
         """
@@ -70,33 +71,28 @@ class LeanMCPInterface:
                     "operation": {
                         "type": "string",
                         "enum": ["create", "resume", "finalize", "validate"],
-                        "description": "Lifecycle operation to perform"
+                        "description": "Lifecycle operation to perform",
                     },
                     "mode": {
                         "type": "string",
                         "enum": ["local", "remote", "hybrid", "auto"],
                         "default": "local",
-                        "description": "Session mode"
+                        "description": "Session mode",
                     },
-                    "project_name": {
-                        "type": "string",
-                        "description": "Project context (optional)"
-                    },
-                    "metadata": {
-                        "description": "Additional session metadata"
-                    },
+                    "project_name": {"type": "string", "description": "Project context (optional)"},
+                    "metadata": {"description": "Additional session metadata"},
                     "auto_recovery": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Enable automatic recovery"
-                    }
+                        "description": "Enable automatic recovery",
+                    },
                 },
-                "required": ["operation"]
+                "required": ["operation"],
             },
             "examples": [
                 {"operation": "create", "project_name": "my-project"},
-                {"operation": "resume", "mode": "hybrid"}
-            ]
+                {"operation": "resume", "mode": "hybrid"},
+            ],
         }
 
         registry["session_track_execution"] = {
@@ -105,34 +101,25 @@ class LeanMCPInterface:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "agent_name": {
-                        "type": "string",
-                        "description": "Agent being executed"
-                    },
-                    "step_data": {
-                        "type": "object",
-                        "description": "ExecutionStep details"
-                    },
-                    "session_id": {
-                        "type": "string",
-                        "description": "Session ID (optional)"
-                    },
+                    "agent_name": {"type": "string", "description": "Agent being executed"},
+                    "step_data": {"type": "object", "description": "ExecutionStep details"},
+                    "session_id": {"type": "string", "description": "Session ID (optional)"},
                     "track_patterns": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Enable pattern detection"
+                        "description": "Enable pattern detection",
                     },
                     "suggest_optimizations": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Generate optimization suggestions"
-                    }
+                        "description": "Generate optimization suggestions",
+                    },
                 },
-                "required": ["agent_name", "step_data"]
+                "required": ["agent_name", "step_data"],
             },
             "examples": [
                 {"agent_name": "test-runner", "step_data": {"phase": "start", "command": "pytest"}}
-            ]
+            ],
         }
 
         registry["session_coordinate_agents"] = {
@@ -144,34 +131,31 @@ class LeanMCPInterface:
                     "agents": {
                         "type": "array",
                         "items": {"type": "object"},
-                        "description": "Agents to coordinate"
+                        "description": "Agents to coordinate",
                     },
-                    "session_id": {
-                        "type": "string",
-                        "description": "Session context"
-                    },
+                    "session_id": {"type": "string", "description": "Session context"},
                     "execution_mode": {
                         "type": "string",
                         "enum": ["sequential", "parallel", "adaptive"],
                         "default": "sequential",
-                        "description": "Execution strategy"
+                        "description": "Execution strategy",
                     },
-                    "dependency_graph": {
-                        "type": "object",
-                        "description": "Agent dependencies"
-                    },
+                    "dependency_graph": {"type": "object", "description": "Agent dependencies"},
                     "optimization_level": {
                         "type": "string",
                         "enum": ["conservative", "balanced", "aggressive"],
                         "default": "balanced",
-                        "description": "Optimization approach"
-                    }
+                        "description": "Optimization approach",
+                    },
                 },
-                "required": ["agents"]
+                "required": ["agents"],
             },
             "examples": [
-                {"agents": [{"name": "quality-check"}, {"name": "test-runner"}], "execution_mode": "parallel"}
-            ]
+                {
+                    "agents": [{"name": "quality-check"}, {"name": "test-runner"}],
+                    "execution_mode": "parallel",
+                }
+            ],
         }
 
         registry["session_log_decision"] = {
@@ -180,34 +164,28 @@ class LeanMCPInterface:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "decision": {
-                        "type": "string",
-                        "description": "Decision description"
-                    },
-                    "session_id": {
-                        "type": "string",
-                        "description": "Session context"
-                    },
-                    "context": {
-                        "type": "object",
-                        "description": "Decision context and rationale"
-                    },
+                    "decision": {"type": "string", "description": "Decision description"},
+                    "session_id": {"type": "string", "description": "Session context"},
+                    "context": {"type": "object", "description": "Decision context and rationale"},
                     "impact_analysis": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Analyze decision impact"
+                        "description": "Analyze decision impact",
                     },
                     "link_artifacts": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Related files or commits"
-                    }
+                        "description": "Related files or commits",
+                    },
                 },
-                "required": ["decision"]
+                "required": ["decision"],
             },
             "examples": [
-                {"decision": "Switch to pytest for testing", "context": {"reason": "Better async support"}}
-            ]
+                {
+                    "decision": "Switch to pytest for testing",
+                    "context": {"reason": "Better async support"},
+                }
+            ],
         }
 
         registry["session_track_file_operation"] = {
@@ -219,36 +197,25 @@ class LeanMCPInterface:
                     "operation": {
                         "type": "string",
                         "enum": ["create", "edit", "delete", "read"],
-                        "description": "File operation type"
+                        "description": "File operation type",
                     },
-                    "file_path": {
-                        "type": "string",
-                        "description": "Path to the file"
-                    },
+                    "file_path": {"type": "string", "description": "Path to the file"},
                     "lines_added": {
                         "type": "integer",
                         "default": 0,
-                        "description": "Number of lines added"
+                        "description": "Number of lines added",
                     },
                     "lines_removed": {
                         "type": "integer",
                         "default": 0,
-                        "description": "Number of lines removed"
+                        "description": "Number of lines removed",
                     },
-                    "summary": {
-                        "type": "string",
-                        "description": "Brief description of changes"
-                    },
-                    "tool_name": {
-                        "type": "string",
-                        "description": "Tool that made the change"
-                    }
+                    "summary": {"type": "string", "description": "Brief description of changes"},
+                    "tool_name": {"type": "string", "description": "Tool that made the change"},
                 },
-                "required": ["operation", "file_path"]
+                "required": ["operation", "file_path"],
             },
-            "examples": [
-                {"operation": "create", "file_path": "src/module.py", "lines_added": 150}
-            ]
+            "examples": [{"operation": "create", "file_path": "src/module.py", "lines_added": 150}],
         }
 
         registry["session_analyze_patterns"] = {
@@ -261,33 +228,31 @@ class LeanMCPInterface:
                         "type": "string",
                         "enum": ["current", "recent", "historical", "all"],
                         "default": "current",
-                        "description": "Analysis scope"
+                        "description": "Analysis scope",
                     },
                     "pattern_types": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Patterns to analyze"
+                        "description": "Patterns to analyze",
                     },
                     "include_agents": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Specific agents to analyze"
+                        "description": "Specific agents to analyze",
                     },
                     "learning_mode": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Enable ML-based learning"
+                        "description": "Enable ML-based learning",
                     },
                     "generate_insights": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Generate actionable insights"
-                    }
-                }
+                        "description": "Generate actionable insights",
+                    },
+                },
             },
-            "examples": [
-                {"scope": "recent", "pattern_types": ["execution", "errors"]}
-            ]
+            "examples": [{"scope": "recent", "pattern_types": ["execution", "errors"]}],
         }
 
         registry["session_monitor_health"] = {
@@ -297,33 +262,35 @@ class LeanMCPInterface:
                 "type": "object",
                 "properties": {
                     "session_id": {
-                        "type": "string",
-                        "description": "Session to monitor"
+                        "type": ["string", "null"],
+                        "description": "Session to monitor (use null for current session)",
                     },
                     "health_checks": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Checks to perform"
+                        "description": "Checks to perform",
                     },
                     "auto_recover": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Enable automatic recovery"
+                        "description": "Enable automatic recovery",
                     },
                     "alert_thresholds": {
                         "type": "object",
-                        "description": "Custom alert thresholds"
+                        "description": "Custom alert thresholds",
                     },
                     "include_diagnostics": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Include detailed diagnostics"
-                    }
-                }
+                        "description": "Include detailed diagnostics",
+                    },
+                },
+                "required": ["session_id"],
             },
             "examples": [
-                {"health_checks": ["continuity", "files"], "auto_recover": True}
-            ]
+                {"session_id": "session-123", "health_checks": ["continuity", "files"]},
+                {"session_id": None, "auto_recover": True},
+            ],
         }
 
         registry["session_orchestrate_workflow"] = {
@@ -335,32 +302,24 @@ class LeanMCPInterface:
                     "workflow_type": {
                         "type": "string",
                         "enum": ["tdd", "atomic", "quality", "prime", "custom"],
-                        "description": "Workflow type"
+                        "description": "Workflow type",
                     },
-                    "session_id": {
-                        "type": "string",
-                        "description": "Session context"
-                    },
-                    "workflow_config": {
-                        "type": "object",
-                        "description": "Workflow configuration"
-                    },
+                    "session_id": {"type": "string", "description": "Session context"},
+                    "workflow_config": {"type": "object", "description": "Workflow configuration"},
                     "parallel_execution": {
                         "type": "boolean",
                         "default": False,
-                        "description": "Enable parallel execution"
+                        "description": "Enable parallel execution",
                     },
                     "optimize_execution": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Optimize execution order"
-                    }
+                        "description": "Optimize execution order",
+                    },
                 },
-                "required": ["workflow_type"]
+                "required": ["workflow_type"],
             },
-            "examples": [
-                {"workflow_type": "tdd", "parallel_execution": True}
-            ]
+            "examples": [{"workflow_type": "tdd", "parallel_execution": True}],
         }
 
         registry["session_analyze_commands"] = {
@@ -369,35 +328,30 @@ class LeanMCPInterface:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "Session to analyze"
-                    },
+                    "session_id": {"type": "string", "description": "Session to analyze"},
                     "command_types": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Command categories"
+                        "description": "Command categories",
                     },
                     "detect_inefficiencies": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Detect inefficient patterns"
+                        "description": "Detect inefficient patterns",
                     },
                     "suggest_alternatives": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Suggest better approaches"
+                        "description": "Suggest better approaches",
                     },
                     "include_timing": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Include timing analysis"
-                    }
-                }
+                        "description": "Include timing analysis",
+                    },
+                },
             },
-            "examples": [
-                {"command_types": ["git", "test"], "detect_inefficiencies": True}
-            ]
+            "examples": [{"command_types": ["git", "test"], "detect_inefficiencies": True}],
         }
 
         registry["session_track_missing_functions"] = {
@@ -406,30 +360,25 @@ class LeanMCPInterface:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "session_id": {
-                        "type": "string",
-                        "description": "Session context"
-                    },
+                    "session_id": {"type": "string", "description": "Session context"},
                     "auto_suggest": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Suggest function implementations"
+                        "description": "Suggest function implementations",
                     },
                     "priority_analysis": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Analyze implementation priority"
+                        "description": "Analyze implementation priority",
                     },
                     "generate_report": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Generate missing function report"
-                    }
-                }
+                        "description": "Generate missing function report",
+                    },
+                },
             },
-            "examples": [
-                {"auto_suggest": True, "priority_analysis": True}
-            ]
+            "examples": [{"auto_suggest": True, "priority_analysis": True}],
         }
 
         registry["session_get_dashboard"] = {
@@ -442,109 +391,135 @@ class LeanMCPInterface:
                         "type": "string",
                         "enum": ["overview", "performance", "agents", "decisions", "health"],
                         "default": "overview",
-                        "description": "Dashboard view type"
+                        "description": "Dashboard view type",
                     },
                     "session_id": {
                         "type": "string",
-                        "description": "Session or cross-session view"
+                        "description": "Session or cross-session view",
                     },
                     "real_time": {
                         "type": "boolean",
                         "default": False,
-                        "description": "Enable real-time updates"
+                        "description": "Enable real-time updates",
                     },
                     "export_format": {
                         "type": "string",
                         "enum": ["json", "html", "markdown"],
-                        "description": "Export format"
-                    }
-                }
+                        "description": "Export format",
+                    },
+                },
             },
-            "examples": [
-                {"dashboard_type": "performance", "real_time": True}
-            ]
+            "examples": [{"dashboard_type": "performance", "real_time": True}],
         }
 
         registry["session_create_notebook"] = {
-            "implementation": self._wrap_async_tool(self.session_engine.session_create_notebook_async),
+            "implementation": self._wrap_async_tool(
+                self.session_engine.session_create_notebook_async
+            ),
             "description": "Generate markdown notebook/summary at session end with searchable content",
             "schema": {
                 "type": "object",
                 "properties": {
                     "session_id": {
                         "type": "string",
-                        "description": "Session to summarize (defaults to current)"
+                        "description": "Session to summarize (defaults to current)",
                     },
-                    "title": {
-                        "type": "string",
-                        "description": "Custom title for the notebook"
-                    },
+                    "title": {"type": "string", "description": "Custom title for the notebook"},
                     "include_decisions": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Include decision log section"
+                        "description": "Include decision log section",
                     },
                     "include_agents": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Include agent execution summary"
+                        "description": "Include agent execution summary",
                     },
                     "include_metrics": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Include performance metrics"
+                        "description": "Include performance metrics",
                     },
                     "tags": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Tags for cross-session search"
+                        "description": "Tags for cross-session search",
                     },
                     "save_to_file": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Save markdown to session directory"
+                        "description": "Save markdown to session directory",
                     },
                     "save_to_database": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Persist to database for FTS search"
-                    }
-                }
+                        "description": "Persist to database for FTS search",
+                    },
+                },
             },
             "examples": [
                 {"title": "Feature Implementation Session", "tags": ["feature", "python"]},
-                {"include_metrics": False, "save_to_file": True}
-            ]
+                {"include_metrics": False, "save_to_file": True},
+            ],
         }
 
         registry["session_search"] = {
-            "implementation": self._wrap_tool(self.session_engine.session_search),
+            "implementation": self._wrap_async_tool(self.session_engine.session_search),
             "description": "Full-text search across session notebooks and summaries",
             "schema": {
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search query (supports FTS5 syntax: AND, OR, NOT, phrases)"
+                        "description": "Search query (supports FTS5 syntax: AND, OR, NOT, phrases)",
                     },
                     "search_type": {
                         "type": "string",
                         "enum": ["fulltext", "tag", "file"],
                         "default": "fulltext",
-                        "description": "Type of search to perform"
+                        "description": "Type of search to perform",
                     },
                     "limit": {
                         "type": "integer",
                         "default": 20,
-                        "description": "Maximum results to return"
-                    }
+                        "description": "Maximum results to return",
+                    },
                 },
-                "required": ["query"]
+                "required": ["query"],
             },
             "examples": [
                 {"query": "authentication bug fix"},
-                {"query": "python", "search_type": "tag", "limit": 10}
-            ]
+                {"query": "python", "search_type": "tag", "limit": 10},
+            ],
+        }
+
+        registry["session_query_notebooks"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.session_query_notebooks),
+            "description": "Query session notebooks/summaries with optional filters",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "project_path": {
+                        "type": "string",
+                        "description": "Filter notebooks by project path",
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Filter notebooks by tags",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "Maximum results to return",
+                    },
+                },
+            },
+            "examples": [
+                {"limit": 10},
+                {"project_path": "/home/user/my-project", "limit": 5},
+                {"tags": ["feature", "bugfix"]},
+            ],
         }
 
         # ===== KNOWLEDGE SYSTEM TOOLS =====
@@ -558,34 +533,34 @@ class LeanMCPInterface:
                     "category": {
                         "type": "string",
                         "enum": ["error_fix", "pattern", "preference", "workflow"],
-                        "description": "Learning category"
+                        "description": "Learning category",
                     },
                     "learning_content": {
                         "type": "string",
-                        "description": "The actual knowledge/solution"
+                        "description": "The actual knowledge/solution",
                     },
                     "trigger_context": {
                         "type": "string",
-                        "description": "When to apply this learning (optional)"
+                        "description": "When to apply this learning (optional)",
                     },
                     "project_path": {
                         "type": "string",
-                        "description": "Project scope (uses current if not specified)"
-                    }
+                        "description": "Project scope (uses current if not specified)",
+                    },
                 },
-                "required": ["category", "learning_content"]
+                "required": ["category", "learning_content"],
             },
             "examples": [
                 {
                     "category": "error_fix",
                     "learning_content": "ImportError for module X: install via pip install X",
-                    "trigger_context": "When seeing 'ModuleNotFoundError: X'"
+                    "trigger_context": "When seeing 'ModuleNotFoundError: X'",
                 },
                 {
                     "category": "pattern",
-                    "learning_content": "Always run lint before commit in this project"
-                }
-            ]
+                    "learning_content": "Always run lint before commit in this project",
+                },
+            ],
         }
 
         registry["session_find_solution"] = {
@@ -596,53 +571,45 @@ class LeanMCPInterface:
                 "properties": {
                     "error_text": {
                         "type": "string",
-                        "description": "The error message/pattern to search for"
+                        "description": "The error message/pattern to search for",
                     },
                     "error_category": {
                         "type": "string",
                         "enum": ["compile", "runtime", "config", "dependency", "test", "lint"],
-                        "description": "Optional category hint"
+                        "description": "Optional category hint",
                     },
                     "include_universal": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Whether to include universal (cross-project) solutions"
-                    }
+                        "description": "Whether to include universal (cross-project) solutions",
+                    },
                 },
-                "required": ["error_text"]
+                "required": ["error_text"],
             },
             "examples": [
                 {"error_text": "ModuleNotFoundError: No module named 'foo'"},
-                {
-                    "error_text": "TypeError: expected str, got int",
-                    "error_category": "runtime"
-                }
-            ]
+                {"error_text": "TypeError: expected str, got int", "error_category": "runtime"},
+            ],
         }
 
         registry["session_update_solution_outcome"] = {
-            "implementation": self._wrap_tool(
-                self.session_engine.session_update_solution_outcome
-            ),
+            "implementation": self._wrap_tool(self.session_engine.session_update_solution_outcome),
             "description": "Update success/failure count for a solution after trying it",
             "schema": {
                 "type": "object",
                 "properties": {
                     "solution_id": {
                         "type": "string",
-                        "description": "ID of the solution to update"
+                        "description": "ID of the solution to update",
                     },
-                    "success": {
-                        "type": "boolean",
-                        "description": "Whether the solution worked"
-                    }
+                    "success": {"type": "boolean", "description": "Whether the solution worked"},
                 },
-                "required": ["solution_id", "success"]
+                "required": ["solution_id", "success"],
             },
             "examples": [
                 {"solution_id": "sol_abc123", "success": True},
-                {"solution_id": "sol_xyz789", "success": False}
-            ]
+                {"solution_id": "sol_xyz789", "success": False},
+            ],
         }
 
         # ===== AGENT SYSTEM TOOLS =====
@@ -655,31 +622,31 @@ class LeanMCPInterface:
                 "properties": {
                     "name": {
                         "type": "string",
-                        "description": "Unique agent name (e.g., 'focused-quality-resolver')"
+                        "description": "Unique agent name (e.g., 'focused-quality-resolver')",
                     },
                     "agent_type": {
                         "type": "string",
-                        "description": "Agent type (e.g., 'focused', 'comprehensive', 'micro', 'meta')"
+                        "description": "Agent type (e.g., 'focused', 'comprehensive', 'micro', 'meta')",
                     },
                     "display_name": {
                         "type": "string",
-                        "description": "Human-friendly display name"
+                        "description": "Human-friendly display name",
                     },
                     "description": {
                         "type": "string",
-                        "description": "Brief description of agent's purpose"
+                        "description": "Brief description of agent's purpose",
                     },
                     "metadata": {
                         "type": "object",
-                        "description": "Additional agent metadata (version, author, etc.)"
+                        "description": "Additional agent metadata (version, author, etc.)",
                     },
                     "capabilities": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of agent capabilities"
-                    }
+                        "description": "List of agent capabilities",
+                    },
                 },
-                "required": ["name", "agent_type"]
+                "required": ["name", "agent_type"],
             },
             "examples": [
                 {
@@ -687,13 +654,10 @@ class LeanMCPInterface:
                     "agent_type": "focused",
                     "display_name": "Quality Resolver",
                     "description": "Resolves code quality issues",
-                    "capabilities": ["lint-fix", "format", "type-check"]
+                    "capabilities": ["lint-fix", "format", "type-check"],
                 },
-                {
-                    "name": "micro-test-runner",
-                    "agent_type": "micro"
-                }
-            ]
+                {"name": "micro-test-runner", "agent_type": "micro"},
+            ],
         }
 
         registry["agent_get_info"] = {
@@ -704,15 +668,15 @@ class LeanMCPInterface:
                 "properties": {
                     "identifier": {
                         "type": "string",
-                        "description": "Agent name (e.g., 'focused-quality-resolver') or UUID"
+                        "description": "Agent name (e.g., 'focused-quality-resolver') or UUID",
                     }
                 },
-                "required": ["identifier"]
+                "required": ["identifier"],
             },
             "examples": [
                 {"identifier": "focused-quality-resolver"},
-                {"identifier": "550e8400-e29b-41d4-a716-446655440000"}
-            ]
+                {"identifier": "550e8400-e29b-41d4-a716-446655440000"},
+            ],
         }
 
         registry["agent_log_decision"] = {
@@ -723,43 +687,37 @@ class LeanMCPInterface:
                 "properties": {
                     "agent_name": {
                         "type": "string",
-                        "description": "Name of the agent making the decision"
+                        "description": "Name of the agent making the decision",
                     },
                     "decision_type": {
                         "type": "string",
-                        "description": "Category of decision (e.g., 'tool_selection', 'error_handling', 'strategy')"
+                        "description": "Category of decision (e.g., 'tool_selection', 'error_handling', 'strategy')",
                     },
                     "context": {
                         "type": "string",
-                        "description": "The situation or problem that required a decision"
+                        "description": "The situation or problem that required a decision",
                     },
-                    "decision": {
-                        "type": "string",
-                        "description": "The decision that was made"
-                    },
-                    "reasoning": {
-                        "type": "string",
-                        "description": "Why this decision was made"
-                    },
+                    "decision": {"type": "string", "description": "The decision that was made"},
+                    "reasoning": {"type": "string", "description": "Why this decision was made"},
                     "alternatives": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Other options that were considered"
+                        "description": "Other options that were considered",
                     },
                     "confidence": {
                         "type": "number",
                         "minimum": 0,
                         "maximum": 1,
                         "default": 0.8,
-                        "description": "Confidence level in the decision (0.0-1.0)"
+                        "description": "Confidence level in the decision (0.0-1.0)",
                     },
                     "tags": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Tags for categorization and search"
-                    }
+                        "description": "Tags for categorization and search",
+                    },
                 },
-                "required": ["agent_name", "decision_type", "context", "decision"]
+                "required": ["agent_name", "decision_type", "context", "decision"],
             },
             "examples": [
                 {
@@ -770,9 +728,9 @@ class LeanMCPInterface:
                     "reasoning": "Ruff is faster and handles most common issues",
                     "alternatives": ["Manual fixes", "Black + isort separately"],
                     "confidence": 0.9,
-                    "tags": ["python", "linting"]
+                    "tags": ["python", "linting"],
                 }
-            ]
+            ],
         }
 
         registry["agent_query_decisions"] = {
@@ -781,35 +739,32 @@ class LeanMCPInterface:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "agent_name": {
-                        "type": "string",
-                        "description": "Name of the agent to query"
-                    },
+                    "agent_name": {"type": "string", "description": "Name of the agent to query"},
                     "decision_type": {
                         "type": "string",
-                        "description": "Filter by decision type/category"
+                        "description": "Filter by decision type/category",
                     },
                     "tags": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by tags"
+                        "description": "Filter by tags",
                     },
                     "limit": {
                         "type": "integer",
                         "default": 20,
-                        "description": "Maximum number of results"
-                    }
+                        "description": "Maximum number of results",
+                    },
                 },
-                "required": ["agent_name"]
+                "required": ["agent_name"],
             },
             "examples": [
                 {"agent_name": "focused-quality-resolver"},
                 {
                     "agent_name": "focused-quality-resolver",
                     "decision_type": "error_handling",
-                    "limit": 10
-                }
-            ]
+                    "limit": 10,
+                },
+            ],
         }
 
         registry["agent_update_decision_outcome"] = {
@@ -822,31 +777,28 @@ class LeanMCPInterface:
                 "properties": {
                     "decision_id": {
                         "type": "string",
-                        "description": "ID of the decision to update"
+                        "description": "ID of the decision to update",
                     },
-                    "outcome": {
-                        "type": "string",
-                        "description": "Description of the outcome"
-                    },
+                    "outcome": {"type": "string", "description": "Description of the outcome"},
                     "success": {
                         "type": "boolean",
-                        "description": "Whether the decision led to a successful outcome"
-                    }
+                        "description": "Whether the decision led to a successful outcome",
+                    },
                 },
-                "required": ["decision_id", "outcome", "success"]
+                "required": ["decision_id", "outcome", "success"],
             },
             "examples": [
                 {
                     "decision_id": "dec_abc123",
                     "outcome": "All lint errors fixed successfully",
-                    "success": True
+                    "success": True,
                 },
                 {
                     "decision_id": "dec_xyz789",
                     "outcome": "Auto-fix introduced new errors, needed manual intervention",
-                    "success": False
-                }
-            ]
+                    "success": False,
+                },
+            ],
         }
 
         registry["agent_log_learning"] = {
@@ -857,43 +809,40 @@ class LeanMCPInterface:
                 "properties": {
                     "agent_name": {
                         "type": "string",
-                        "description": "Name of the agent logging the learning"
+                        "description": "Name of the agent logging the learning",
                     },
                     "learning_type": {
                         "type": "string",
-                        "description": "Type of learning (e.g., 'pattern', 'anti_pattern', 'technique', 'preference')"
+                        "description": "Type of learning (e.g., 'pattern', 'anti_pattern', 'technique', 'preference')",
                     },
-                    "title": {
-                        "type": "string",
-                        "description": "Brief title for the learning"
-                    },
+                    "title": {"type": "string", "description": "Brief title for the learning"},
                     "content": {
                         "type": "string",
-                        "description": "Detailed content of the learning"
+                        "description": "Detailed content of the learning",
                     },
                     "source_context": {
                         "type": "string",
-                        "description": "The context where this was learned"
+                        "description": "The context where this was learned",
                     },
                     "applicability": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Situations where this learning applies"
+                        "description": "Situations where this learning applies",
                     },
                     "confidence": {
                         "type": "number",
                         "minimum": 0,
                         "maximum": 1,
                         "default": 0.8,
-                        "description": "Confidence level in the learning (0.0-1.0)"
+                        "description": "Confidence level in the learning (0.0-1.0)",
                     },
                     "tags": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Tags for categorization and search"
-                    }
+                        "description": "Tags for categorization and search",
+                    },
                 },
-                "required": ["agent_name", "learning_type", "title", "content"]
+                "required": ["agent_name", "learning_type", "title", "content"],
             },
             "examples": [
                 {
@@ -903,9 +852,9 @@ class LeanMCPInterface:
                     "content": "Ruff with isort rules enabled can replace separate isort step",
                     "applicability": ["python-projects", "lint-workflows"],
                     "confidence": 0.95,
-                    "tags": ["python", "tooling"]
+                    "tags": ["python", "tooling"],
                 }
-            ]
+            ],
         }
 
         registry["agent_query_learnings"] = {
@@ -914,35 +863,28 @@ class LeanMCPInterface:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "agent_name": {
-                        "type": "string",
-                        "description": "Name of the agent to query"
-                    },
+                    "agent_name": {"type": "string", "description": "Name of the agent to query"},
                     "learning_type": {
                         "type": "string",
-                        "description": "Filter by learning type/category"
+                        "description": "Filter by learning type/category",
                     },
                     "tags": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by tags"
+                        "description": "Filter by tags",
                     },
                     "limit": {
                         "type": "integer",
                         "default": 20,
-                        "description": "Maximum number of results"
-                    }
+                        "description": "Maximum number of results",
+                    },
                 },
-                "required": ["agent_name"]
+                "required": ["agent_name"],
             },
             "examples": [
                 {"agent_name": "focused-quality-resolver"},
-                {
-                    "agent_name": "focused-quality-resolver",
-                    "learning_type": "pattern",
-                    "limit": 5
-                }
-            ]
+                {"agent_name": "focused-quality-resolver", "learning_type": "pattern", "limit": 5},
+            ],
         }
 
         registry["agent_update_learning_outcome"] = {
@@ -955,30 +897,30 @@ class LeanMCPInterface:
                 "properties": {
                     "learning_id": {
                         "type": "string",
-                        "description": "ID of the learning to update"
+                        "description": "ID of the learning to update",
                     },
                     "times_applied_increment": {
                         "type": "integer",
                         "default": 1,
-                        "description": "How many times to increment the application count"
+                        "description": "How many times to increment the application count",
                     },
                     "new_success_rate": {
                         "type": "number",
                         "minimum": 0,
                         "maximum": 1,
-                        "description": "Updated success rate (0.0-1.0)"
-                    }
+                        "description": "Updated success rate (0.0-1.0)",
+                    },
                 },
-                "required": ["learning_id"]
+                "required": ["learning_id"],
             },
             "examples": [
                 {"learning_id": "lrn_abc123", "times_applied_increment": 1},
                 {
                     "learning_id": "lrn_xyz789",
                     "times_applied_increment": 1,
-                    "new_success_rate": 0.85
-                }
-            ]
+                    "new_success_rate": 0.85,
+                },
+            ],
         }
 
         registry["agent_create_notebook"] = {
@@ -989,46 +931,40 @@ class LeanMCPInterface:
                 "properties": {
                     "agent_name": {
                         "type": "string",
-                        "description": "Name of the agent creating the notebook"
+                        "description": "Name of the agent creating the notebook",
                     },
-                    "title": {
-                        "type": "string",
-                        "description": "Title of the notebook"
-                    },
+                    "title": {"type": "string", "description": "Title of the notebook"},
                     "content": {
                         "type": "string",
-                        "description": "Markdown content of the notebook"
+                        "description": "Markdown content of the notebook",
                     },
                     "summary": {
                         "type": "string",
-                        "description": "Brief summary for search/display"
+                        "description": "Brief summary for search/display",
                     },
                     "notebook_type": {
                         "type": "string",
                         "default": "execution",
-                        "description": "Type of notebook (e.g., 'execution', 'analysis', 'retrospective')"
+                        "description": "Type of notebook (e.g., 'execution', 'analysis', 'retrospective')",
                     },
-                    "context": {
-                        "type": "object",
-                        "description": "Additional context metadata"
-                    },
+                    "context": {"type": "object", "description": "Additional context metadata"},
                     "decisions_referenced": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "IDs of decisions referenced in this notebook"
+                        "description": "IDs of decisions referenced in this notebook",
                     },
                     "learnings_referenced": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "IDs of learnings referenced in this notebook"
+                        "description": "IDs of learnings referenced in this notebook",
                     },
                     "tags": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Tags for categorization and search"
-                    }
+                        "description": "Tags for categorization and search",
+                    },
                 },
-                "required": ["agent_name", "title", "content"]
+                "required": ["agent_name", "title", "content"],
             },
             "examples": [
                 {
@@ -1037,9 +973,9 @@ class LeanMCPInterface:
                     "content": "## Summary\n\nFixed 15 lint issues...",
                     "summary": "Resolved lint issues in src/module.py",
                     "notebook_type": "execution",
-                    "tags": ["quality", "python"]
+                    "tags": ["quality", "python"],
                 }
-            ]
+            ],
         }
 
         registry["agent_query_notebooks"] = {
@@ -1048,35 +984,29 @@ class LeanMCPInterface:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "agent_name": {
-                        "type": "string",
-                        "description": "Name of the agent to query"
-                    },
-                    "notebook_type": {
-                        "type": "string",
-                        "description": "Filter by notebook type"
-                    },
+                    "agent_name": {"type": "string", "description": "Name of the agent to query"},
+                    "notebook_type": {"type": "string", "description": "Filter by notebook type"},
                     "tags": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Filter by tags"
+                        "description": "Filter by tags",
                     },
                     "limit": {
                         "type": "integer",
                         "default": 10,
-                        "description": "Maximum number of results"
-                    }
+                        "description": "Maximum number of results",
+                    },
                 },
-                "required": ["agent_name"]
+                "required": ["agent_name"],
             },
             "examples": [
                 {"agent_name": "focused-quality-resolver"},
                 {
                     "agent_name": "focused-quality-resolver",
                     "notebook_type": "execution",
-                    "limit": 5
-                }
-            ]
+                    "limit": 5,
+                },
+            ],
         }
 
         registry["agent_search_all"] = {
@@ -1085,39 +1015,27 @@ class LeanMCPInterface:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "agent_name": {
-                        "type": "string",
-                        "description": "Name of the agent to search"
-                    },
-                    "query": {
-                        "type": "string",
-                        "description": "Search query string"
-                    },
+                    "agent_name": {"type": "string", "description": "Name of the agent to search"},
+                    "query": {"type": "string", "description": "Search query string"},
                     "limit": {
                         "type": "integer",
                         "default": 20,
-                        "description": "Maximum results per content type"
-                    }
+                        "description": "Maximum results per content type",
+                    },
                 },
-                "required": ["agent_name", "query"]
+                "required": ["agent_name", "query"],
             },
             "examples": [
-                {
-                    "agent_name": "focused-quality-resolver",
-                    "query": "ruff lint"
-                },
-                {
-                    "agent_name": "focused-quality-resolver",
-                    "query": "import sorting",
-                    "limit": 10
-                }
-            ]
+                {"agent_name": "focused-quality-resolver", "query": "ruff lint"},
+                {"agent_name": "focused-quality-resolver", "query": "import sorting", "limit": 10},
+            ],
         }
 
         return registry
 
     def _wrap_tool(self, tool_func):
         """Wrap tool function with token limiting and error handling."""
+
         @wraps(tool_func)
         def wrapper(*args, **kwargs):
             try:
@@ -1126,10 +1044,12 @@ class LeanMCPInterface:
             except Exception as e:
                 logger.error(f"Error in {tool_func.__name__}: {e}")
                 return {"error": str(e), "tool": tool_func.__name__}
+
         return wrapper
 
     def _wrap_async_tool(self, async_tool_func):
         """Wrap async tool function with token limiting and error handling."""
+
         @wraps(async_tool_func)
         async def wrapper(*args, **kwargs):
             try:
@@ -1138,6 +1058,7 @@ class LeanMCPInterface:
             except Exception as e:
                 logger.error(f"Error in {async_tool_func.__name__}: {e}")
                 return {"error": str(e), "tool": async_tool_func.__name__}
+
         return wrapper
 
     def _setup_meta_tools(self):
@@ -1146,13 +1067,11 @@ class LeanMCPInterface:
         @self.app.tool(
             description=(
                 "Discover session lifecycle, decision logging, agent tracking, "
-                "and learning tools (28 total). "
+                "and learning tools. "
                 "USE WHEN: starting sessions, logging decisions, searching learnings"
             )
         )
-        def discover_tools(
-            pattern: str = ""
-        ) -> dict[str, Any]:
+        def discover_tools(pattern: str = "") -> dict[str, Any]:
             """
             [STEP 1] Discover available tools in the session-intelligence MCP server.
 
@@ -1170,7 +1089,7 @@ class LeanMCPInterface:
             - Agent registry: agent_register, agent_get_info, agent_query_decisions
             - Search: session_search, agent_search_all
 
-            This lean interface provides 28 tools across 3 domains (session, agent, knowledge),
+            This lean interface provides tools across 3 domains (session, agent, knowledge),
             saving ~25k tokens vs loading all tool schemas upfront.
 
             WORKFLOW:
@@ -1180,14 +1099,14 @@ class LeanMCPInterface:
 
             Args:
                 pattern: Filter tools by name (e.g., "session", "agent", "learning")
-                         Leave empty "" to see all 28 tools
+                         Leave empty "" to see all tools
 
             Returns:
                 Dictionary containing:
                 - available_tools: List of tools, each with:
                   * name: Tool name to use in get_tool_spec() or execute_tool()
                   * description: What the tool does
-                - total_tools: Total tools in registry (28)
+                - total_tools: Total tools in registry (dynamic)
                 - filtered_count: How many matched your pattern
 
                 Example output for discover_tools("session"):
@@ -1197,14 +1116,14 @@ class LeanMCPInterface:
                     {"name": "session_track_execution", "description": "Track agent execution with pattern detection"},
                     {"name": "session_log_decision", "description": "Log decisions with context and impact analysis"}
                   ],
-                  "filtered_count": 12,
-                  "total_tools": 28
+                  "filtered_count": 13,
+                  "total_tools": <dynamic>
                 }
 
             Examples:
-                discover_tools("")              # List all 28 tools
-                discover_tools("session")       # Find session management tools (12 tools)
-                discover_tools("agent")         # Find agent registry tools (11 tools)
+                discover_tools("")              # List all tools
+                discover_tools("session")       # Find session management tools
+                discover_tools("agent")         # Find agent registry tools
                 discover_tools("learning")      # Find learning/knowledge tools
 
             MISSING TOOL? If you need an operation that's not available:
@@ -1217,15 +1136,12 @@ class LeanMCPInterface:
                 if pattern and pattern.strip() and pattern.lower() not in name.lower():
                     continue
 
-                tools.append({
-                    "name": name,
-                    "description": info["description"]
-                })
+                tools.append({"name": name, "description": info["description"]})
 
             return {
                 "available_tools": tools,
                 "total_tools": len(self.tool_registry),
-                "filtered_count": len(tools)
+                "filtered_count": len(tools),
             }
 
         @self.app.tool(
@@ -1311,7 +1227,7 @@ class LeanMCPInterface:
                 available_tools = list(self.tool_registry.keys())
                 return {
                     "error": f"Tool '{tool_name}' not found",
-                    "available_tools": available_tools
+                    "available_tools": available_tools,
                 }
 
             tool_info = self.tool_registry[tool_name]
@@ -1319,7 +1235,7 @@ class LeanMCPInterface:
                 "name": tool_name,
                 "description": tool_info["description"],
                 "schema": tool_info["schema"],
-                "examples": tool_info["examples"]
+                "examples": tool_info["examples"],
             }
 
         @self.app.tool(
@@ -1401,7 +1317,7 @@ class LeanMCPInterface:
                 available_tools = list(self.tool_registry.keys())
                 return {
                     "error": f"Tool '{tool_name}' not found",
-                    "available_tools": available_tools
+                    "available_tools": available_tools,
                 }
 
             tool_info = self.tool_registry[tool_name]
@@ -1413,18 +1329,10 @@ class LeanMCPInterface:
                     result = await tool_func(**parameters)
                 else:
                     result = tool_func(**parameters)
-                return {
-                    "tool": tool_name,
-                    "status": "success",
-                    "result": result
-                }
+                return {"tool": tool_name, "status": "success", "result": result}
             except Exception as e:
                 logger.error(f"Error executing {tool_name}: {e}")
-                return {
-                    "tool": tool_name,
-                    "status": "error",
-                    "error": str(e)
-                }
+                return {"tool": tool_name, "status": "error", "error": str(e)}
 
     def get_app(self) -> FastMCP:
         """Get the FastMCP app instance."""
@@ -1434,10 +1342,10 @@ class LeanMCPInterface:
 def create_lean_interface(session_engine: SessionIntelligenceEngine) -> FastMCP:
     """
     Create a lean MCP interface with minimal context consumption.
-    
+
     Args:
         session_engine: Initialized session intelligence engine
-        
+
     Returns:
         FastMCP app with 3 meta-tools exposing full functionality
     """

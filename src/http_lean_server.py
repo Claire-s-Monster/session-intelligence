@@ -47,11 +47,11 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  Start server with defaults (localhost:4002, SQLite):
+  Start server with defaults (localhost:4002, PostgreSQL):
     pixi run http-server
 
-  Start with PostgreSQL:
-    pixi run http-server --backend postgresql --dsn "postgresql://localhost/sessions"
+  Start with custom DSN:
+    pixi run http-server --dsn "postgresql://localhost/sessions"
 
   Start with custom port:
     pixi run http-server --port 5000
@@ -60,9 +60,9 @@ Examples:
     pixi run http-server --api-key mysecretkey
 
 Environment Variables:
-  SESSION_DB_BACKEND: sqlite | postgresql (default: sqlite)
-  SESSION_DB_PATH: SQLite file path (default: ~/.claude/session-intelligence/sessions.db)
-  SESSION_DB_DSN: PostgreSQL connection string
+  SESSION_DB_DSN: PostgreSQL connection string (default: postgresql://localhost/session_intelligence)
+  SESSION_DB_POOL_MIN: Connection pool minimum size (default: 2)
+  SESSION_DB_POOL_MAX: Connection pool maximum size (default: 10)
   SESSION_INTELLIGENCE_API_KEY: API key for authentication
         """,
     )
@@ -84,17 +84,8 @@ Environment Variables:
         help="Repository path for session engine (default: current directory)",
     )
     parser.add_argument(
-        "--backend",
-        choices=["sqlite", "postgresql"],
-        help="Database backend (default: from env or sqlite)",
-    )
-    parser.add_argument(
-        "--db-path",
-        help="SQLite database path (default: ~/.claude/session-intelligence/sessions.db)",
-    )
-    parser.add_argument(
         "--dsn",
-        help="PostgreSQL connection string (e.g., postgresql://localhost/session_intelligence)",
+        help="PostgreSQL connection string (default: postgresql://localhost/session_intelligence)",
     )
     parser.add_argument(
         "--api-key",
@@ -141,16 +132,8 @@ def main() -> None:
 
     db_config = DatabaseConfig.load()  # Start with env/file config
 
-    if args.backend:
-        db_config.backend = args.backend
-    if args.db_path:
-        db_config.sqlite_path = Path(args.db_path)
-        if not args.backend:
-            db_config.backend = "sqlite"
     if args.dsn:
         db_config.postgresql_dsn = args.dsn
-        if not args.backend:
-            db_config.backend = "postgresql"
 
     # Create and run server
     server = HTTPSessionIntelligenceServer(
@@ -164,8 +147,8 @@ def main() -> None:
     logger.info("Starting Session Intelligence HTTP Server")
     logger.info(f"  Host: {server.host}")
     logger.info(f"  Port: {server.port}")
-    logger.info(f"  Backend: {db_config.backend}")
-    logger.info(f"  Database: {server.db_path}")
+    logger.info(f"  Backend: postgresql")
+    logger.info(f"  Database: {db_config.postgresql_dsn}")
     logger.info(f"  API Key: {'enabled' if args.api_key else 'disabled'}")
     logger.info(f"  Network Access: {'enabled' if args.allow_network else 'localhost only'}")
     logger.info("")

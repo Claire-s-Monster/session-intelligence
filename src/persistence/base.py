@@ -1,20 +1,14 @@
 """
 Database abstraction layer for session persistence.
 
-Provides a Protocol interface that enables multiple backends:
-- SQLite (development, single-user)
-- PostgreSQL (production, multi-agent analysis)
+Uses PostgreSQL for production-grade session management with
+connection pooling, concurrent access, and cross-session analytics.
 
 Usage:
     from persistence.base import DatabaseBackend
-    from persistence.sqlite import SQLiteBackend
     from persistence.postgresql import PostgreSQLBackend
 
-    # Development
-    db: DatabaseBackend = SQLiteBackend(path="~/.claude/session-intelligence/sessions.db")
-
-    # Production
-    db: DatabaseBackend = PostgreSQLBackend(dsn="postgresql://user:pass@localhost/sessions")
+    db: DatabaseBackend = PostgreSQLBackend(dsn="postgresql://localhost/session_intelligence")
 """
 
 from __future__ import annotations
@@ -25,7 +19,6 @@ from typing import Any, Protocol, runtime_checkable
 
 # Default global location for session intelligence data
 DEFAULT_DATA_DIR = Path.home() / ".claude" / "session-intelligence"
-DEFAULT_SQLITE_PATH = DEFAULT_DATA_DIR / "sessions.db"
 DEFAULT_POSTGRES_DSN = "postgresql://localhost/session_intelligence"
 
 
@@ -33,6 +26,72 @@ def get_default_data_dir() -> Path:
     """Get the default data directory, creating it if needed."""
     DEFAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
     return DEFAULT_DATA_DIR
+
+
+def sanitize_dsn(dsn: str) -> str:
+    """Remove password from DSN for safe logging.
+
+    Args:
+        dsn: Database connection string (e.g., postgresql://user:password@host:5432/db)
+
+    Returns:
+        Sanitized DSN with password replaced by '***'
+
+    Examples:
+        >>> sanitize_dsn("postgresql://user:secret@localhost:5432/db")
+        'postgresql://user:***@localhost:5432/db'
+        >>> sanitize_dsn("postgresql://localhost/db")
+        'postgresql://localhost/db'
+    """
+    import re
+
+    # Match pattern: ://user:password@ where password can contain any chars except ://
+    # Use greedy match for password to handle @ in password, match until last @ before host
+    return re.sub(r"://([^/:]+):(.+)@([^@]+)$", r"://\1:***@\3", dsn)
+
+
+# Database retry decorator for transient failures
+try:
+    from tenacity import (
+        retry,
+        retry_if_exception_type,
+        stop_after_attempt,
+        wait_exponential,
+    )
+
+    # Build list of retryable exceptions
+    _retryable_exceptions: list[type[Exception]] = [ConnectionError, TimeoutError, OSError]
+
+    # Add asyncpg-specific exceptions if available
+    try:
+        import asyncpg
+
+        _retryable_exceptions.extend([
+            asyncpg.PostgresConnectionError,
+            asyncpg.InterfaceError,
+        ])
+    except ImportError:
+        pass
+
+    db_retry = retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(tuple(_retryable_exceptions)),
+        reraise=True,
+    )
+except ImportError:
+    # Fallback: no-op decorator if tenacity not installed
+    from functools import wraps
+    from typing import Callable, TypeVar
+
+    F = TypeVar("F", bound=Callable[..., Any])
+
+    def db_retry(func: F) -> F:
+        """No-op decorator when tenacity is not available."""
+        @wraps(func)
+        async def wrapper(*args: Any, **kwargs: Any) -> Any:
+            return await func(*args, **kwargs)
+        return wrapper  # type: ignore
 
 
 @runtime_checkable
@@ -80,9 +139,7 @@ class DatabaseBackend(Protocol):
         """Query sessions with optional filters."""
         ...
 
-    async def get_active_session_for_project(
-        self, project_path: str
-    ) -> dict[str, Any] | None:
+    async def get_active_session_for_project(self, project_path: str) -> dict[str, Any] | None:
         """Get the most recent active session for a project path."""
         ...
 
@@ -112,9 +169,7 @@ class DatabaseBackend(Protocol):
         """Save metrics snapshot."""
         ...
 
-    async def query_metrics_by_branch(
-        self, branch: str, limit: int = 100
-    ) -> list[dict[str, Any]]:
+    async def query_metrics_by_branch(self, branch: str, limit: int = 100) -> list[dict[str, Any]]:
         """Query metrics by branch across sessions."""
         ...
 
@@ -129,9 +184,7 @@ class DatabaseBackend(Protocol):
         """Save a session note."""
         ...
 
-    async def query_notes_by_date(
-        self, date: str, limit: int = 100
-    ) -> list[dict[str, Any]]:
+    async def query_notes_by_date(self, date: str, limit: int = 100) -> list[dict[str, Any]]:
         """Query notes by date across sessions."""
         ...
 
@@ -162,9 +215,7 @@ class DatabaseBackend(Protocol):
         """Update last activity timestamp for MCP session."""
         ...
 
-    async def link_mcp_to_engine_session(
-        self, mcp_session_id: str, engine_session_id: str
-    ) -> None:
+    async def link_mcp_to_engine_session(self, mcp_session_id: str, engine_session_id: str) -> None:
         """Link MCP session to engine session."""
         ...
 

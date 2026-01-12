@@ -1,55 +1,48 @@
 """
 Session Intelligence Persistence Layer.
 
-Provides database abstraction supporting multiple backends:
-- SQLite (default, development)
-- PostgreSQL (production, multi-agent analysis)
+Uses PostgreSQL for production-grade session management with
+connection pooling, concurrent access, and cross-session analytics.
 
 Quick Start:
     from persistence import get_database, DatabaseConfig
 
-    # Auto-detect backend from environment
+    # Auto-detect from environment/config
     db = await get_database()
 
     # Or explicit configuration
-    config = DatabaseConfig(backend="postgresql", postgresql_dsn="...")
+    config = DatabaseConfig(postgresql_dsn="postgresql://localhost/session_intelligence")
     db = await get_database(config=config)
 
 Environment Variables:
-    SESSION_DB_BACKEND: sqlite | postgresql
-    SESSION_DB_PATH: SQLite file path
     SESSION_DB_DSN: PostgreSQL connection string
+    SESSION_DB_POOL_MIN: Connection pool minimum size (default: 2)
+    SESSION_DB_POOL_MAX: Connection pool maximum size (default: 10)
 
-Default Data Location:
-    ~/.claude/session-intelligence/sessions.db (SQLite)
+Default Connection:
+    postgresql://localhost/session_intelligence
 """
 
 from .base import (
     DEFAULT_DATA_DIR,
     DEFAULT_POSTGRES_DSN,
-    DEFAULT_SQLITE_PATH,
     BaseDatabaseBackend,
     DatabaseBackend,
+    db_retry,
     get_default_data_dir,
+    sanitize_dsn,
 )
 from .config import DatabaseConfig, create_database, get_database
-from .sqlite import SQLiteBackend
+from .postgresql import PostgreSQLBackend
 
-# PostgreSQL is optional (requires asyncpg)
-try:
-    from .postgresql import PostgreSQLBackend
-except ImportError:
-    PostgreSQLBackend = None  # type: ignore
-
-# Backwards compatibility
-Database = SQLiteBackend
+# Backwards compatibility alias
+Database = PostgreSQLBackend
 
 __all__ = [
     # Protocols and base
     "DatabaseBackend",
     "BaseDatabaseBackend",
-    # Backends
-    "SQLiteBackend",
+    # Backend
     "PostgreSQLBackend",
     "Database",  # Backwards compatibility alias
     # Configuration
@@ -58,7 +51,9 @@ __all__ = [
     "get_database",
     # Constants
     "DEFAULT_DATA_DIR",
-    "DEFAULT_SQLITE_PATH",
     "DEFAULT_POSTGRES_DSN",
+    # Utilities
     "get_default_data_dir",
+    "sanitize_dsn",
+    "db_retry",
 ]

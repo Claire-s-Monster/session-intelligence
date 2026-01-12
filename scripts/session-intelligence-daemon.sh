@@ -11,14 +11,12 @@
 # Options:
 #   --port PORT           Port to bind to (default: 4002)
 #   --api-key KEY         API key for authentication
-#   --backend TYPE        Database backend: sqlite|postgresql (default: sqlite)
 #   --dsn DSN             PostgreSQL connection string
-#   --db-path PATH        SQLite database path
 #
 # Environment Variables:
-#   SESSION_DB_BACKEND    Database backend (sqlite|postgresql)
 #   SESSION_DB_DSN        PostgreSQL connection string
-#   SESSION_DB_PATH       SQLite database path
+#   SESSION_DB_POOL_MIN   Connection pool minimum size
+#   SESSION_DB_POOL_MAX   Connection pool maximum size
 #
 # The server runs as a background daemon, enabling cross-session state
 # sharing between multiple Claude Code instances.
@@ -33,6 +31,7 @@ STATE_DIR="${HOME}/.claude/session-intelligence"
 PID_FILE="${STATE_DIR}/server.pid"
 LOG_FILE="${STATE_DIR}/server.log"
 DEFAULT_PORT=4002
+DEFAULT_DSN="postgresql://localhost/session_intelligence"
 
 # Ensure state directory exists
 mkdir -p "$STATE_DIR"
@@ -63,9 +62,7 @@ get_pid() {
 start_server() {
     local port="${1:-$DEFAULT_PORT}"
     local api_key="${2:-}"
-    local backend="${3:-}"
-    local dsn="${4:-}"
-    local db_path="${5:-}"
+    local dsn="${3:-}"
 
     # Check if already running
     if is_running; then
@@ -87,29 +84,21 @@ start_server() {
         cmd="$cmd --api-key $api_key"
     fi
 
-    if [ -n "$backend" ]; then
-        cmd="$cmd --backend $backend"
-    fi
-
     if [ -n "$dsn" ]; then
         cmd="$cmd --dsn $dsn"
     fi
 
-    if [ -n "$db_path" ]; then
-        cmd="$cmd --db-path $db_path"
+    # Determine DSN for logging (check config.json if no override)
+    local display_dsn="${dsn:-${SESSION_DB_DSN:-}}"
+    if [ -z "$display_dsn" ] && [ -f "$STATE_DIR/config.json" ]; then
+        display_dsn=$(python3 -c "import json; print(json.load(open('$STATE_DIR/config.json')).get('postgresql_dsn', '$DEFAULT_DSN'))" 2>/dev/null || echo "$DEFAULT_DSN")
     fi
-
-    # Determine backend for logging
-    local display_backend="${backend:-${SESSION_DB_BACKEND:-sqlite}}"
+    display_dsn="${display_dsn:-$DEFAULT_DSN}"
 
     log "Starting session-intelligence HTTP server..."
     log "  Port: $port"
-    log "  Backend: $display_backend"
-    if [ "$display_backend" = "postgresql" ]; then
-        log "  DSN: ${dsn:-${SESSION_DB_DSN:-postgresql://localhost/session_intelligence}}"
-    else
-        log "  Database: ${db_path:-${SESSION_DB_PATH:-$STATE_DIR/sessions.db}}"
-    fi
+    log "  Backend: postgresql"
+    log "  DSN: $display_dsn"
 
     # Start server in background
     cd "$PROJECT_DIR"
@@ -224,9 +213,7 @@ show_logs() {
 # Parse arguments
 PORT="$DEFAULT_PORT"
 API_KEY=""
-BACKEND=""
 DSN=""
-DB_PATH=""
 LINES="50"
 ACTION=""
 
@@ -244,16 +231,8 @@ while [[ $# -gt 0 ]]; do
             API_KEY="$2"
             shift 2
             ;;
-        --backend)
-            BACKEND="$2"
-            shift 2
-            ;;
         --dsn)
             DSN="$2"
-            shift 2
-            ;;
-        --db-path)
-            DB_PATH="$2"
             shift 2
             ;;
         --lines)
@@ -274,22 +253,20 @@ Commands:
 Options:
   --port PORT         Port to bind to (default: 4002)
   --api-key KEY       API key for authentication
-  --backend TYPE      Database backend: sqlite|postgresql (default: sqlite)
-  --dsn DSN           PostgreSQL connection string
-  --db-path PATH      SQLite database path (default: ~/.claude/session-intelligence/sessions.db)
+  --dsn DSN           PostgreSQL connection string (default: postgresql://localhost/session_intelligence)
   --lines N           Number of log lines to show (default: 50)
 
 Environment Variables:
-  SESSION_DB_BACKEND  Database backend (sqlite|postgresql)
-  SESSION_DB_DSN      PostgreSQL connection string
-  SESSION_DB_PATH     SQLite database path
+  SESSION_DB_DSN        PostgreSQL connection string
+  SESSION_DB_POOL_MIN   Connection pool minimum size (default: 2)
+  SESSION_DB_POOL_MAX   Connection pool maximum size (default: 10)
 
 Examples:
-  # Start with SQLite (default)
+  # Start with defaults (PostgreSQL)
   ./session-intelligence-daemon.sh start
 
-  # Start with PostgreSQL
-  ./session-intelligence-daemon.sh start --backend postgresql --dsn "postgresql://localhost/sessions"
+  # Start with custom DSN
+  ./session-intelligence-daemon.sh start --dsn "postgresql://user:pass@localhost/sessions"
 
   # Start with custom port and API key
   ./session-intelligence-daemon.sh start --port 5000 --api-key mysecret
@@ -313,13 +290,13 @@ done
 # Execute action
 case "${ACTION:-}" in
     start)
-        start_server "$PORT" "$API_KEY" "$BACKEND" "$DSN" "$DB_PATH"
+        start_server "$PORT" "$API_KEY" "$DSN"
         ;;
     stop)
         stop_server
         ;;
     restart)
-        restart_server "$PORT" "$API_KEY" "$BACKEND" "$DSN" "$DB_PATH"
+        restart_server "$PORT" "$API_KEY" "$DSN"
         ;;
     status)
         status_server

@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from persistence.database import Database
+    from persistence.base import DatabaseBackend as Database
 
 logger = logging.getLogger(__name__)
 

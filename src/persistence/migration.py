@@ -284,7 +284,7 @@ async def export_to_json(
     try:
         data = {
             "exported_at": datetime.now().isoformat(),
-            "source_backend": config.backend,
+            "source_backend": "postgresql",
             "sessions": await db.query_sessions(limit=100000),
             "statistics": await db.get_statistics(),
         }

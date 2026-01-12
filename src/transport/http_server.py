@@ -113,7 +113,6 @@ class HTTPSessionIntelligenceServer:
         host: str = "127.0.0.1",
         port: int = 4002,
         repository_path: str = ".",
-        db_path: str | None = None,
         db_config: DatabaseConfig | None = None,
         security_config: SecurityConfig | None = None,
     ) -> None:
@@ -122,24 +121,14 @@ class HTTPSessionIntelligenceServer:
         self.repository_path = repository_path
         self.security_config = security_config or SecurityConfig()
 
-        # Database configuration - supports both SQLite and PostgreSQL
+        # Database configuration - PostgreSQL only
         # Default location: ~/.claude/session-intelligence/ (global, cross-project)
         self.db_config = db_config or DatabaseConfig.load()
 
-        # For backwards compatibility, db_path overrides config
-        if db_path:
-            from pathlib import Path
-
-            self.db_config.sqlite_path = Path(db_path)
-            self.db_config.backend = "sqlite"
-
-        # Display path for logging
-        if self.db_config.backend == "postgresql":
-            self.db_path = (
-                self.db_config.postgresql_dsn or "postgresql://localhost/session_intelligence"
-            )
-        else:
-            self.db_path = str(self.db_config.sqlite_path or DEFAULT_DATA_DIR / "sessions.db")
+        # PostgreSQL DSN for logging (sanitized)
+        self.db_path = (
+            self.db_config.postgresql_dsn or "postgresql://localhost/session_intelligence"
+        )
 
         self.database: Any | None = None
         self.session_engine: SessionIntelligenceEngine | None = None
@@ -151,10 +140,8 @@ class HTTPSessionIntelligenceServer:
     async def lifespan(self, app: FastAPI) -> AsyncGenerator[None, None]:
         """Application lifespan manager."""
         logger.info(f"Starting HTTP server on {self.host}:{self.port}")
-        logger.info(f"Database backend: {self.db_config.backend}")
-        # Sanitize DSN if PostgreSQL backend to avoid logging credentials
-        safe_db_path = sanitize_dsn(self.db_path) if self.db_config.backend == "postgresql" else self.db_path
-        logger.info(f"Database: {safe_db_path}")
+        logger.info(f"Database backend: postgresql")
+        logger.info(f"Database: {sanitize_dsn(self.db_path)}")
 
         # Create and initialize database using factory
         self.database = create_database(config=self.db_config)

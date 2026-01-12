@@ -37,9 +37,6 @@ logger = logging.getLogger(__name__)
 class DatabaseConfig:
     """Configuration for PostgreSQL database backend."""
 
-    # Backend selection (postgresql or sqlite)
-    backend: str = "postgresql"
-
     # PostgreSQL settings
     postgresql_dsn: str | None = None
     postgresql_pool_min: int = 2

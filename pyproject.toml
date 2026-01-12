@@ -62,16 +62,14 @@ tenacity = ">=8.2.0"
 [tool.pixi.tasks]
 lean-server = { cmd = "python src/lean_server.py", env = { PYTHONPATH = "src" } }
 mcp-server = { cmd = "python -m session.server", env = { PYTHONPATH = "src" } }
-# HTTP transport server
+# HTTP transport server (PostgreSQL only)
 http-server = { cmd = "python src/http_lean_server.py", env = { PYTHONPATH = "src" } }
-http-server-postgres = { cmd = "python src/http_lean_server.py --backend postgresql", env = { PYTHONPATH = "src" } }
 # Daemon management
 start-daemon = { cmd = "scripts/session-intelligence-daemon.sh start", env = { PYTHONPATH = "src" } }
 stop-daemon = { cmd = "scripts/session-intelligence-daemon.sh stop" }
 daemon-status = { cmd = "scripts/session-intelligence-daemon.sh status" }
 # Database migration tasks
-migrate-local-to-global = { cmd = "python -m persistence.migration local-to-global", env = { PYTHONPATH = "src" } }
-migrate-to-postgres = { cmd = "python -m persistence.migration sqlite-to-postgres", env = { PYTHONPATH = "src" } }
+migrate-from-sqlite = { cmd = "python -m persistence.migration sqlite-to-postgres", env = { PYTHONPATH = "src" } }
 db-export = { cmd = "python -m persistence.migration export", env = { PYTHONPATH = "src" } }
 # Quality tasks
 test = "pytest tests/ -v --ignore=tests/live --ignore=tests/debug"

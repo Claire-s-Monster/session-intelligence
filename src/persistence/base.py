@@ -20,6 +20,8 @@ from typing import Any, Protocol, runtime_checkable
 # Default global location for session intelligence data
 DEFAULT_DATA_DIR = Path.home() / ".claude" / "session-intelligence"
 DEFAULT_POSTGRES_DSN = "postgresql://localhost/session_intelligence"
+# SQLite path for testing (SQLite is test-only, not for production)
+DEFAULT_SQLITE_PATH = DEFAULT_DATA_DIR / "sessions.db"
 
 
 def get_default_data_dir() -> Path:

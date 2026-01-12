@@ -2744,6 +2744,8 @@ class SessionIntelligenceEngine:
                 "tags": tags or [],
                 "key_insights": [],  # Could extract from content
                 "related_sessions": [self._current_session_id] if self._current_session_id else [],
+                "decisions_referenced": decisions_referenced or [],
+                "learnings_referenced": learnings_referenced or [],
                 "created_at": now,
                 "updated_at": now,
             }

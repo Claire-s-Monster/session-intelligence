@@ -58,6 +58,8 @@ aiosqlite = ">=0.19.0"
 sse-starlette = ">=2.0.0"
 # Resilience
 tenacity = ">=8.2.0"
+# Dead code detection
+vulture = ">=2.10"
 
 [tool.pixi.tasks]
 lean-server = { cmd = "python src/lean_server.py", env = { PYTHONPATH = "src" } }
@@ -82,6 +84,7 @@ test-cov = "pytest tests/ -v --cov=src --cov-report=term-missing --cov-report=ht
 lint = "ruff check src/ --fix"
 format = "black src/ tests/"
 type-check = "mypy src/"
+dead-code = "vulture src/ --min-confidence 80"
 quality = { depends-on = ["lint", "type-check"] }
 check-all = { depends-on = ["test", "quality"] }
 

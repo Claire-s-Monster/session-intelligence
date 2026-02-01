@@ -45,7 +45,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from core.session_engine import SessionIntelligenceEngine
 from lean_mcp_interface import LeanMCPInterface
-from persistence import DEFAULT_DATA_DIR, DatabaseConfig, create_database, sanitize_dsn
+from persistence import DatabaseConfig, create_database, sanitize_dsn
 from transport.mcp_session_manager import MCPSessionManager
 from transport.security import (
     LocalhostOnlyMiddleware,
@@ -140,7 +140,7 @@ class HTTPSessionIntelligenceServer:
     async def lifespan(self, app: FastAPI) -> AsyncGenerator[None, None]:
         """Application lifespan manager."""
         logger.info(f"Starting HTTP server on {self.host}:{self.port}")
-        logger.info(f"Database backend: postgresql")
+        logger.info("Database backend: postgresql")
         logger.info(f"Database: {sanitize_dsn(self.db_path)}")
 
         # Create and initialize database using factory
@@ -216,6 +216,7 @@ class HTTPSessionIntelligenceServer:
         self._add_mcp_endpoints(app)
         self._add_health_endpoint(app)
         self._add_session_endpoints(app)
+        self._add_tools_endpoints(app)
 
         return app
 
@@ -871,6 +872,111 @@ class HTTPSessionIntelligenceServer:
             if not session:
                 raise HTTPException(status_code=404, detail="Session not found")
             return session
+
+    def _add_tools_endpoints(self, app: FastAPI) -> None:
+        """Add REST API endpoints for tool-like queries."""
+
+        @app.post("/tools/agent_query_learnings")
+        async def agent_query_learnings(request: Request) -> dict[str, Any]:
+            """Query learnings for a specific agent with text search and filtering."""
+            body = await request.json()
+            agent_name = body.get("agent_name")
+            query = body.get("query")  # text search
+            category = body.get("category")
+            limit = body.get("limit", 5)
+            min_success_rate = body.get("min_success_rate", 0.0)
+
+            session_engine = request.app.state.session_engine
+
+            # Get raw learnings
+            learnings = await session_engine.agent_query_learnings(
+                agent_name=agent_name,
+                learning_type=category,
+                limit=100,  # get more, filter below
+            )
+
+            # Apply text search filter
+            if query:
+                query_lower = query.lower()
+                learnings = [
+                    ln
+                    for ln in learnings
+                    if query_lower in ln.content.lower()
+                    or query_lower in (ln.source_context or "").lower()
+                ]
+
+            # Apply min_success_rate filter
+            learnings = [ln for ln in learnings if ln.success_rate >= min_success_rate]
+
+            # Apply limit
+            learnings = learnings[:limit]
+
+            # Format response
+            return {
+                "status": "success",
+                "learnings": [
+                    {
+                        "id": ln.id,
+                        "category": ln.learning_type,
+                        "learning_content": ln.content,
+                        "trigger_context": ln.source_context,
+                        "success_count": int(ln.times_applied * ln.success_rate),
+                        "failure_count": int(ln.times_applied * (1 - ln.success_rate)),
+                        "success_rate": ln.success_rate,
+                        "last_used": ln.updated_at,
+                    }
+                    for ln in learnings
+                ],
+                "total_matches": len(learnings),
+            }
+
+        @app.post("/tools/session_find_solution")
+        async def session_find_solution(request: Request) -> dict[str, Any]:
+            """Cross-agent solution search, scoped to project or universal."""
+            body = await request.json()
+            error_context = body.get("error_context", "")
+            project_path = body.get("project_path")
+            include_universal = body.get("include_universal", True)
+            limit = body.get("limit", 3)
+
+            database = request.app.state.database
+
+            solutions = []
+
+            # Query project learnings
+            if project_path:
+                project_learnings = await database.query_project_learnings(
+                    project_path=project_path,
+                    limit=50,
+                )
+                # Text search filter
+                query_lower = error_context.lower()
+                for ln in project_learnings:
+                    content = (ln.get("learning_content") or "").lower()
+                    trigger = (ln.get("trigger_context") or "").lower()
+                    if query_lower in content or query_lower in trigger:
+                        solutions.append(
+                            {
+                                "id": ln["id"],
+                                "source": "project",
+                                "learning_content": ln["learning_content"],
+                                "trigger_context": ln.get("trigger_context"),
+                                "success_count": ln.get("success_count", 1),
+                            }
+                        )
+
+            # Query universal learnings (from all projects with high success rate)
+            # Note: Currently returns empty as there's no universal learnings table.
+            # Future: Add promoted_to_universal column to project_learnings table.
+            if include_universal:
+                # Placeholder: universal learnings not yet implemented
+                pass
+
+            # Sort by success_count descending, limit
+            solutions.sort(key=lambda x: x["success_count"], reverse=True)
+            solutions = solutions[:limit]
+
+            return {"status": "success", "solutions": solutions}
 
     async def run(self) -> None:
         """Run the HTTP server."""

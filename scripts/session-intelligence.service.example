@@ -1,0 +1,39 @@
+[Unit]
+Description=Session Intelligence MCP HTTP Server
+Documentation=https://github.com/MementoRC/session-intelligence
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/ClaudeCode/Servers/session-intelligence/development
+ExecStart=pixi run http-server --port 4002
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Environment
+Environment=HOME=%h
+
+# PostgreSQL configuration
+Environment=SESSION_DB_BACKEND=postgresql
+Environment=SESSION_DB_DSN=postgresql://localhost/session_intelligence
+Environment=SESSION_DB_POOL_MIN=2
+Environment=SESSION_DB_POOL_MAX=10
+
+[Install]
+WantedBy=default.target
+
+# Installation:
+#   mkdir -p ~/.config/systemd/user
+#   cp session-intelligence.service.example ~/.config/systemd/user/session-intelligence.service
+#   # Edit paths as needed
+#   systemctl --user daemon-reload
+#   systemctl --user enable session-intelligence
+#   systemctl --user start session-intelligence
+#
+# Management:
+#   systemctl --user status session-intelligence
+#   journalctl --user -u session-intelligence -f

@@ -20,6 +20,30 @@ debug_handler.setFormatter(logging.Formatter("%(asctime)s [ENGINE-DEBUG] %(messa
 debug_logger.addHandler(debug_handler)
 debug_logger.setLevel(logging.INFO)
 
+
+def safe_parse_datetime(value: Any) -> datetime | None:
+    """Safely parse datetime from various input types.
+
+    Handles:
+    - None -> None
+    - datetime objects -> returned as-is
+    - ISO format strings -> parsed via fromisoformat
+    - Other types -> None (with warning logged)
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            debug_logger.warning(f"Failed to parse datetime string: {value}")
+            return None
+    debug_logger.warning(f"Unexpected datetime type: {type(value)} - {value}")
+    return None
+
+
 from models.session_models import (
     Agent,
     AgentDecision,
@@ -1196,9 +1220,8 @@ class SessionIntelligenceEngine:
                             Decision(
                                 decision_id=dec_id,
                                 timestamp=(
-                                    datetime.fromisoformat(db_dec["timestamp"])
-                                    if db_dec.get("timestamp")
-                                    else datetime.now(UTC)
+                                    safe_parse_datetime(db_dec.get("timestamp"))
+                                    or datetime.now(UTC)
                                 ),
                                 description=db_dec.get("description", ""),
                                 context=DecisionContext(session_id=session_id, project_state={}),
@@ -1380,9 +1403,8 @@ class SessionIntelligenceEngine:
                                 Decision(
                                     decision_id=dec_id,
                                     timestamp=(
-                                        datetime.fromisoformat(db_dec["timestamp"])
-                                        if db_dec.get("timestamp")
-                                        else datetime.now(UTC)
+                                        safe_parse_datetime(db_dec.get("timestamp"))
+                                        or datetime.now(UTC)
                                     ),
                                     description=db_dec.get("description", ""),
                                     context=DecisionContext(

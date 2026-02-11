@@ -54,6 +54,7 @@ dmypy.json
 # Project-specific
 .claude/
 .serena/
+.mcp.json
 .benchmarks/
 .locks/
 logs/

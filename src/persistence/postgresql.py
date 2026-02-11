@@ -386,7 +386,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             self._is_connected = False
             logger.info("PostgreSQL connection pool closed")
 
-    def _ensure_connected(self) -> "asyncpg.Pool":
+    def _ensure_connected(self) -> asyncpg.Pool:
         """Return connection pool or raise if not connected.
 
         Returns:

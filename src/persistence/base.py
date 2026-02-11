@@ -83,8 +83,9 @@ try:
     )
 except ImportError:
     # Fallback: no-op decorator if tenacity not installed
+    from collections.abc import Callable
     from functools import wraps
-    from typing import Callable, TypeVar
+    from typing import TypeVar
 
     F = TypeVar("F", bound=Callable[..., Any])
 

@@ -9,6 +9,7 @@ Provides both MCP protocol and direct REST API access for LLMs/scripts.
 - GET /api/sessions                    - List sessions (?limit=N for pagination)
 - GET /api/sessions/{session_id}       - Get specific session details
 - POST /tools/agent_query_learnings    - Query agent learnings with text search
+- POST /tools/query_project_learnings  - Query project learnings with text search
 - POST /tools/session_find_solution    - Cross-agent solution search
 - POST /tools/session_log_learning     - Log learning directly to database
 
@@ -227,6 +228,7 @@ LLMs and scripts can access these endpoints directly:
 - `GET /api/sessions` - List sessions (add `?limit=N`)
 - `GET /api/sessions/{id}` - Get session by ID
 - `POST /tools/agent_query_learnings` - Query agent learnings with text search
+- `POST /tools/query_project_learnings` - Query project learnings with text search
 - `POST /tools/session_find_solution` - Cross-agent solution search
 - `POST /tools/session_log_learning` - Log learning directly (no MCP session needed)
 
@@ -1084,6 +1086,57 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                 }
             except Exception as e:
                 logger.exception(f"Failed to save learning: {e}")
+                return {"status": "error", "message": str(e)}
+
+        @app.post("/tools/query_project_learnings")
+        async def query_project_learnings(request: Request) -> dict[str, Any]:
+            """Query project learnings from database.
+
+            Accepts:
+                project_path: Project path to query learnings for (required)
+                category: Optional category filter
+                query: Optional text search in learning_content
+                limit: Max results (default 20)
+
+            Returns:
+                status: success/error
+                learnings: List of matching learnings
+            """
+            body = await request.json()
+            project_path = body.get("project_path")
+            category = body.get("category")
+            query = body.get("query")
+            limit = body.get("limit", 20)
+
+            if not project_path:
+                return {"status": "error", "message": "project_path is required"}
+
+            database = request.app.state.database
+
+            try:
+                learnings = await database.query_project_learnings(
+                    project_path=project_path,
+                    category=category,
+                    limit=limit,
+                )
+
+                # Apply text search filter if provided
+                if query:
+                    query_lower = query.lower()
+                    learnings = [
+                        ln
+                        for ln in learnings
+                        if query_lower in (ln.get("learning_content") or "").lower()
+                        or query_lower in (ln.get("trigger_context") or "").lower()
+                    ]
+
+                return {
+                    "status": "success",
+                    "learnings": learnings,
+                    "count": len(learnings),
+                }
+            except Exception as e:
+                logger.exception(f"Failed to query learnings: {e}")
                 return {"status": "error", "message": str(e)}
 
     async def run(self) -> None:

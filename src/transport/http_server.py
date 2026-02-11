@@ -1,11 +1,34 @@
 """
 HTTP Server for Session-Intelligence MCP.
 
-Provides:
-- POST /mcp: JSON-RPC 2.0 MCP requests with MCP-Session-Id header
-- GET /mcp: SSE stream for server-to-client notifications
-- GET /health: Health check endpoint
-- GET /api/sessions: REST API for session queries
+Provides both MCP protocol and direct REST API access for LLMs/scripts.
+
+## REST API (Non-MCP, direct curl/HTTP access)
+
+- GET /health                          - Server health and connection status
+- GET /api/sessions                    - List sessions (?limit=N for pagination)
+- GET /api/sessions/{session_id}       - Get specific session details
+- POST /tools/agent_query_learnings    - Query agent learnings with text search
+- POST /tools/session_find_solution    - Cross-agent solution search
+- POST /tools/session_log_learning     - Log learning directly to database
+
+## MCP Protocol (JSON-RPC 2.0)
+
+- POST /mcp                            - MCP JSON-RPC requests (requires MCP-Session-Id)
+- GET /mcp                             - SSE stream for server-to-client notifications
+
+## Quick curl examples
+
+    # Health check
+    curl http://127.0.0.1:4002/health
+
+    # List recent sessions
+    curl http://127.0.0.1:4002/api/sessions?limit=10
+
+    # Query agent learnings
+    curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
+      -H "Content-Type: application/json" \\
+      -d '{"agent_name": "my-agent", "query": "patterns", "limit": 5}'
 """
 
 from __future__ import annotations
@@ -194,7 +217,39 @@ class HTTPSessionIntelligenceServer:
         """Create the FastAPI application with MCP endpoints."""
         app = FastAPI(
             title="Session Intelligence MCP Server",
-            description="HTTP transport for Session Intelligence MCP",
+            description="""HTTP transport for Session Intelligence MCP with REST API access.
+
+## REST API (curl/HTTP access without MCP protocol)
+
+LLMs and scripts can access these endpoints directly:
+
+- `GET /health` - Server health check
+- `GET /api/sessions` - List sessions (add `?limit=N`)
+- `GET /api/sessions/{id}` - Get session by ID
+- `POST /tools/agent_query_learnings` - Query agent learnings with text search
+- `POST /tools/session_find_solution` - Cross-agent solution search
+- `POST /tools/session_log_learning` - Log learning directly (no MCP session needed)
+
+## MCP Protocol (JSON-RPC 2.0)
+
+- `POST /mcp` - MCP JSON-RPC requests (requires MCP-Session-Id header)
+- `GET /mcp` - SSE stream for notifications
+
+## Example curl commands
+
+```bash
+# Health check
+curl http://127.0.0.1:4002/health
+
+# List sessions
+curl http://127.0.0.1:4002/api/sessions?limit=10
+
+# Query learnings
+curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
+  -H "Content-Type: application/json" \\
+  -d '{"agent_name": "my-agent", "query": "error handling", "limit": 5}'
+```
+""",
             version="1.0.0",
             lifespan=self.lifespan,
         )
@@ -977,6 +1032,59 @@ class HTTPSessionIntelligenceServer:
             solutions = solutions[:limit]
 
             return {"status": "success", "solutions": solutions}
+
+        @app.post("/tools/session_log_learning")
+        async def session_log_learning(request: Request) -> dict[str, Any]:
+            """Log a learning directly to database without MCP session requirement.
+
+            Accepts:
+                category: Learning category (pattern, anti-pattern, technique, etc.)
+                learning_content: The learning content to store
+                trigger_context: Optional context that triggered this learning
+                project_path: Project path to scope the learning to
+
+            Returns:
+                status: success/error
+                learning_id: Generated UUID for the learning
+                message: Confirmation message
+            """
+            body = await request.json()
+            category = body.get("category")
+            learning_content = body.get("learning_content")
+            trigger_context = body.get("trigger_context")
+            project_path = body.get("project_path")
+
+            # Validate required fields
+            if not category:
+                return {"status": "error", "message": "category is required"}
+            if not learning_content:
+                return {"status": "error", "message": "learning_content is required"}
+            if not project_path:
+                return {"status": "error", "message": "project_path is required"}
+
+            database = request.app.state.database
+
+            # Generate learning ID
+            learning_id = f"learning-{uuid.uuid4().hex[:8]}"
+
+            try:
+                await database.save_project_learning(
+                    learning_id=learning_id,
+                    project_path=project_path,
+                    category=category,
+                    learning_content=learning_content,
+                    trigger_context=trigger_context,
+                    source_session_id=None,  # No MCP session required
+                )
+
+                return {
+                    "status": "success",
+                    "learning_id": learning_id,
+                    "message": f"Learning saved to project {project_path}",
+                }
+            except Exception as e:
+                logger.exception(f"Failed to save learning: {e}")
+                return {"status": "error", "message": str(e)}
 
     async def run(self) -> None:
         """Run the HTTP server."""

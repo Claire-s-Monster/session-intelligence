@@ -163,7 +163,7 @@ dashboard = session_get_dashboard(
 
 ## Configuration
 
-### MCP Server Configuration
+### MCP Server Configuration (stdio transport)
 Add to your Claude Code MCP configuration:
 ```json
 {
@@ -180,6 +180,187 @@ Add to your Claude Code MCP configuration:
   }
 }
 ```
+
+### HTTP Server Configuration (REST API)
+For HTTP transport with REST API access:
+```bash
+# Start the HTTP server (default: localhost:4002)
+pixi run http-server
+
+# With custom port and API key
+pixi run http-server --port 5000 --api-key mysecretkey
+
+# With custom PostgreSQL DSN
+pixi run http-server --dsn "postgresql://user:pass@localhost/sessions"
+```
+
+## HTTP REST API (Non-MCP Access)
+
+The HTTP server exposes REST endpoints that can be accessed directly via `curl` or any HTTP client, **without requiring MCP protocol**. This is useful for:
+- Shell scripts and automation
+- Quick health checks from cron jobs
+- Integration with non-MCP tools
+- Debugging and manual queries
+
+### Base URL
+```
+http://127.0.0.1:4002
+```
+
+### Endpoints
+
+#### Health Check
+```bash
+# Check server health and connection status
+curl http://127.0.0.1:4002/health
+```
+
+Response:
+```json
+{
+  "status": "healthy",
+  "database": "connected",
+  "mcp_protocol_version": "2024-11-05",
+  "active_mcp_sessions": 2,
+  "sse_subscribers": 1,
+  "timestamp": "2026-02-11T15:30:00.000000"
+}
+```
+
+#### List Sessions
+```bash
+# List recent sessions (default limit: 50)
+curl http://127.0.0.1:4002/api/sessions
+
+# With custom limit
+curl "http://127.0.0.1:4002/api/sessions?limit=10"
+
+# With API key authentication (if enabled)
+curl -H "X-API-Key: mysecretkey" http://127.0.0.1:4002/api/sessions
+```
+
+#### Get Session by ID
+```bash
+# Get specific session details
+curl http://127.0.0.1:4002/api/sessions/session-20260211-143000
+```
+
+#### Query Agent Learnings
+```bash
+# Search learnings for an agent with text filtering
+curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "agent_name": "focused-quality-resolver",
+    "query": "lint fix",
+    "category": "pattern",
+    "limit": 5,
+    "min_success_rate": 0.7
+  }'
+```
+
+#### Find Solutions
+```bash
+# Cross-agent solution search for error context
+curl -X POST http://127.0.0.1:4002/tools/session_find_solution \
+  -H "Content-Type: application/json" \
+  -d '{
+    "error_context": "ImportError: No module named",
+    "project_path": "/home/user/my-project",
+    "include_universal": true,
+    "limit": 3
+  }'
+```
+
+#### Log Learning (No MCP Session Required)
+```bash
+# Log a learning directly to the database
+curl -X POST http://127.0.0.1:4002/tools/session_log_learning \
+  -H "Content-Type: application/json" \
+  -d '{
+    "category": "pattern",
+    "learning_content": "When fixing import errors, check sys.path first",
+    "trigger_context": "Debugging ImportError in pytest",
+    "project_path": "/home/user/my-project"
+  }'
+```
+
+Response:
+```json
+{
+  "status": "success",
+  "learning_id": "learning-a1b2c3d4",
+  "message": "Learning saved to project /home/user/my-project"
+}
+```
+
+### MCP Protocol via HTTP
+
+For full MCP protocol access over HTTP (JSON-RPC 2.0):
+
+#### Initialize MCP Session
+```bash
+# Initialize and get MCP-Session-Id
+curl -X POST http://127.0.0.1:4002/mcp \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {"clientInfo": {"name": "curl-client", "version": "1.0"}}
+  }'
+```
+
+Response includes `MCP-Session-Id` header for subsequent requests.
+
+#### Execute MCP Tool
+```bash
+# Execute a tool via MCP protocol
+curl -X POST http://127.0.0.1:4002/mcp \
+  -H "Content-Type: application/json" \
+  -H "MCP-Session-Id: <session-id-from-initialize>" \
+  -d '{
+    "jsonrpc": "2.0",
+    "id": 2,
+    "method": "tools/call",
+    "params": {
+      "name": "execute_tool",
+      "arguments": {
+        "tool_name": "session_manage_lifecycle",
+        "parameters": {"operation": "create", "project_name": "my-project"}
+      }
+    }
+  }'
+```
+
+#### SSE Notifications
+```bash
+# Subscribe to server-sent events (streaming)
+curl -N http://127.0.0.1:4002/mcp \
+  -H "MCP-Session-Id: <session-id>"
+```
+
+### Quick Reference: REST vs MCP
+
+| Use Case | Endpoint | Method |
+|----------|----------|--------|
+| Health check | `GET /health` | REST |
+| List sessions | `GET /api/sessions` | REST |
+| Get session | `GET /api/sessions/{id}` | REST |
+| Query learnings | `POST /tools/agent_query_learnings` | REST |
+| Find solutions | `POST /tools/session_find_solution` | REST |
+| Log learning | `POST /tools/session_log_learning` | REST |
+| Full MCP tools | `POST /mcp` | MCP JSON-RPC |
+| SSE notifications | `GET /mcp` | MCP SSE |
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SESSION_DB_DSN` | PostgreSQL connection string | `postgresql://localhost/session_intelligence` |
+| `SESSION_DB_POOL_MIN` | Connection pool minimum | `2` |
+| `SESSION_DB_POOL_MAX` | Connection pool maximum | `10` |
+| `SESSION_INTELLIGENCE_API_KEY` | API key for authentication | (none) |
 
 ## Integration
 

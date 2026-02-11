@@ -1,0 +1,25 @@
+---
+name: CI
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  ci:
+    name: "CI Pipeline"
+    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@main
+    with:
+      pixi-environment: 'default'
+      python-versions: '["3.11", "3.12"]'
+      os-matrix: '["ubuntu-latest"]'
+      enable-performance: false
+      enable-release: false
+      editable-install: false
+      enable-hygiene-check: true
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      GH_PAT: ${{ secrets.GH_PAT }}

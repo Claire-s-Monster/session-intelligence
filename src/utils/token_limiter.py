@@ -152,7 +152,10 @@ class IntelligentTruncator:
 
         # Calculate savings
         tokens_saved = original_estimate.estimated_tokens - final_estimate.estimated_tokens
-        truncation_summary = f"Content truncated: {tokens_saved} tokens saved ({original_estimate.estimated_tokens} -> {final_estimate.estimated_tokens})"
+        truncation_summary = (
+            f"Content truncated: {tokens_saved} tokens saved "
+            f"({original_estimate.estimated_tokens} -> {final_estimate.estimated_tokens})"
+        )
 
         return TruncationResult(
             content=truncated_content,
@@ -212,7 +215,7 @@ class IntelligentTruncator:
             elif isinstance(data, list):
                 # For lists, keep first N items
                 truncated_list = []
-                for i, item in enumerate(data):
+                for _i, item in enumerate(data):
                     test_list = truncated_list + [item]
                     test_content = json.dumps(test_list, indent=2)
                     if (
@@ -375,7 +378,8 @@ class SessionTokenLimiter:
             return response
 
         logger.info(
-            f"Response for {operation}: {estimate.estimated_tokens} tokens exceeds limit of {token_limit}, truncating..."
+            f"Response for {operation}: {estimate.estimated_tokens} tokens "
+            f"exceeds limit of {token_limit}, truncating..."
         )
 
         # Truncate the response
@@ -399,7 +403,8 @@ class SessionTokenLimiter:
                 }
 
             logger.info(
-                f"Successfully truncated {operation}: {truncation_result.original_tokens} -> {truncation_result.final_tokens} tokens"
+                f"Successfully truncated {operation}: "
+                f"{truncation_result.original_tokens} -> {truncation_result.final_tokens} tokens"
             )
             return truncated_response
 

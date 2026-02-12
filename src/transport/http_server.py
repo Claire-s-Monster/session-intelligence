@@ -44,24 +44,6 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
-
-class DataclassJSONEncoder(json.JSONEncoder):
-    """JSON encoder that handles dataclasses and common non-serializable types."""
-
-    def default(self, obj: Any) -> Any:
-        if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-            return dataclasses.asdict(obj)
-        if hasattr(obj, "model_dump"):  # Pydantic v2
-            return obj.model_dump()
-        if hasattr(obj, "dict"):  # Pydantic v1
-            return obj.dict()
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        if hasattr(obj, "__dict__"):
-            return obj.__dict__
-        return super().default(obj)
-
-
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -78,6 +60,23 @@ from transport.security import (
     validate_api_key,
 )
 from utils.token_limiter import apply_token_limits
+
+
+class DataclassJSONEncoder(json.JSONEncoder):
+    """JSON encoder that handles dataclasses and common non-serializable types."""
+
+    def default(self, obj: Any) -> Any:
+        if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+            return dataclasses.asdict(obj)
+        if hasattr(obj, "model_dump"):  # Pydantic v2
+            return obj.model_dump()
+        if hasattr(obj, "dict"):  # Pydantic v1
+            return obj.dict()
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if hasattr(obj, "__dict__"):
+            return obj.__dict__
+        return super().default(obj)
 
 logger = logging.getLogger(__name__)
 

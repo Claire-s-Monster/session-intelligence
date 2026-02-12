@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel
@@ -18,7 +18,7 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 
 
-class ContentType(Enum):
+class ContentType(StrEnum):
     """Types of content for different truncation strategies."""
 
     TEXT = "text"

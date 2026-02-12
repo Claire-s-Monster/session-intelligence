@@ -111,7 +111,7 @@ jobs:
         run: pixi run --environment ci test
 
   ci-success:
-    name: "✅ CI Success"
+    name: "CI Success"
     runs-on: ubuntu-latest
     needs: [hygiene, quality, test]
     if: always()

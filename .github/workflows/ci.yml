@@ -75,12 +75,12 @@ jobs:
         with:
           pixi-version: v0.39.0
           cache: true
-      - name: "Install CI Environment"
-        run: pixi install -e ci
+      - name: "Install Dependencies"
+        run: pixi install
       - name: "Run Linting"
-        run: pixi run -e ci lint
+        run: pixi run lint
       - name: "Run Type Checking"
-        run: pixi run -e ci type-check
+        run: pixi run type-check
         continue-on-error: true  # Type errors exist, don't block CI
 
   test:
@@ -106,10 +106,10 @@ jobs:
         with:
           pixi-version: v0.39.0
           cache: true
-      - name: "Install CI Environment"
-        run: pixi install -e ci
+      - name: "Install Dependencies"
+        run: pixi install
       - name: "Run Tests"
-        run: pixi run -e ci test
+        run: pixi run test
 
   ci-success:
     name: "CI Success"

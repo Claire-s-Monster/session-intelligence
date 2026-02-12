@@ -6,7 +6,7 @@ decision logging, analytics, and intelligence operations based on the PRD requir
 """
 
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 # ===== ENUMS =====
 
 
-class SessionStatus(str, Enum):
+class SessionStatus(StrEnum):
     """Session status enumeration."""
 
     ACTIVE = "active"
@@ -23,7 +23,7 @@ class SessionStatus(str, Enum):
     RECOVERED = "recovered"
 
 
-class ExecutionStatus(str, Enum):
+class ExecutionStatus(StrEnum):
     """Execution step status enumeration."""
 
     PENDING = "pending"
@@ -33,7 +33,7 @@ class ExecutionStatus(str, Enum):
     SKIPPED = "skipped"
 
 
-class ImpactLevel(str, Enum):
+class ImpactLevel(StrEnum):
     """Decision impact level enumeration."""
 
     LOW = "low"
@@ -42,7 +42,7 @@ class ImpactLevel(str, Enum):
     CRITICAL = "critical"
 
 
-class PatternType(str, Enum):
+class PatternType(StrEnum):
     """Pattern analysis type enumeration."""
 
     EXECUTION = "execution"
@@ -51,7 +51,7 @@ class PatternType(str, Enum):
     WORKFLOW = "workflow"
 
 
-class WorkflowType(str, Enum):
+class WorkflowType(StrEnum):
     """Workflow type enumeration."""
 
     TDD = "tdd"
@@ -61,7 +61,7 @@ class WorkflowType(str, Enum):
     CUSTOM = "custom"
 
 
-class DashboardType(str, Enum):
+class DashboardType(StrEnum):
     """Dashboard view type enumeration."""
 
     OVERVIEW = "overview"
@@ -71,7 +71,7 @@ class DashboardType(str, Enum):
     HEALTH = "health"
 
 
-class AnalysisScope(str, Enum):
+class AnalysisScope(StrEnum):
     """Pattern analysis scope enumeration."""
 
     CURRENT = "current"
@@ -80,7 +80,7 @@ class AnalysisScope(str, Enum):
     ALL = "all"
 
 
-class ExecutionMode(str, Enum):
+class ExecutionMode(StrEnum):
     """Agent execution mode enumeration."""
 
     SEQUENTIAL = "sequential"
@@ -88,7 +88,7 @@ class ExecutionMode(str, Enum):
     ADAPTIVE = "adaptive"
 
 
-class OptimizationLevel(str, Enum):
+class OptimizationLevel(StrEnum):
     """Optimization level enumeration."""
 
     CONSERVATIVE = "conservative"
@@ -652,7 +652,7 @@ class SearchResults(BaseModel):
 # ===== KNOWLEDGE SYSTEM MODELS =====
 
 
-class LearningCategory(str, Enum):
+class LearningCategory(StrEnum):
     """Learning category enumeration."""
 
     ERROR_FIX = "error_fix"
@@ -661,7 +661,7 @@ class LearningCategory(str, Enum):
     WORKFLOW = "workflow"
 
 
-class ErrorCategory(str, Enum):
+class ErrorCategory(StrEnum):
     """Error category enumeration."""
 
     COMPILE = "compile"

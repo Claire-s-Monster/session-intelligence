@@ -10,10 +10,14 @@ on:
     branches: [main, development]
   workflow_dispatch:
 
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
 jobs:
   # Main CI workflow using ci-framework reusable workflow
   ci:
-    name: "CI (Framework)"
     uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@main
     with:
       # Pixi environment configuration

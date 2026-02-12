@@ -1,6 +1,7 @@
 """Test script for agent system tables and CRUD methods."""
 
 import asyncio
+import os
 import pytest
 
 # Check if asyncpg is available
@@ -10,16 +11,22 @@ try:
 except ImportError:
     HAS_ASYNCPG = False
 
+# Check if PostgreSQL is available
+POSTGRES_DSN = os.environ.get("POSTGRES_DSN")
+
 
 @pytest.mark.asyncio
 @pytest.mark.postgresql
-@pytest.mark.skipif(not HAS_ASYNCPG, reason="asyncpg not installed")
+@pytest.mark.skipif(
+    not HAS_ASYNCPG or not POSTGRES_DSN,
+    reason="asyncpg not installed or POSTGRES_DSN not set"
+)
 async def test_schema():
     """Test agent system using PostgreSQL backend."""
     from src.persistence.postgresql import PostgreSQLBackend
 
-    # Use test database
-    db = PostgreSQLBackend(dsn="postgresql://localhost/session_intelligence")
+    # Use PostgreSQL DSN from environment or fallback
+    db = PostgreSQLBackend(dsn=POSTGRES_DSN)
     await db.initialize()
 
     try:

@@ -301,7 +301,8 @@ class SQLiteBackend(BaseDatabaseBackend):
         """Initialize SQLite backend.
 
         Args:
-            db_path: Path to SQLite database file. Defaults to ~/.claude/session-intelligence/sessions.db.
+            db_path: Path to SQLite database file.
+                    Defaults to ~/.claude/session-intelligence/sessions.db.
                     Use ":memory:" for testing.
         """
         super().__init__()
@@ -651,7 +652,8 @@ class SQLiteBackend(BaseDatabaseBackend):
         await conn.execute(
             """
             INSERT INTO file_operations
-            (session_id, timestamp, operation, file_path, lines_added, lines_removed, summary, tool_name)
+            (session_id, timestamp, operation, file_path, lines_added, lines_removed,
+             summary, tool_name)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
@@ -886,46 +888,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
         await conn.commit()
 
-    # Session summary operations
-
-    async def save_session_summary(self, summary_data: dict[str, Any]) -> None:
-        """Save or update a session summary."""
-        conn = self._ensure_connected()
-
-        await conn.execute(
-            """
-            INSERT OR REPLACE INTO session_summaries
-            (session_id, title, summary_markdown, key_changes, tags, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """,
-            (
-                summary_data["session_id"],
-                summary_data.get("title"),
-                summary_data.get("summary_markdown"),
-                self._serialize_json(summary_data.get("key_changes", [])),
-                self._serialize_json(summary_data.get("tags", [])),
-                summary_data.get("created_at", self._get_timestamp()),
-            ),
-        )
-        await conn.commit()
-
-        # Update FTS index
-        await self._update_search_index(summary_data["session_id"])
-
-    async def get_session_summary(self, session_id: str) -> dict[str, Any] | None:
-        """Get session summary by session ID."""
-        conn = self._ensure_connected()
-
-        cursor = await conn.execute(
-            "SELECT * FROM session_summaries WHERE session_id = ?", (session_id,)
-        )
-        row = await cursor.fetchone()
-        if row:
-            result = dict(row)
-            result["key_changes"] = self._deserialize_json(result.get("key_changes"))
-            result["tags"] = self._deserialize_json(result.get("tags"))
-            return result
-        return None
+    # Duplicate methods removed - see lines 692-732 for session summary operations
 
     async def query_summaries_by_tag(self, tag: str, limit: int = 50) -> list[dict[str, Any]]:
         """Query session summaries that contain a specific tag."""

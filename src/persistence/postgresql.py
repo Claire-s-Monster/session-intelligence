@@ -740,7 +740,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             await conn.execute(
                 """
                 INSERT INTO file_operations
-                (session_id, timestamp, operation, file_path, lines_added, lines_removed, summary, tool_name)
+                (session_id, timestamp, operation, file_path, lines_added, lines_removed,
+                 summary, tool_name)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 """,
                 file_op_data["session_id"],
@@ -1802,7 +1803,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     s.project_path,
                     s.started_at,
                     ts_rank(
-                        to_tsvector('english', coalesce(ss.title, '') || ' ' || coalesce(ss.summary_markdown, '')),
+                        to_tsvector(
+                            'english',
+                            coalesce(ss.title, '') || ' ' || coalesce(ss.summary_markdown, '')
+                        ),
                         plainto_tsquery('english', $1)
                     ) as relevance,
                     ts_headline(
@@ -1813,7 +1817,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     ) as snippet
                 FROM session_summaries ss
                 JOIN sessions s ON ss.session_id = s.id
-                WHERE to_tsvector('english', coalesce(ss.title, '') || ' ' || coalesce(ss.summary_markdown, ''))
+                WHERE to_tsvector(
+                        'english',
+                        coalesce(ss.title, '') || ' ' || coalesce(ss.summary_markdown, '')
+                      )
                       @@ plainto_tsquery('english', $1)
                 ORDER BY relevance DESC
                 LIMIT $2

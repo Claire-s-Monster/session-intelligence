@@ -23,7 +23,7 @@ from typing import Any
 from fastmcp import FastMCP
 
 from core.session_engine import SessionIntelligenceEngine
-from models.session_models import *
+from models.session_models import *  # noqa: F403
 from utils.token_limiter import apply_token_limits
 
 logger = logging.getLogger(__name__)
@@ -416,7 +416,9 @@ class LeanMCPInterface:
             "implementation": self._wrap_async_tool(
                 self.session_engine.session_create_notebook_async
             ),
-            "description": "Generate markdown notebook/summary at session end with searchable content",
+            "description": (
+                "Generate markdown notebook/summary at session end with searchable content"
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -626,7 +628,9 @@ class LeanMCPInterface:
                     },
                     "agent_type": {
                         "type": "string",
-                        "description": "Agent type (e.g., 'focused', 'comprehensive', 'micro', 'meta')",
+                        "description": (
+                            "Agent type (e.g., 'focused', 'comprehensive', 'micro', 'meta')"
+                        ),
                     },
                     "display_name": {
                         "type": "string",
@@ -691,7 +695,10 @@ class LeanMCPInterface:
                     },
                     "decision_type": {
                         "type": "string",
-                        "description": "Category of decision (e.g., 'tool_selection', 'error_handling', 'strategy')",
+                        "description": (
+                            "Category of decision "
+                            "(e.g., 'tool_selection', 'error_handling', 'strategy')"
+                        ),
                     },
                     "context": {
                         "type": "string",
@@ -813,7 +820,10 @@ class LeanMCPInterface:
                     },
                     "learning_type": {
                         "type": "string",
-                        "description": "Type of learning (e.g., 'pattern', 'anti_pattern', 'technique', 'preference')",
+                        "description": (
+                            "Type of learning "
+                            "(e.g., 'pattern', 'anti_pattern', 'technique', 'preference')"
+                        ),
                     },
                     "title": {"type": "string", "description": "Brief title for the learning"},
                     "content": {
@@ -945,7 +955,9 @@ class LeanMCPInterface:
                     "notebook_type": {
                         "type": "string",
                         "default": "execution",
-                        "description": "Type of notebook (e.g., 'execution', 'analysis', 'retrospective')",
+                        "description": (
+                            "Type of notebook (e.g., 'execution', 'analysis', 'retrospective')"
+                        ),
                     },
                     "context": {"type": "object", "description": "Additional context metadata"},
                     "decisions_referenced": {
@@ -1112,9 +1124,18 @@ class LeanMCPInterface:
                 Example output for discover_tools("session"):
                 {
                   "available_tools": [
-                    {"name": "session_manage_lifecycle", "description": "Complete session lifecycle management with recovery"},
-                    {"name": "session_track_execution", "description": "Track agent execution with pattern detection"},
-                    {"name": "session_log_decision", "description": "Log decisions with context and impact analysis"}
+                    {
+                        "name": "session_manage_lifecycle",
+                        "description": "Complete session lifecycle management with recovery"
+                    },
+                    {
+                        "name": "session_track_execution",
+                        "description": "Track agent execution with pattern detection"
+                    },
+                    {
+                        "name": "session_log_decision",
+                        "description": "Log decisions with context and impact analysis"
+                    }
                   ],
                   "filtered_count": 13,
                   "total_tools": <dynamic>
@@ -1187,9 +1208,19 @@ class LeanMCPInterface:
                   "description": "Complete session lifecycle management with recovery",
                   "schema": {
                     "properties": {
-                      "operation": {"type": "string", "enum": ["create", "resume", "finalize", "validate"]},
-                      "mode": {"type": "string", "enum": ["local", "remote", "hybrid", "auto"], "default": "local"},
-                      "project_name": {"type": "string", "description": "Project context (optional)"}
+                      "operation": {
+                          "type": "string",
+                          "enum": ["create", "resume", "finalize", "validate"]
+                      },
+                      "mode": {
+                          "type": "string",
+                          "enum": ["local", "remote", "hybrid", "auto"],
+                          "default": "local"
+                      },
+                      "project_name": {
+                          "type": "string",
+                          "description": "Project context (optional)"
+                      }
                     },
                     "required": ["operation"]
                   },
@@ -1268,7 +1299,9 @@ class LeanMCPInterface:
                 - tool: Name of tool that was executed
                 - status: "success"
                 - result: Tool-specific output, varies by tool:
-                  * session_manage_lifecycle: {"session_id": "...", "status": "active", "mode": "local"}
+                  * session_manage_lifecycle: {
+                      "session_id": "...", "status": "active", "mode": "local"
+                  }
                   * session_log_decision: {"decision_id": "dec_abc123", "logged": true}
                   * session_log_learning: {"learning_id": "learn_xyz789", "category": "error_fix"}
                   * agent_register: {"agent_id": "uuid", "name": "agent-name", "registered": true}

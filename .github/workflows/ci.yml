@@ -1,6 +1,5 @@
 ---
 # CI workflow using ci-framework reusable workflow
-# Replaces standalone jobs with centralized, maintained ci-framework patterns
 name: CI
 
 on:
@@ -10,33 +9,11 @@ on:
     branches: [main, development]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  checks: write
-  pull-requests: write
-
 jobs:
-  # Main CI workflow using ci-framework reusable workflow
   ci:
     uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@main
-    with:
-      # Pixi environment configuration
-      pixi-environment: "ci"
-
-      # Simplified matrix for this project
-      python-versions: '["3.11", "3.12"]'
-      os-matrix: '["ubuntu-latest"]'
-
-      # Disable features not needed for MCP server
-      enable-performance: false
-      enable-release: false
-
-      # Enable hygiene checks
-      enable-hygiene-check: true
-
     secrets: inherit
 
-  # Legacy compatibility: Keep ci-success job for branch protection rules
   ci-success:
     name: "CI Success"
     runs-on: ubuntu-latest

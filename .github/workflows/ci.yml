@@ -14,22 +14,21 @@ jobs:
   # Main CI workflow using ci-framework reusable workflow
   ci:
     name: "CI (Framework)"
-    uses: Claire-s-Monster/ci-framework/.github/workflows/pixi-ci.yml@main
+    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@main
     with:
-      # Pixi configuration
-      pixi_version: "v0.39.0"
-      pixi_environment: "ci"
+      # Pixi environment configuration
+      pixi-environment: "ci"
 
-      # Enable all quality gates
-      run_hygiene: true
-      run_quality: true
-      run_tests: true
+      # Simplified matrix for this project
+      python-versions: '["3.11", "3.12"]'
+      os-matrix: '["ubuntu-latest"]'
 
-      # Change detection for optimization
-      enable_change_detection: true
+      # Disable features not needed for MCP server
+      enable-performance: false
+      enable-release: false
 
-      # Project-specific configuration
-      python_version: "3.11"
+      # Enable hygiene checks
+      enable-hygiene-check: true
 
     secrets: inherit
 

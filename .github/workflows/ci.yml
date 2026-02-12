@@ -1,5 +1,6 @@
 ---
-# CI workflow using ci-framework reusable workflow
+# CI workflow following ci-framework standalone patterns
+# Uses pixi-only environment management with quality gates
 name: CI
 
 on:
@@ -9,21 +10,124 @@ on:
     branches: [main, development]
   workflow_dispatch:
 
-jobs:
-  ci:
-    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@main
-    secrets: inherit
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
 
-  ci-success:
-    name: "CI Success"
+jobs:
+  detect-changes:
+    name: "🔍 Detect Changes"
     runs-on: ubuntu-latest
-    needs: [ci]
-    if: always()
+    outputs:
+      src: ${{ steps.changes.outputs.src }}
+      tests: ${{ steps.changes.outputs.tests }}
     steps:
-      - name: "Check CI workflow passed"
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            src:
+              - 'src/**'
+              - 'pyproject.toml'
+              - 'pixi.lock'
+            tests:
+              - 'tests/**'
+
+  hygiene:
+    name: "🧹 Repository Hygiene"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Check for pixi project"
         run: |
-          if [ "${{ needs.ci.result }}" != "success" ]; then
-            echo "CI framework workflow failed"
+          if [ ! -f pixi.toml ] && [ ! -f pixi.lock ]; then
+            echo "::error::No pixi.toml or pixi.lock found"
             exit 1
           fi
-          echo "All CI checks passed via ci-framework!"
+          echo "✅ Pixi project detected"
+      - name: "Check for tracked dev artifacts"
+        run: |
+          ERRORS=0
+          if git ls-files --error-unmatch '*/__pycache__/*' 2>/dev/null; then
+            echo "::error::__pycache__ directories are tracked in git"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if git ls-files --error-unmatch '*.pyc' 2>/dev/null; then
+            echo "::error::.pyc files are tracked in git"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if [ ! -f .gitignore ]; then
+            echo "::error::.gitignore file is missing"
+            ERRORS=$((ERRORS + 1))
+          fi
+          if [ $ERRORS -gt 0 ]; then
+            echo "::error::Found $ERRORS hygiene issues"
+            exit 1
+          fi
+          echo "✅ Repository hygiene checks passed"
+
+  quality:
+    name: "🔬 Code Quality"
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: needs.detect-changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Setup PIXI"
+        uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.39.0
+          cache: true
+          environments: ci
+      - name: "Install Dependencies"
+        run: pixi install --environment ci
+      - name: "Run Linting"
+        run: pixi run --environment ci lint
+      - name: "Run Type Checking"
+        run: pixi run --environment ci type-check
+        continue-on-error: true
+
+  test:
+    name: "🧪 Tests"
+    runs-on: ubuntu-latest
+    needs: detect-changes
+    if: |
+      needs.detect-changes.outputs.src == 'true' ||
+      needs.detect-changes.outputs.tests == 'true' ||
+      github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Setup PIXI"
+        uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          pixi-version: v0.39.0
+          cache: true
+          environments: ci
+      - name: "Install Dependencies"
+        run: pixi install --environment ci
+      - name: "Run Tests"
+        run: pixi run --environment ci test
+
+  ci-success:
+    name: "✅ CI Success"
+    runs-on: ubuntu-latest
+    needs: [hygiene, quality, test]
+    if: always()
+    steps:
+      - name: "Check all jobs passed"
+        run: |
+          if [ "${{ needs.hygiene.result }}" != "success" ]; then
+            echo "❌ Hygiene check failed"
+            exit 1
+          fi
+          if [ "${{ needs.quality.result }}" != "success" ] && [ "${{ needs.quality.result }}" != "skipped" ]; then
+            echo "❌ Quality check failed"
+            exit 1
+          fi
+          if [ "${{ needs.test.result }}" != "success" ] && [ "${{ needs.test.result }}" != "skipped" ]; then
+            echo "❌ Tests failed"
+            exit 1
+          fi
+          echo "✅ All CI checks passed!"

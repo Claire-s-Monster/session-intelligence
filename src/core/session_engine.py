@@ -3399,11 +3399,11 @@ class SessionIntelligenceEngine:
                 )
             )
             matching_decisions = []
-            for d in all_decisions:
-                desc = (d.get("description") or "").lower()
-                rationale = (d.get("rationale") or "").lower()
+            for decision in all_decisions:
+                desc = (decision.get("description") or "").lower()
+                rationale = (decision.get("rationale") or "").lower()
                 if query_lower in desc or query_lower in rationale:
-                    matching_decisions.append(d)
+                    matching_decisions.append(decision)
                     if len(matching_decisions) >= limit:
                         break
 
@@ -3414,11 +3414,11 @@ class SessionIntelligenceEngine:
                 )
             )
             matching_learnings = []
-            for l in all_learnings:
-                content = (l.get("learning_content") or "").lower()
-                trigger = (l.get("trigger_context") or "").lower()
+            for learning in all_learnings:
+                content = (learning.get("learning_content") or "").lower()
+                trigger = (learning.get("trigger_context") or "").lower()
                 if query_lower in content or query_lower in trigger:
-                    matching_learnings.append(l)
+                    matching_learnings.append(learning)
                     if len(matching_learnings) >= limit:
                         break
 
@@ -3429,11 +3429,11 @@ class SessionIntelligenceEngine:
                 )
             )
             matching_notebooks = []
-            for n in all_notebooks:
-                title = (n.get("title") or "").lower()
-                content = (n.get("summary_markdown") or "").lower()
+            for notebook in all_notebooks:
+                title = (notebook.get("title") or "").lower()
+                content = (notebook.get("summary_markdown") or "").lower()
                 if query_lower in title or query_lower in content:
-                    matching_notebooks.append(n)
+                    matching_notebooks.append(notebook)
                     if len(matching_notebooks) >= limit:
                         break
 

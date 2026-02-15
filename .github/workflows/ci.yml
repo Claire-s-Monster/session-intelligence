@@ -11,7 +11,7 @@ on:
 
 jobs:
   ci:
-    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@v2.3.1
+    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@v2.4.1
     with:
       pixi-environment: "ci"
       python-versions: '["3.11", "3.12"]'
@@ -19,6 +19,9 @@ jobs:
       enable-performance: false
       enable-release: false
       enable-hygiene-check: true
+      editable-install: true
+      package-path: "."
+      allowed-licenses: "MIT, Apache-2.0, BSD-3-Clause, BSD-2-Clause, PSF-2.0, LGPL-3.0"
     secrets: inherit
 
   # Branch protection gate

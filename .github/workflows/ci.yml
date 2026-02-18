@@ -16,7 +16,7 @@ jobs:
       src: ${{ steps.changes.outputs.src }}
       tests: ${{ steps.changes.outputs.tests }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dorny/paths-filter@v3
         id: changes
         with:
@@ -32,7 +32,7 @@ jobs:
     name: "Repository Hygiene"
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: "Check for pixi project"
         run: |
           if [ ! -f pixi.toml ] && [ ! -f pixi.lock ]; then
@@ -67,7 +67,7 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.src == 'true' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: "Setup PIXI"
         uses: prefix-dev/setup-pixi@v0.8.1
         with:
@@ -94,7 +94,7 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: "Setup Python ${{ matrix.python-version }}"
         uses: actions/setup-python@v5
         with:

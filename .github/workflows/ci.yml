@@ -24,6 +24,22 @@ jobs:
       allowed-licenses: "MIT, Apache-2.0, BSD-3-Clause, BSD-2-Clause, PSF-2.0, LGPL-3.0"
     secrets: inherit
 
+  # Enforce main only accepts PRs from development
+  branch-policy:
+    name: "Branch Policy"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    steps:
+      - name: Check source branch
+        run: |
+          if [ "${{ github.head_ref }}" != "development" ]; then
+            echo "❌ PRs to main must come from development branch"
+            echo "   Source: ${{ github.head_ref }}"
+            echo "   Expected: development"
+            exit 1
+          fi
+          echo "✅ PR from development to main - allowed"
+
   # Branch protection gate
   ci-success:
     name: "CI Success"

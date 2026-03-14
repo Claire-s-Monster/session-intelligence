@@ -952,7 +952,7 @@ class SessionIntelligenceEngine:
         self,
         decision: str,
         session_id: str | None = None,
-        context: dict[str, Any] | None = None,
+        context: dict[str, Any] | str | None = None,
         impact_analysis: bool = True,
         link_artifacts: list[str] | None = None,
     ) -> DecisionResult:
@@ -978,11 +978,15 @@ class SessionIntelligenceEngine:
         self,
         decision: str,
         session_id: str | None,
-        context: dict[str, Any] | None,
+        context: dict[str, Any] | str | None,
         impact_analysis: bool,
         link_artifacts: list[str] | None,
     ) -> DecisionResult:
         """Synchronous decision logging."""
+
+        # Coerce context to dict if caller passed a string
+        if isinstance(context, str):
+            context = {"description": context}
 
         decision_id = f"decision-{uuid.uuid4().hex[:8]}"
 

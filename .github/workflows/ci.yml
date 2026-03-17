@@ -1,7 +1,5 @@
 ---
-# DIAGNOSTIC: Test if this repo can call ANY cross-repo reusable workflow
-# Test 1: A known-good simple reusable workflow
-# Test 2: Our ci-framework reusable workflow
+# DIAGNOSTIC: Test local vs cross-repo reusable workflows
 name: CI
 
 on:
@@ -10,14 +8,18 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Simple direct job - should always work
+  # Test 1: Direct job (should always work)
   smoke-test:
-    name: "Smoke Test"
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Workflow YAML is valid and jobs can start"
+      - run: echo "Direct job works"
 
-  # The reusable workflow call that keeps failing
-  ci:
-    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@v2.4.2
-    secrets: inherit
+  # Test 2: LOCAL reusable workflow (same repo)
+  local-reusable:
+    uses: ./.github/workflows/test-reusable.yml
+
+  # Test 3: CROSS-REPO reusable workflow (ci-framework)
+  # Commenting out to test if local reusable works first
+  # ci:
+  #   uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@v2.5.0
+  #   secrets: inherit

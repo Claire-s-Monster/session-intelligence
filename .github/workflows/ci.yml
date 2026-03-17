@@ -1,17 +1,23 @@
 ---
-# TEST: try @main ref instead of tag
+# DIAGNOSTIC: Test if this repo can call ANY cross-repo reusable workflow
+# Test 1: A known-good simple reusable workflow
+# Test 2: Our ci-framework reusable workflow
 name: CI
 
 on:
-  push:
-    branches: [main, development]
   pull_request:
     branches: [main, development]
   workflow_dispatch:
 
 jobs:
+  # Simple direct job - should always work
+  smoke-test:
+    name: "Smoke Test"
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Workflow YAML is valid and jobs can start"
+
+  # The reusable workflow call that keeps failing
   ci:
-    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@main
-    with:
-      pixi-environment: "ci"
+    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@v2.4.2
     secrets: inherit

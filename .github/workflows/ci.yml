@@ -9,6 +9,18 @@ on:
     branches: [main, development]
   workflow_dispatch:
 
+# Required by ci-framework reusable workflow:
+# - id-token: write    → release job (OIDC for PyPI publish)
+# - contents: write    → release job (GitHub release creation)
+# - security-events: write → security job (CodeQL SARIF upload)
+# - checks/pr: write   → quality/test reporting
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+  security-events: write
+  id-token: write
+
 jobs:
   ci:
     uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@v2.5.0

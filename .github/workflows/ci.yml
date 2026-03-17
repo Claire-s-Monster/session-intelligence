@@ -1,5 +1,5 @@
 ---
-# MINIMAL TEST: isolating startup_failure cause
+# TEST: try @main ref instead of tag
 name: CI
 
 on:
@@ -11,7 +11,7 @@ on:
 
 jobs:
   ci:
-    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@v2.5.0
+    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@main
     with:
       pixi-environment: "ci"
     secrets: inherit

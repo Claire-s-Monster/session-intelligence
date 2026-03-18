@@ -1,7 +1,8 @@
 ---
-# DIAGNOSTIC: Test a DIFFERENT reusable workflow from ci-framework
-# If cleanup-dev-files works but reusable-ci doesn't,
-# the issue is in reusable-ci.yml content specifically.
+# DIAGNOSTIC: Call our stripped-down copy of reusable-ci.yml locally
+# Removed: security job, performance job, self-heal job
+# Removed: emoji from job names
+# If this works, add back sections one at a time
 name: CI
 
 on:
@@ -9,17 +10,13 @@ on:
     branches: [main, development]
   workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-
 jobs:
-  # Test: call cleanup-dev-files.yml (a different reusable workflow)
-  test-cleanup:
-    uses: Claire-s-Monster/ci-framework/.github/workflows/cleanup-dev-files.yml@main
+  ci:
+    uses: ./.github/workflows/test-reusable.yml
     with:
-      cleanup_patterns: '["*.tmp"]'
-      target_branches: '["development"]'
-      workflow_name: 'Test'
+      pixi-environment: "ci"
+      python-versions: '["3.11", "3.12"]'
+      os-matrix: '["ubuntu-latest"]'
+      enable-performance: false
+      enable-release: false
     secrets: inherit

@@ -566,7 +566,7 @@ class LeanMCPInterface:
         }
 
         registry["session_find_solution"] = {
-            "implementation": self._wrap_tool(self.session_engine.session_find_solution),
+            "implementation": self._wrap_async_tool(self.session_engine.session_find_solution),
             "description": "Find solutions for an error from project and universal knowledge",
             "schema": {
                 "type": "object",
@@ -1372,15 +1372,49 @@ class LeanMCPInterface:
         return self.app
 
 
-def create_lean_interface(session_engine: SessionIntelligenceEngine) -> FastMCP:
+def create_lean_interface(
+    session_engine: SessionIntelligenceEngine,
+    database: Any | None = None,
+) -> FastMCP:
     """
     Create a lean MCP interface with minimal context consumption.
 
     Args:
         session_engine: Initialized session intelligence engine
+        database: Optional database instance for persistence
 
     Returns:
         FastMCP app with 3 meta-tools exposing full functionality
     """
     lean_interface = LeanMCPInterface(session_engine)
-    return lean_interface.get_app()
+    app = lean_interface.get_app()
+
+    # Add database lifecycle hooks if database is provided
+    if database:
+        original_run_stdio = app.run_stdio_async
+
+        async def run_stdio_with_db(show_banner: bool = True) -> None:
+            """Wrap run_stdio_async to initialize/cleanup database."""
+            # Initialize database connection pool
+            try:
+                await database.initialize()
+                logger.info("Database initialized successfully")
+            except Exception as e:
+                logger.error(f"Database initialization failed: {e}")
+                session_engine.database = None
+
+            try:
+                # Run the original stdio server
+                await original_run_stdio(show_banner=show_banner)
+            finally:
+                # Cleanup database on shutdown
+                if session_engine.database:
+                    try:
+                        await database.close()
+                        logger.info("Database connection closed")
+                    except Exception as e:
+                        logger.warning(f"Error closing database: {e}")
+
+        app.run_stdio_async = run_stdio_with_db
+
+    return app

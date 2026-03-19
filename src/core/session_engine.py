@@ -30,6 +30,7 @@ from models.session_models import (
     DashboardType,
     Decision,
     DecisionResult,
+    ErrorSolution,
     ExecutionMode,
     ExecutionStatus,
     ExecutionStep,
@@ -952,7 +953,7 @@ class SessionIntelligenceEngine:
         self,
         decision: str,
         session_id: str | None = None,
-        context: dict[str, Any] | None = None,
+        context: dict[str, Any] | str | None = None,
         impact_analysis: bool = True,
         link_artifacts: list[str] | None = None,
     ) -> DecisionResult:
@@ -978,11 +979,15 @@ class SessionIntelligenceEngine:
         self,
         decision: str,
         session_id: str | None,
-        context: dict[str, Any] | None,
+        context: dict[str, Any] | str | None,
         impact_analysis: bool,
         link_artifacts: list[str] | None,
     ) -> DecisionResult:
         """Synchronous decision logging."""
+
+        # Coerce context to dict if caller passed a string
+        if isinstance(context, str):
+            context = {"description": context}
 
         decision_id = f"decision-{uuid.uuid4().hex[:8]}"
 
@@ -2292,25 +2297,85 @@ class SessionIntelligenceEngine:
             f"Logging learning: {category} for {effective_project}"
         )
 
-        return LearningResult(
+        learning = ProjectLearning(
             id=learning_id,
-            status="pending_save",
-            message=(
-                f"Learning logged for {category}. "
-                "Requires async save to database."
-            ),
-            learning=ProjectLearning(
-                id=learning_id,
-                project_path=effective_project,
-                category=LearningCategory(category),
-                trigger_context=trigger_context,
-                learning_content=learning_content,
-                source_session_id=source_session,
-                created_at=datetime.now().isoformat(),
-            ),
+            project_path=effective_project,
+            category=LearningCategory(category),
+            trigger_context=trigger_context,
+            learning_content=learning_content,
+            source_session_id=source_session,
+            created_at=datetime.now().isoformat(),
         )
 
-    def session_find_solution(
+        # Persist to database if available
+        status = "pending_save"
+        message = f"Learning logged for {category}."
+        if self.database:
+            try:
+                import asyncio
+
+                # Validate source_session_id exists before FK insert
+                if source_session:
+                    try:
+                        asyncio.get_running_loop()
+
+                        async def _validate_and_save():
+                            existing = await self.database.get_session(
+                                source_session
+                            )
+                            sid = source_session if existing else None
+                            await self.database.save_project_learning(
+                                learning_id=learning_id,
+                                project_path=effective_project,
+                                category=(
+                                    category.value
+                                    if hasattr(category, "value")
+                                    else category
+                                ),
+                                learning_content=learning_content,
+                                trigger_context=trigger_context,
+                                source_session_id=sid,
+                            )
+
+                        asyncio.create_task(_validate_and_save())
+                        status = "saved"
+                        message = f"Learning saved to database for {category}."
+                    except RuntimeError:
+                        # No event loop - can't validate session
+                        pass
+                else:
+                    try:
+                        asyncio.get_running_loop()
+                        asyncio.create_task(
+                            self.database.save_project_learning(
+                                learning_id=learning_id,
+                                project_path=effective_project,
+                                category=(
+                                    category.value
+                                    if hasattr(category, "value")
+                                    else category
+                                ),
+                                learning_content=learning_content,
+                                trigger_context=trigger_context,
+                                source_session_id=None,
+                            )
+                        )
+                        status = "saved"
+                        message = f"Learning saved to database for {category}."
+                    except RuntimeError:
+                        pass  # No event loop in sync context
+            except Exception as e:
+                debug_logger.error(f"Error saving learning to database: {e}")
+                message += f" Database save failed: {e}"
+
+        return LearningResult(
+            id=learning_id,
+            status=status,
+            message=message,
+            learning=learning,
+        )
+
+    async def session_find_solution(
         self,
         error_text: str,
         error_category: str | None = None,
@@ -2334,15 +2399,75 @@ class SessionIntelligenceEngine:
             f"Finding solutions for error: {error_text[:100]}..."
         )
 
-        # This requires database access which is async
-        # Return placeholder indicating need for async call
-        return SolutionSearchResult(
-            error_text=error_text,
-            total_found=0,
-            solutions=[],
-            project_specific_count=0,
-            universal_count=0,
+        effective_project = (
+            project_path or str(self.claude_sessions_path.parent)
         )
+
+        if not self.database:
+            return SolutionSearchResult(
+                error_text=error_text,
+                total_found=0,
+                solutions=[],
+                project_specific_count=0,
+                universal_count=0,
+            )
+
+        try:
+            # Query error_solutions table
+            raw_solutions = await self.database.find_error_solutions(
+                error_text=error_text,
+                project_path=effective_project,
+                include_universal=include_universal,
+            )
+
+            # Convert datetime fields and build ErrorSolution objects
+            solutions = []
+            for s in raw_solutions:
+                for key in ("created_at", "last_used"):
+                    if s.get(key) and hasattr(s[key], "isoformat"):
+                        s[key] = s[key].isoformat()
+                try:
+                    solutions.append(ErrorSolution(**s))
+                except Exception:
+                    pass  # Skip malformed records
+
+            # Also query project_learnings for matching content
+            learnings = await self.database.query_project_learnings(
+                project_path=effective_project,
+                category=error_category,
+            )
+
+            # Filter learnings by text match and count them
+            matching_count = sum(
+                1 for lr in learnings
+                if error_text.lower() in (
+                    lr.get("learning_content", "")
+                    + lr.get("trigger_context", "")
+                ).lower()
+            )
+
+            project_count = sum(
+                1 for s in solutions
+                if s.project_path == effective_project
+            )
+            total = len(solutions) + matching_count
+
+            return SolutionSearchResult(
+                error_text=error_text,
+                total_found=total,
+                solutions=solutions,
+                project_specific_count=project_count + matching_count,
+                universal_count=total - project_count - matching_count,
+            )
+        except Exception as e:
+            debug_logger.error(f"Error finding solutions: {e}")
+            return SolutionSearchResult(
+                error_text=error_text,
+                total_found=0,
+                solutions=[],
+                project_specific_count=0,
+                universal_count=0,
+            )
 
     def session_update_solution_outcome(
         self,
@@ -2364,13 +2489,36 @@ class SessionIntelligenceEngine:
             f"{'success' if success else 'failure'}"
         )
 
+        status = "pending_update"
+        message = "Solution outcome recorded."
+        if self.database:
+            try:
+                import asyncio
+
+                asyncio.get_running_loop()
+                asyncio.create_task(
+                    self.database.update_solution_outcome(
+                        solution_id=solution_id,
+                        success=success,
+                    )
+                )
+                status = "updated"
+                message = (
+                    f"Solution outcome updated: "
+                    f"{'success' if success else 'failure'}."
+                )
+            except RuntimeError:
+                pass  # No event loop in sync context
+            except Exception as e:
+                debug_logger.error(
+                    f"Error updating solution outcome: {e}"
+                )
+                message += f" Database update failed: {e}"
+
         return SolutionResult(
             id=solution_id,
-            status="pending_update",
-            message=(
-                "Solution outcome recorded. "
-                "Requires async update to database."
-            ),
+            status=status,
+            message=message,
         )
 
     # ===== AGENT SYSTEM METHODS =====

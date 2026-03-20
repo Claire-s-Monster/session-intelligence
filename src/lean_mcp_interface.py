@@ -1362,7 +1362,11 @@ class LeanMCPInterface:
                 try:
                     parameters = json.loads(parameters)
                 except (json.JSONDecodeError, TypeError) as e:
-                    return {"tool": tool_name, "status": "error", "error": f"Invalid parameters JSON: {e}"}
+                    return {
+                        "tool": tool_name,
+                        "status": "error",
+                        "error": f"Invalid parameters JSON: {e}",
+                    }
             if not isinstance(parameters, dict):
                 return {
                     "tool": tool_name,

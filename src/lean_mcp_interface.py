@@ -622,7 +622,7 @@ class LeanMCPInterface:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "name": {
+                    "agent_name": {
                         "type": "string",
                         "description": "Unique agent name (e.g., 'focused-quality-resolver')",
                     },
@@ -650,17 +650,17 @@ class LeanMCPInterface:
                         "description": "List of agent capabilities",
                     },
                 },
-                "required": ["name", "agent_type"],
+                "required": ["agent_name", "agent_type"],
             },
             "examples": [
                 {
-                    "name": "focused-quality-resolver",
+                    "agent_name": "focused-quality-resolver",
                     "agent_type": "focused",
                     "display_name": "Quality Resolver",
                     "description": "Resolves code quality issues",
                     "capabilities": ["lint-fix", "format", "type-check"],
                 },
-                {"name": "micro-test-runner", "agent_type": "micro"},
+                {"agent_name": "micro-test-runner", "agent_type": "micro"},
             ],
         }
 
@@ -670,16 +670,16 @@ class LeanMCPInterface:
             "schema": {
                 "type": "object",
                 "properties": {
-                    "identifier": {
+                    "agent_name": {
                         "type": "string",
                         "description": "Agent name (e.g., 'focused-quality-resolver') or UUID",
                     }
                 },
-                "required": ["identifier"],
+                "required": ["agent_name"],
             },
             "examples": [
-                {"identifier": "focused-quality-resolver"},
-                {"identifier": "550e8400-e29b-41d4-a716-446655440000"},
+                {"agent_name": "focused-quality-resolver"},
+                {"agent_name": "550e8400-e29b-41d4-a716-446655440000"},
             ],
         }
 

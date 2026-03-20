@@ -2528,7 +2528,7 @@ class SessionIntelligenceEngine:
 
     async def agent_register(
         self,
-        name: str,
+        agent_name: str,
         agent_type: str,
         display_name: str | None = None,
         description: str | None = None,
@@ -2542,7 +2542,7 @@ class SessionIntelligenceEngine:
         updates the existing agent's metadata and marks it as active.
 
         Args:
-            name: Unique agent name (e.g., "focused-quality-resolver")
+            agent_name: Unique agent name (e.g., "focused-quality-resolver")
             agent_type: Agent type category (e.g., "meta", "domain",
                 "specialized")
             display_name: Human-readable display name
@@ -2558,7 +2558,7 @@ class SessionIntelligenceEngine:
             debug_logger.warning("agent_register called without database")
             return AgentRegistrationResult(
                 agent_id="",
-                name=name,
+                name=agent_name,
                 status="error",
                 message=(
                     "Database not available for agent registration"
@@ -2567,7 +2567,7 @@ class SessionIntelligenceEngine:
 
         try:
             # Check if agent already exists by name
-            existing_agent = await self.database.get_agent_by_name(name)
+            existing_agent = await self.database.get_agent_by_name(agent_name)
 
             now = datetime.now(UTC).isoformat()
 
@@ -2576,7 +2576,7 @@ class SessionIntelligenceEngine:
                 agent_id = existing_agent["id"]
                 agent_data = {
                     "id": agent_id,
-                    "name": name,
+                    "name": agent_name,
                     "agent_type": agent_type,
                     "display_name": (
                         display_name or
@@ -2611,19 +2611,19 @@ class SessionIntelligenceEngine:
                     "is_active": True,
                 }
                 await self.database.save_agent(agent_data)
-                debug_logger.info(f"Updated existing agent: {name} ({agent_id})")
+                debug_logger.info(f"Updated existing agent: {agent_name} ({agent_id})")
                 return AgentRegistrationResult(
                     agent_id=agent_id,
-                    name=name,
+                    name=agent_name,
                     status="updated",
-                    message=f"Agent '{name}' updated successfully",
+                    message=f"Agent '{agent_name}' updated successfully",
                 )
             else:
                 # Create new agent
                 agent_id = str(uuid.uuid4())
                 agent_data = {
                     "id": agent_id,
-                    "name": name,
+                    "name": agent_name,
                     "agent_type": agent_type,
                     "display_name": display_name,
                     "description": description,
@@ -2638,24 +2638,24 @@ class SessionIntelligenceEngine:
                     "is_active": True,
                 }
                 await self.database.save_agent(agent_data)
-                debug_logger.info(f"Created new agent: {name} ({agent_id})")
+                debug_logger.info(f"Created new agent: {agent_name} ({agent_id})")
                 return AgentRegistrationResult(
                     agent_id=agent_id,
-                    name=name,
+                    name=agent_name,
                     status="created",
-                    message=f"Agent '{name}' created successfully",
+                    message=f"Agent '{agent_name}' created successfully",
                 )
 
         except Exception as e:
-            debug_logger.error(f"Error registering agent {name}: {e}")
+            debug_logger.error(f"Error registering agent {agent_name}: {e}")
             return AgentRegistrationResult(
                 agent_id="",
-                name=name,
+                name=agent_name,
                 status="error",
                 message=f"Failed to register agent: {str(e)}",
             )
 
-    async def agent_get_info(self, identifier: str) -> Agent | None:
+    async def agent_get_info(self, agent_name: str) -> Agent | None:
         """
         Get agent information by name or UUID.
 
@@ -2663,7 +2663,7 @@ class SessionIntelligenceEngine:
         and queries accordingly.
 
         Args:
-            identifier: Agent name (e.g., "focused-quality-resolver") or
+            agent_name: Agent name (e.g., "focused-quality-resolver") or
                 UUID
 
         Returns:
@@ -2678,20 +2678,20 @@ class SessionIntelligenceEngine:
             # UUID format)
             is_uuid = False
             try:
-                uuid.UUID(identifier)
+                uuid.UUID(agent_name)
                 is_uuid = True
             except ValueError:
                 is_uuid = False
 
             if is_uuid:
-                agent_data = await self.database.get_agent(identifier)
+                agent_data = await self.database.get_agent(agent_name)
             else:
                 agent_data = await self.database.get_agent_by_name(
-                    identifier
+                    agent_name
                 )
 
             if not agent_data:
-                debug_logger.info(f"Agent not found: {identifier}")
+                debug_logger.info(f"Agent not found: {agent_name}")
                 return None
 
             # Convert timestamps to ISO strings if they're datetime objects
@@ -2735,7 +2735,7 @@ class SessionIntelligenceEngine:
             )
 
         except Exception as e:
-            debug_logger.error(f"Error getting agent {identifier}: {e}")
+            debug_logger.error(f"Error getting agent {agent_name}: {e}")
             return None
 
     async def agent_log_decision(

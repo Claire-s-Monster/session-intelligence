@@ -738,7 +738,20 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
         elif tool_name == "execute_tool":
             target = arguments.get("tool_name")
             tool_params = arguments.get("parameters", {})
-            if target not in tool_registry:
+            # Coerce JSON string parameters to dict (MCP proxies may serialize objects as strings)
+            if isinstance(tool_params, str):
+                try:
+                    tool_params = json.loads(tool_params)
+                except (json.JSONDecodeError, TypeError):
+                    result = {"error": f"Invalid parameters JSON string for tool '{target}'"}
+                    tool_params = None
+            if tool_params is not None and not isinstance(tool_params, dict):
+                tp = type(tool_params).__name__
+                result = {"error": f"parameters must be a mapping, got {tp}"}
+                tool_params = None
+            if tool_params is None:
+                pass  # result already set above
+            elif target not in tool_registry:
                 result = {
                     "error": f"Tool '{target}' not found",
                     "available_tools": list(tool_registry.keys()),

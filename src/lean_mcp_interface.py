@@ -16,6 +16,7 @@ Solution: Meta-Tool Pattern
 - Zero functionality loss with massive context savings
 """
 
+import json
 import logging
 from functools import wraps
 from typing import Any
@@ -1355,6 +1356,23 @@ class LeanMCPInterface:
 
             tool_info = self.tool_registry[tool_name]
             tool_func = tool_info["implementation"]
+
+            # Coerce JSON string parameters to dict (MCP proxies may serialize objects as strings)
+            if isinstance(parameters, str):
+                try:
+                    parameters = json.loads(parameters)
+                except (json.JSONDecodeError, TypeError) as e:
+                    return {
+                        "tool": tool_name,
+                        "status": "error",
+                        "error": f"Invalid parameters JSON: {e}",
+                    }
+            if not isinstance(parameters, dict):
+                return {
+                    "tool": tool_name,
+                    "status": "error",
+                    "error": f"parameters must be a mapping, got {type(parameters).__name__}",
+                }
 
             try:
                 # Execute tool - await if async, call directly if sync

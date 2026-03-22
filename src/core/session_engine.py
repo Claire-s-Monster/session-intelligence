@@ -2277,7 +2277,8 @@ class SessionIntelligenceEngine:
 
         Args:
             project_name: Project to recall knowledge for
-            include: Sections to include (default: all). Options: sessions, decisions, learnings, notebooks
+            include: Sections to include. Options: sessions, decisions,
+                learnings, notebooks (default: all)
             limit: Max items per section
             days: How far back to look
 

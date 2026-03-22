@@ -527,7 +527,7 @@ class LeanMCPInterface:
 
         registry["session_recall"] = {
             "implementation": self._wrap_async_tool(self.session_engine.session_recall),
-            "description": "Recall project knowledge across all sessions - decisions, learnings, notebooks, history",
+            "description": "Recall project knowledge across all sessions",
             "schema": {
                 "type": "object",
                 "properties": {
@@ -537,7 +537,10 @@ class LeanMCPInterface:
                     },
                     "include": {
                         "type": "array",
-                        "items": {"type": "string", "enum": ["sessions", "decisions", "learnings", "notebooks"]},
+                        "items": {
+                            "type": "string",
+                            "enum": ["sessions", "decisions", "learnings", "notebooks"],
+                        },
                         "description": "Sections to include (default: all)",
                     },
                     "limit": {
@@ -555,7 +558,12 @@ class LeanMCPInterface:
             },
             "examples": [
                 {"project_name": "session-intelligence"},
-                {"project_name": "session-intelligence", "include": ["decisions", "learnings"], "limit": 5, "days": 7},
+                {
+                    "project_name": "session-intelligence",
+                    "include": ["decisions", "learnings"],
+                    "limit": 5,
+                    "days": 7,
+                },
             ],
         }
 

@@ -62,6 +62,9 @@ sessions/
 metadata/
 agents/
 
+# Environment
+.env
+
 # Temporary files
 *.log
 *.tmp

@@ -874,6 +874,133 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
             return [self._from_record(row) for row in rows]
 
+    async def recall_project(
+        self,
+        project_name: str,
+        include: list[str] | None = None,
+        limit: int = 10,
+        days: int = 30,
+    ) -> dict[str, Any]:
+        """Recall recent sessions, decisions, learnings, and notebooks for a project."""
+        from datetime import UTC, datetime, timedelta
+
+        pool = self._ensure_connected()
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        include_all = include is None
+        result: dict[str, Any] = {
+            "project_name": project_name,
+            "recall_window_days": days,
+            "sessions": [],
+            "decisions": [],
+            "learnings": [],
+            "notebooks": [],
+        }
+
+        async with pool.acquire() as conn:
+            if include_all or "sessions" in include:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, started_at, ended_at, status, mode
+                    FROM sessions
+                    WHERE project_name = $1 AND started_at > $2
+                    ORDER BY started_at DESC
+                    LIMIT $3
+                    """,
+                    project_name,
+                    cutoff,
+                    limit,
+                )
+                result["sessions"] = [
+                    {
+                        "id": row["id"],
+                        "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+                        "status": row["status"],
+                    }
+                    for row in rows
+                ]
+
+            if include_all or "decisions" in include:
+                rows = await conn.fetch(
+                    """
+                    SELECT d.id, d.description, d.category, d.rationale,
+                           d.impact_level, d.timestamp, s.id AS session_id
+                    FROM decisions d
+                    JOIN sessions s ON d.session_id = s.id
+                    WHERE s.project_name = $1 AND d.timestamp > $2
+                    ORDER BY d.timestamp DESC
+                    LIMIT $3
+                    """,
+                    project_name,
+                    cutoff,
+                    limit,
+                )
+                result["decisions"] = [
+                    {
+                        "description": row["description"],
+                        "category": row["category"],
+                        "rationale": row["rationale"],
+                        "timestamp": row["timestamp"].isoformat() if row["timestamp"] else None,
+                    }
+                    for row in rows
+                ]
+
+            if include_all or "learnings" in include:
+                path_row = await conn.fetchrow(
+                    """
+                    SELECT project_path FROM sessions
+                    WHERE project_name = $1 AND project_path IS NOT NULL
+                    LIMIT 1
+                    """,
+                    project_name,
+                )
+                if path_row:
+                    rows = await conn.fetch(
+                        """
+                        SELECT id, category, trigger_context, learning_content,
+                               source_session_id, success_count, failure_count,
+                               created_at, last_used
+                        FROM project_learnings
+                        WHERE project_path = $1
+                        ORDER BY success_count DESC, last_used DESC
+                        LIMIT $2
+                        """,
+                        path_row["project_path"],
+                        limit,
+                    )
+                    result["learnings"] = [self._from_record(row) for row in rows]
+
+            if include_all or "notebooks" in include:
+                rows = await conn.fetch(
+                    """
+                    SELECT ss.title, ss.tags, ss.created_at, ss.session_id
+                    FROM session_summaries ss
+                    JOIN sessions s ON ss.session_id = s.id
+                    WHERE s.project_name = $1 AND ss.created_at > $2
+                    ORDER BY ss.created_at DESC
+                    LIMIT $3
+                    """,
+                    project_name,
+                    cutoff,
+                    limit,
+                )
+                result["notebooks"] = [
+                    {
+                        "title": row["title"],
+                        "tags": row["tags"],
+                        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                        "session_id": row["session_id"],
+                    }
+                    for row in rows
+                ]
+
+        result["counts"] = {
+            "sessions": len(result["sessions"]),
+            "decisions": len(result["decisions"]),
+            "learnings": len(result["learnings"]),
+            "notebooks": len(result["notebooks"]),
+        }
+        return result
+
     # Agent execution operations
 
     async def save_agent_execution(self, execution_data: dict[str, Any]) -> None:

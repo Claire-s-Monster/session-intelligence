@@ -2261,6 +2261,69 @@ class SessionIntelligenceEngine:
             debug_logger.error(f"Error in session_query_notebooks: {e}")
             return []
 
+    async def session_recall(
+        self,
+        project_name: str,
+        include: list[str] | None = None,
+        limit: int = 10,
+        days: int = 30,
+    ) -> dict[str, Any]:
+        """
+        Recall project knowledge across all sessions.
+
+        Returns consolidated decisions, learnings, notebooks, and session history
+        for a project, regardless of which session created them. This solves the
+        problem of session ID changes on restart causing loss of recall.
+
+        Args:
+            project_name: Project to recall knowledge for
+            include: Sections to include (default: all). Options: sessions, decisions, learnings, notebooks
+            limit: Max items per section
+            days: How far back to look
+
+        Returns:
+            Consolidated project knowledge dict
+        """
+        debug_logger.info(f"Recalling project knowledge for: {project_name}")
+
+        if not self.database:
+            debug_logger.warning("No database configured for session_recall")
+            return {
+                "project_name": project_name,
+                "error": "No database configured",
+                "sessions": [],
+                "decisions": [],
+                "learnings": [],
+                "notebooks": [],
+                "counts": {"sessions": 0, "decisions": 0, "learnings": 0, "notebooks": 0},
+            }
+
+        try:
+            result = await self.database.recall_project(
+                project_name=project_name,
+                include=include,
+                limit=limit,
+                days=days,
+            )
+
+            debug_logger.info(
+                f"Recall for '{project_name}': "
+                f"{result.get('counts', {})}"
+            )
+            return result
+
+        except Exception as e:
+            debug_logger.error(f"Error in session_recall: {e}")
+            return {
+                "project_name": project_name,
+                "error": str(e),
+                "sessions": [],
+                "decisions": [],
+                "learnings": [],
+                "notebooks": [],
+                "counts": {"sessions": 0, "decisions": 0, "learnings": 0, "notebooks": 0},
+            }
+
     # ===== KNOWLEDGE SYSTEM =====
 
     def session_log_learning(

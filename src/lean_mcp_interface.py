@@ -525,6 +525,40 @@ class LeanMCPInterface:
             ],
         }
 
+        registry["session_recall"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.session_recall),
+            "description": "Recall project knowledge across all sessions - decisions, learnings, notebooks, history",
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "project_name": {
+                        "type": "string",
+                        "description": "Project name to recall knowledge for",
+                    },
+                    "include": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": ["sessions", "decisions", "learnings", "notebooks"]},
+                        "description": "Sections to include (default: all)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "Max items per section",
+                    },
+                    "days": {
+                        "type": "integer",
+                        "default": 30,
+                        "description": "How far back to look in days",
+                    },
+                },
+                "required": ["project_name"],
+            },
+            "examples": [
+                {"project_name": "session-intelligence"},
+                {"project_name": "session-intelligence", "include": ["decisions", "learnings"], "limit": 5, "days": 7},
+            ],
+        }
+
         # ===== KNOWLEDGE SYSTEM TOOLS =====
 
         registry["session_log_learning"] = {

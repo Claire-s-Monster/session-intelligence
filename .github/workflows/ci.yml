@@ -10,7 +10,7 @@ on:
 
 jobs:
   ci:
-    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@v2.5.1
+    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@v2.8.0
     with:
       pixi-environment: "ci"
       python-versions: '["3.11", "3.12"]'

@@ -190,7 +190,9 @@ class LeanMCPInterface:
         }
 
         registry["session_track_file_operation"] = {
-            "implementation": self._wrap_async_tool(self.session_engine.session_track_file_operation),
+            "implementation": self._wrap_async_tool(
+                self.session_engine.session_track_file_operation
+            ),
             "description": "Track file create/edit/delete operations for session notebook",
             "schema": {
                 "type": "object",
@@ -638,7 +640,9 @@ class LeanMCPInterface:
         }
 
         registry["session_update_solution_outcome"] = {
-            "implementation": self._wrap_async_tool(self.session_engine.session_update_solution_outcome),
+            "implementation": self._wrap_async_tool(
+                self.session_engine.session_update_solution_outcome
+            ),
             "description": "Update success/failure count for a solution after trying it",
             "schema": {
                 "type": "object",

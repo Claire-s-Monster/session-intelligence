@@ -949,7 +949,7 @@ class SessionIntelligenceEngine:
 
     # ===== DECISION LOGGING =====
 
-    def session_log_decision(
+    async def session_log_decision(
         self,
         decision: str,
         session_id: str | None = None,
@@ -964,9 +964,65 @@ class SessionIntelligenceEngine:
         Enhanced: Adds decision impact analysis and relationship mapping
         """
         try:
-            return self._log_decision_sync(
-                decision, session_id, context, impact_analysis,
-                link_artifacts
+            # Coerce context to dict if caller passed a string
+            if isinstance(context, str):
+                context = {"description": context}
+
+            decision_id = f"decision-{uuid.uuid4().hex[:8]}"
+
+            # Get current session
+            if not session_id and self.session_cache:
+                session_id = list(self.session_cache.keys())[-1]
+
+            # Update in-memory cache if session exists there
+            if session_id and session_id in self.session_cache:
+                session = self.session_cache[session_id]
+
+                from models.session_models import DecisionContext
+
+                decision_context = DecisionContext(
+                    session_id=session_id, project_state=context or {}
+                )
+
+                decision_obj = Decision(
+                    decision_id=decision_id,
+                    timestamp=datetime.now(UTC),
+                    description=decision,
+                    context=decision_context,
+                    impact_level=ImpactLevel.MEDIUM,
+                    artifacts=link_artifacts or [],
+                )
+
+                session.decisions.append(decision_obj)
+
+            # Always persist to database (not gated by session_cache)
+            if self.database:
+                decision_data = {
+                    "id": decision_id,
+                    "session_id": session_id or self._current_session_id,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                    "description": decision,
+                    "context": json.dumps(context or {}),
+                    "impact_level": "medium",
+                    "artifacts": json.dumps(link_artifacts or []),
+                }
+                await self.database.save_decision(decision_data)
+
+            # Impact analysis
+            impact_analysis_result = {}
+            if impact_analysis:
+                impact_analysis_result = {
+                    "estimated_impact": "medium",
+                    "affected_components": [],
+                    "risk_assessment": "low",
+                }
+
+            return DecisionResult(
+                decision_id=decision_id,
+                session_id=session_id or "unknown",
+                impact_analysis=impact_analysis_result,
+                linked_decisions=[],
+                predicted_outcomes=["Continue with planned execution"],
             )
         except Exception as e:
             return DecisionResult(
@@ -975,85 +1031,7 @@ class SessionIntelligenceEngine:
                 impact_analysis={"error": str(e)},
             )
 
-    def _log_decision_sync(
-        self,
-        decision: str,
-        session_id: str | None,
-        context: dict[str, Any] | str | None,
-        impact_analysis: bool,
-        link_artifacts: list[str] | None,
-    ) -> DecisionResult:
-        """Synchronous decision logging."""
-
-        # Coerce context to dict if caller passed a string
-        if isinstance(context, str):
-            context = {"description": context}
-
-        decision_id = f"decision-{uuid.uuid4().hex[:8]}"
-
-        # Get current session
-        if not session_id and self.session_cache:
-            session_id = list(self.session_cache.keys())[-1]
-
-        if session_id and session_id in self.session_cache:
-            session = self.session_cache[session_id]
-
-            from models.session_models import DecisionContext
-
-            decision_context = DecisionContext(
-                session_id=session_id, project_state=context or {}
-            )
-
-            decision_obj = Decision(
-                decision_id=decision_id,
-                timestamp=datetime.now(UTC),
-                description=decision,
-                context=decision_context,
-                impact_level=ImpactLevel.MEDIUM,
-                artifacts=link_artifacts or [],
-            )
-
-            session.decisions.append(decision_obj)
-
-            # Persist to database
-            if self.database:
-                decision_data = {
-                    "id": decision_id,
-                    "session_id": session_id,
-                    "timestamp": decision_obj.timestamp.isoformat(),
-                    "description": decision,
-                    "context": json.dumps(context or {}),
-                    "impact_level": decision_obj.impact_level.value,
-                    "artifacts": json.dumps(link_artifacts or []),
-                }
-                try:
-                    import asyncio
-
-                    asyncio.get_running_loop()
-                    asyncio.create_task(
-                        self.database.save_decision(decision_data)
-                    )
-                except RuntimeError:
-                    pass  # No event loop in sync context
-
-        # Impact analysis
-        impact_analysis_result = {}
-        if impact_analysis:
-            impact_analysis_result = {
-                "estimated_impact": "medium",
-                "affected_components": [],
-                "risk_assessment": "low",
-            }
-
-        return DecisionResult(
-            decision_id=decision_id,
-            session_id=session_id or "unknown",
-            impact_analysis=impact_analysis_result,
-            linked_decisions=[],
-            predicted_outcomes=["Continue with planned execution"],
-        )
-
-    def session_track_file_operation(
+    async def session_track_file_operation(
         self,
         operation: str,
         file_path: str,
@@ -1082,15 +1060,7 @@ class SessionIntelligenceEngine:
         }
 
         if self.database:
-            try:
-                import asyncio
-
-                asyncio.get_running_loop()
-                asyncio.create_task(
-                    self.database.save_file_operation(file_op_data)
-                )
-            except RuntimeError:
-                pass
+            await self.database.save_file_operation(file_op_data)
 
         return {
             "status": "success",
@@ -1282,7 +1252,7 @@ class SessionIntelligenceEngine:
 
     # ===== SESSION NOTEBOOK =====
 
-    def session_create_notebook(
+    async def session_create_notebook(
         self,
         session_id: str | None = None,
         title: str | None = None,
@@ -1313,7 +1283,7 @@ class SessionIntelligenceEngine:
             NotebookResult with generated notebook and file path
         """
         try:
-            return self._create_notebook_sync(
+            return await self._create_notebook_impl(
                 session_id,
                 title,
                 include_decisions,
@@ -1554,7 +1524,7 @@ class SessionIntelligenceEngine:
                 message=str(e),
             )
 
-    def _create_notebook_sync(
+    async def _create_notebook_impl(
         self,
         session_id: str | None,
         title: str | None,
@@ -1565,7 +1535,7 @@ class SessionIntelligenceEngine:
         save_to_file: bool,
         save_to_database: bool,
     ) -> NotebookResult:
-        """Synchronous notebook creation."""
+        """Notebook creation with proper async database access."""
 
         # Get session (current or specified)
         if not session_id:
@@ -1583,69 +1553,56 @@ class SessionIntelligenceEngine:
         # Merge decisions from database if available
         if self.database:
             try:
-                import asyncio
-
-                asyncio.get_running_loop()
-                asyncio.create_task(
-                    self.database.query_decisions_by_session(session_id)
-                )
-                # We can't await here in sync context, use alternative
-                # approach. Instead, check if we're in async context
-            except RuntimeError:
-                pass  # No event loop - skip database merge in sync context
-            else:
-                # If we have an event loop, schedule the merge
-                async def merge_db_decisions():
-                    db_decisions_list = (
-                        await self.database.query_decisions_by_session(
-                            session_id
-                        )
+                db_decisions_list = (
+                    await self.database.query_decisions_by_session(
+                        session_id
                     )
-                    existing_ids = {
-                        d.decision_id for d in session.decisions
-                    }
-                    for db_dec in db_decisions_list:
-                        dec_id = (
-                            db_dec.get("id")
-                            or db_dec.get("decision_id")
-                        )
-                        if dec_id and dec_id not in existing_ids:
-                            from models.session_models import Decision, DecisionContext
+                )
+                existing_ids = {
+                    d.decision_id for d in session.decisions
+                }
+                for db_dec in db_decisions_list:
+                    dec_id = (
+                        db_dec.get("id")
+                        or db_dec.get("decision_id")
+                    )
+                    if dec_id and dec_id not in existing_ids:
+                        from models.session_models import Decision, DecisionContext
 
-                            session.decisions.append(
-                                Decision(
-                                    decision_id=dec_id,
-                                    timestamp=(
-                                        safe_parse_datetime(
-                                            db_dec.get("timestamp")
-                                        )
-                                        or datetime.now(UTC)
-                                    ),
-                                    description=db_dec.get(
-                                        "description", ""
-                                    ),
-                                    context=DecisionContext(
-                                        session_id=session_id,
-                                        project_state={},
-                                    ),
-                                    impact_level=ImpactLevel(
-                                        db_dec.get(
-                                            "impact_level", "medium"
-                                        )
-                                    ),
-                                    artifacts=(
-                                        json.loads(
-                                            db_dec.get("artifacts", "[]")
-                                        )
-                                        if isinstance(
-                                            db_dec.get("artifacts"), str
-                                        )
-                                        else db_dec.get("artifacts", [])
-                                    ),
-                                )
+                        session.decisions.append(
+                            Decision(
+                                decision_id=dec_id,
+                                timestamp=(
+                                    safe_parse_datetime(
+                                        db_dec.get("timestamp")
+                                    )
+                                    or datetime.now(UTC)
+                                ),
+                                description=db_dec.get(
+                                    "description", ""
+                                ),
+                                context=DecisionContext(
+                                    session_id=session_id,
+                                    project_state={},
+                                ),
+                                impact_level=ImpactLevel(
+                                    db_dec.get(
+                                        "impact_level", "medium"
+                                    )
+                                ),
+                                artifacts=(
+                                    json.loads(
+                                        db_dec.get("artifacts", "[]")
+                                    )
+                                    if isinstance(
+                                        db_dec.get("artifacts"), str
+                                    )
+                                    else db_dec.get("artifacts", [])
+                                ),
                             )
-
-                asyncio.create_task(merge_db_decisions())
+                        )
+            except Exception as e:
+                debug_logger.error(f"Error merging DB decisions: {e}")
 
         # Calculate duration
         end_time = session.completed or datetime.now(UTC)
@@ -2327,7 +2284,7 @@ class SessionIntelligenceEngine:
 
     # ===== KNOWLEDGE SYSTEM =====
 
-    def session_log_learning(
+    async def session_log_learning(
         self,
         category: str,
         learning_content: str,
@@ -2371,63 +2328,33 @@ class SessionIntelligenceEngine:
             created_at=datetime.now().isoformat(),
         )
 
-        # Persist to database if available
+        # Persist to database
         status = "pending_save"
         message = f"Learning logged for {category}."
         if self.database:
             try:
-                import asyncio
-
                 # Validate source_session_id exists before FK insert
+                sid = None
                 if source_session:
-                    try:
-                        asyncio.get_running_loop()
+                    existing = await self.database.get_session(
+                        source_session
+                    )
+                    sid = source_session if existing else None
 
-                        async def _validate_and_save():
-                            existing = await self.database.get_session(
-                                source_session
-                            )
-                            sid = source_session if existing else None
-                            await self.database.save_project_learning(
-                                learning_id=learning_id,
-                                project_path=effective_project,
-                                category=(
-                                    category.value
-                                    if hasattr(category, "value")
-                                    else category
-                                ),
-                                learning_content=learning_content,
-                                trigger_context=trigger_context,
-                                source_session_id=sid,
-                            )
-
-                        asyncio.create_task(_validate_and_save())
-                        status = "saved"
-                        message = f"Learning saved to database for {category}."
-                    except RuntimeError:
-                        # No event loop - can't validate session
-                        pass
-                else:
-                    try:
-                        asyncio.get_running_loop()
-                        asyncio.create_task(
-                            self.database.save_project_learning(
-                                learning_id=learning_id,
-                                project_path=effective_project,
-                                category=(
-                                    category.value
-                                    if hasattr(category, "value")
-                                    else category
-                                ),
-                                learning_content=learning_content,
-                                trigger_context=trigger_context,
-                                source_session_id=None,
-                            )
-                        )
-                        status = "saved"
-                        message = f"Learning saved to database for {category}."
-                    except RuntimeError:
-                        pass  # No event loop in sync context
+                await self.database.save_project_learning(
+                    learning_id=learning_id,
+                    project_path=effective_project,
+                    category=(
+                        category.value
+                        if hasattr(category, "value")
+                        else category
+                    ),
+                    learning_content=learning_content,
+                    trigger_context=trigger_context,
+                    source_session_id=sid,
+                )
+                status = "saved"
+                message = f"Learning saved to database for {category}."
             except Exception as e:
                 debug_logger.error(f"Error saving learning to database: {e}")
                 message += f" Database save failed: {e}"
@@ -2533,7 +2460,7 @@ class SessionIntelligenceEngine:
                 universal_count=0,
             )
 
-    def session_update_solution_outcome(
+    async def session_update_solution_outcome(
         self,
         solution_id: str,
         success: bool,
@@ -2557,22 +2484,15 @@ class SessionIntelligenceEngine:
         message = "Solution outcome recorded."
         if self.database:
             try:
-                import asyncio
-
-                asyncio.get_running_loop()
-                asyncio.create_task(
-                    self.database.update_solution_outcome(
-                        solution_id=solution_id,
-                        success=success,
-                    )
+                await self.database.update_solution_outcome(
+                    solution_id=solution_id,
+                    success=success,
                 )
                 status = "updated"
                 message = (
                     f"Solution outcome updated: "
                     f"{'success' if success else 'failure'}."
                 )
-            except RuntimeError:
-                pass  # No event loop in sync context
             except Exception as e:
                 debug_logger.error(
                     f"Error updating solution outcome: {e}"

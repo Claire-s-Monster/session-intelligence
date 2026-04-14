@@ -160,7 +160,7 @@ class LeanMCPInterface:
         }
 
         registry["session_log_decision"] = {
-            "implementation": self._wrap_tool(self.session_engine.session_log_decision),
+            "implementation": self._wrap_async_tool(self.session_engine.session_log_decision),
             "description": "Log decisions with context and impact analysis",
             "schema": {
                 "type": "object",
@@ -190,7 +190,7 @@ class LeanMCPInterface:
         }
 
         registry["session_track_file_operation"] = {
-            "implementation": self._wrap_tool(self.session_engine.session_track_file_operation),
+            "implementation": self._wrap_async_tool(self.session_engine.session_track_file_operation),
             "description": "Track file create/edit/delete operations for session notebook",
             "schema": {
                 "type": "object",
@@ -570,7 +570,7 @@ class LeanMCPInterface:
         # ===== KNOWLEDGE SYSTEM TOOLS =====
 
         registry["session_log_learning"] = {
-            "implementation": self._wrap_tool(self.session_engine.session_log_learning),
+            "implementation": self._wrap_async_tool(self.session_engine.session_log_learning),
             "description": "Log a project-specific learning (pattern, fix, preference, workflow)",
             "schema": {
                 "type": "object",
@@ -638,7 +638,7 @@ class LeanMCPInterface:
         }
 
         registry["session_update_solution_outcome"] = {
-            "implementation": self._wrap_tool(self.session_engine.session_update_solution_outcome),
+            "implementation": self._wrap_async_tool(self.session_engine.session_update_solution_outcome),
             "description": "Update success/failure count for a solution after trying it",
             "schema": {
                 "type": "object",

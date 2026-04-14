@@ -124,10 +124,64 @@ class PersistenceContractTests:
     async def test_unicode_content(self, backend): ...
     async def test_large_text_content(self, backend): ...
 
+    # --- Metrics ---
+    async def test_save_and_query_metrics(self, backend): ...
+    async def test_query_metrics_by_branch(self, backend): ...
+    async def test_query_metrics_by_session(self, backend): ...
+
+    # --- Notes ---
+    async def test_save_and_query_notes(self, backend): ...
+    async def test_query_notes_by_date(self, backend): ...
+
+    # --- File Operations ---
+    async def test_save_and_query_file_operations(self, backend): ...
+
+    # --- Session Summaries ---
+    async def test_save_and_get_session_summary(self, backend): ...
+    async def test_query_session_summaries(self, backend): ...
+    async def test_query_summaries_by_tag(self, backend): ...
+    async def test_query_recent_summaries(self, backend): ...
+
+    # --- Agent Executions ---
+    async def test_save_and_query_agent_executions(self, backend): ...
+
+    # --- MCP Sessions ---
+    async def test_save_and_get_mcp_session(self, backend): ...
+    async def test_update_mcp_session_activity(self, backend): ...
+    async def test_link_mcp_to_engine_session(self, backend): ...
+
+    # --- Project Learnings ---
+    async def test_save_and_query_project_learnings(self, backend): ...
+    async def test_update_learning_usage(self, backend): ...
+
+    # --- Error Solutions ---
+    async def test_save_and_find_error_solutions(self, backend): ...
+    async def test_update_solution_outcome(self, backend): ...
+
+    # --- Search ---
+    async def test_search_sessions_basic(self, backend): ...
+    async def test_search_by_file_change(self, backend): ...
+
+    # --- Maintenance ---
+    async def test_vacuum(self, backend): ...
+    async def test_get_statistics(self, backend): ...
+
     # --- Edge Cases ---
     async def test_empty_query_results(self, backend): ...
     async def test_duplicate_id_handling(self, backend): ...
     async def test_special_characters_in_strings(self, backend): ...
+```
+
+**Note on API asymmetry**: The following methods exist only in PostgreSQL and require PostgreSQL-only tests in `test_postgresql_contract.py` (not in the shared contract):
+
+- `recall_project(project_name, ...)` — full-text search across sessions, decisions, learnings
+- `search_sessions(query, search_type, limit)` — the `search_type` parameter is PostgreSQL-only; SQLite's `search_sessions(query, limit)` uses FTS5 without search_type
+
+The shared contract's `test_search_sessions_basic` tests the common subset (query + limit). `test_postgresql_contract.py` adds:
+```python
+async def test_recall_project(self, backend): ...
+async def test_search_sessions_with_search_type(self, backend): ...
+async def test_search_sessions_signature_parity(self, backend): ...
 ```
 
 Backend-specific test files inherit the contract and provide only a fixture:
@@ -174,11 +228,11 @@ async def engine(tmp_path):
 - `test_agent_operations.py` (~15 tests): register, update, get by name/id, search, notebooks, stats increment
 - `test_decision_learning.py` (~15 tests): log with/without active session, query with filters, update outcomes, string param coercion (PR #9 bug class)
 - `test_knowledge_system.py` (existing, ~15 tests): moved from `tests/unit/`
-- `test_mcp_tool_dispatch.py` (~20 tests): discover_tools, get_tool_spec, execute_tool for all 27 registered tools, invalid tool names, missing params, string-to-dict coercion
+- `test_mcp_tool_dispatch.py` (~25 tests): discover_tools, get_tool_spec, execute_tool for all registered tools (count verified dynamically via `discover_tools()`), invalid tool names, missing params, string-to-dict coercion. **Critical assertion**: every tool execution must return a dict (not a coroutine object) — this catches `_wrap_tool` vs `_wrap_async_tool` mismatches, the same bug class as PR #12
 
 ### 3. Integration Tests
 
-**`test_http_transport.py`** (~12 tests): Uses `httpx.AsyncClient` against the ASGI app directly (no live server). Tests request/response format, MCP session headers, initialize handshake, error responses, large response truncation, concurrent requests.
+**`test_http_transport.py`** (~15 tests): Uses `httpx.AsyncClient` against the ASGI app directly (no live server). Tests request/response format, MCP session headers, initialize handshake, error responses, large response truncation, concurrent requests, MCP session DB persistence (save/get/link), SSE notification subscribe/broadcast paths. Includes `test_mcp_session_persistence` to verify `save_mcp_session` passes datetime objects (not ISO strings) — same PR #13 bug class in the HTTP layer.
 
 **`test_error_paths.py`** (~10 tests): Deliberately triggers failures across layer boundaries — DB connection failure, corrupt JSON, FK violations, missing required fields, invalid IDs, empty/None parameters.
 
@@ -199,7 +253,7 @@ Each file reproduces the exact production bug scenario and verifies the fix hold
 - `test_token_limiter.py` (~10 tests): Consolidates existing token limiting tests. Tests `apply_token_limits()` for various sizes, truncation behavior, JSON structure preservation.
 - `test_security.py` (~8 tests): Input validation, sanitization rules.
 - `test_config.py` (~6 tests): Config loading, defaults, environment variable overrides.
-- `test_migration.py` (~6 tests): Schema migration paths, idempotent `initialize()`.
+- `test_migration.py` (~12 tests): Schema migration paths, idempotent `initialize()`, `MigrationManager.migrate_all()` data-correctness validation (migrate SQLite-to-SQLite, verify row counts, verify data integrity across sessions/decisions/metrics/notes/agent_executions/mcp_sessions), migration idempotency on re-run, migration with empty source DB.
 
 ## CI Configuration
 
@@ -251,18 +305,19 @@ cmd = "pytest tests/regression/ -v"
 
 | Metric | Current | Target |
 |--------|---------|--------|
-| Test count | ~45 | ~150 |
-| Test lines | 2,100 | ~6,000-7,000 |
-| Code:test ratio | 5:1 | ~1.5:1 |
+| Test count | ~45 | ~190-210 |
+| Test lines | 2,100 | ~8,000-9,000 |
+| Code:test ratio | 5:1 | ~1.2:1 |
 | Coverage | ~20% (models only) | ~90%+ |
 | Layers tested | 1 (models) | All 6 (models, persistence, engine, MCP, HTTP, utils) |
 | Regression tests | 0 | 6 (covering 3 critical bugs) |
+| Contract tests | 0 | ~70 shared + ~5 PostgreSQL-only |
 
 ## Success Criteria
 
 1. All persistence contract tests pass on both SQLite and PostgreSQL
 2. All 3 historical production bugs have dedicated regression tests
-3. Engine tests use real SQLite (no mocks) and cover all 27 MCP tools
+3. Engine tests use real SQLite (no mocks) and cover all registered MCP tools (verified dynamically)
 4. CI runs full suite including PostgreSQL service
 5. Coverage reaches 90%+ as measured by `pytest-cov`
 6. No test requires a live server or manual intervention

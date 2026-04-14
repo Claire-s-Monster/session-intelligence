@@ -1000,7 +1000,7 @@ class SessionIntelligenceEngine:
                 decision_data = {
                     "id": decision_id,
                     "session_id": session_id or self._current_session_id,
-                    "timestamp": datetime.now(UTC).isoformat(),
+                    "timestamp": datetime.now(UTC),
                     "description": decision,
                     "context": json.dumps(context or {}),
                     "impact_level": "medium",
@@ -1050,7 +1050,7 @@ class SessionIntelligenceEngine:
 
         file_op_data = {
             "session_id": session_id,
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(UTC),
             "operation": operation,
             "file_path": file_path,
             "lines_added": lines_added,
@@ -1503,7 +1503,7 @@ class SessionIntelligenceEngine:
                         "summary_markdown": summary_markdown,
                         "key_changes": key_changes,
                         "tags": tags,
-                        "created_at": datetime.now(UTC).isoformat(),
+                        "created_at": datetime.now(UTC),
                     }
                 )
 
@@ -2553,7 +2553,7 @@ class SessionIntelligenceEngine:
             # Check if agent already exists by name
             existing_agent = await self.database.get_agent_by_name(agent_name)
 
-            now = datetime.now(UTC).isoformat()
+            now = datetime.now(UTC)
 
             if existing_agent:
                 # Update existing agent
@@ -2780,7 +2780,7 @@ class SessionIntelligenceEngine:
 
             agent_id = agent_data["id"]
             decision_id = str(uuid.uuid4())
-            now = datetime.now(UTC).isoformat()
+            now = datetime.now(UTC)
 
             # Build decision data for database
             decision_data = {
@@ -3047,7 +3047,7 @@ class SessionIntelligenceEngine:
 
             agent_id = agent_data["id"]
             learning_id = str(uuid.uuid4())
-            now = datetime.now(UTC).isoformat()
+            now = datetime.now(UTC)
 
             # Build learning data for database
             learning_data = {
@@ -3347,7 +3347,7 @@ class SessionIntelligenceEngine:
 
             agent_id = agent_data["id"]
             notebook_id = str(uuid.uuid4())
-            now = datetime.now(UTC).isoformat()
+            now = datetime.now(UTC)
 
             # Build notebook data for database
             notebook_data = {

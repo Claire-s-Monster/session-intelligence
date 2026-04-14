@@ -64,7 +64,7 @@ class LeanMCPInterface:
 
         # Session Management Tools
         registry["session_manage_lifecycle"] = {
-            "implementation": self._wrap_tool(self.session_engine.session_manage_lifecycle),
+            "implementation": self._wrap_async_tool(self.session_engine.session_manage_lifecycle),
             "description": "Complete session lifecycle management with recovery",
             "schema": {
                 "type": "object",

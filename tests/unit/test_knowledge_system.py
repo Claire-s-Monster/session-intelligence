@@ -67,9 +67,10 @@ def engine_with_db(tmp_path, mock_database):
 class TestSessionLogLearning:
     """Tests for session_log_learning method."""
 
-    def test_returns_learning_result(self, engine):
+    @pytest.mark.asyncio
+    async def test_returns_learning_result(self, engine):
         """Returns a LearningResult with correct fields."""
-        result = engine.session_log_learning(
+        result = await engine.session_log_learning(
             category="pattern",
             learning_content="Use fixtures for test data",
         )
@@ -80,9 +81,10 @@ class TestSessionLogLearning:
         assert result.learning.learning_content == "Use fixtures for test data"
         assert result.learning.category == LearningCategory.PATTERN
 
-    def test_without_database_returns_pending(self, engine):
+    @pytest.mark.asyncio
+    async def test_without_database_returns_pending(self, engine):
         """Without a database, status should be pending_save."""
-        result = engine.session_log_learning(
+        result = await engine.session_log_learning(
             category="error_fix",
             learning_content="Fix import errors with sys.path",
         )
@@ -94,7 +96,7 @@ class TestSessionLogLearning:
         self, engine_with_db, mock_database
     ):
         """With a database and running event loop, status is 'saved'."""
-        result = engine_with_db.session_log_learning(
+        result = await engine_with_db.session_log_learning(
             category="workflow",
             learning_content="Run lint before commit",
         )
@@ -106,9 +108,10 @@ class TestSessionLogLearning:
         await asyncio.sleep(0)
         mock_database.save_project_learning.assert_called_once()
 
-    def test_learning_content_preserved(self, engine):
+    @pytest.mark.asyncio
+    async def test_learning_content_preserved(self, engine):
         """Learning content and trigger context are preserved."""
-        result = engine.session_log_learning(
+        result = await engine.session_log_learning(
             category="pattern",
             learning_content="Validate FK references before insert",
             trigger_context="Database FK violation encountered",
@@ -117,9 +120,10 @@ class TestSessionLogLearning:
         assert result.learning.learning_content == "Validate FK references before insert"
         assert result.learning.trigger_context == "Database FK violation encountered"
 
-    def test_project_path_defaults_to_repository(self, engine):
+    @pytest.mark.asyncio
+    async def test_project_path_defaults_to_repository(self, engine):
         """Project path defaults to engine's repository path."""
-        result = engine.session_log_learning(
+        result = await engine.session_log_learning(
             category="preference",
             learning_content="Use ruff for linting",
         )
@@ -127,9 +131,10 @@ class TestSessionLogLearning:
         assert result.learning.project_path is not None
         assert len(result.learning.project_path) > 0
 
-    def test_custom_project_path(self, engine):
+    @pytest.mark.asyncio
+    async def test_custom_project_path(self, engine):
         """Custom project path overrides default."""
-        result = engine.session_log_learning(
+        result = await engine.session_log_learning(
             category="workflow",
             learning_content="Use TDD workflow",
             project_path="/custom/project",
@@ -137,28 +142,31 @@ class TestSessionLogLearning:
 
         assert result.learning.project_path == "/custom/project"
 
-    def test_all_categories_accepted(self, engine):
+    @pytest.mark.asyncio
+    async def test_all_categories_accepted(self, engine):
         """All learning categories are accepted."""
         for cat in ["error_fix", "pattern", "preference", "workflow"]:
-            result = engine.session_log_learning(
+            result = await engine.session_log_learning(
                 category=cat,
                 learning_content=f"Test learning for {cat}",
             )
             assert result.learning.category == LearningCategory(cat)
 
-    def test_invalid_category_raises(self, engine):
+    @pytest.mark.asyncio
+    async def test_invalid_category_raises(self, engine):
         """Invalid category raises ValueError."""
         with pytest.raises(ValueError):
-            engine.session_log_learning(
+            await engine.session_log_learning(
                 category="invalid_category",
                 learning_content="This should fail",
             )
 
-    def test_unique_ids(self, engine):
+    @pytest.mark.asyncio
+    async def test_unique_ids(self, engine):
         """Each call generates a unique learning ID."""
         ids = set()
         for _ in range(10):
-            result = engine.session_log_learning(
+            result = await engine.session_log_learning(
                 category="pattern",
                 learning_content="Repeated learning",
             )
@@ -173,7 +181,7 @@ class TestSessionLogLearning:
         """Without active session, source_session_id is None in save call."""
         assert engine_with_db._current_session_id is None
 
-        result = engine_with_db.session_log_learning(
+        result = await engine_with_db.session_log_learning(
             category="pattern",
             learning_content="No session learning",
         )
@@ -194,7 +202,7 @@ class TestSessionLogLearning:
         engine_with_db._current_session_id = "sess_123"
         mock_database.get_session = AsyncMock(return_value={"id": "sess_123"})
 
-        result = engine_with_db.session_log_learning(
+        result = await engine_with_db.session_log_learning(
             category="workflow",
             learning_content="Session-linked learning",
         )
@@ -216,7 +224,7 @@ class TestSessionLogLearning:
         engine_with_db._current_session_id = "nonexistent_session"
         mock_database.get_session = AsyncMock(return_value=None)
 
-        result = engine_with_db.session_log_learning(
+        result = await engine_with_db.session_log_learning(
             category="pattern",
             learning_content="Orphan session learning",
         )
@@ -233,7 +241,7 @@ class TestSessionLogLearning:
         self, engine_with_db, mock_database
     ):
         """Category enum value (not enum object) is passed to database."""
-        engine_with_db.session_log_learning(
+        await engine_with_db.session_log_learning(
             category="error_fix",
             learning_content="Test category extraction",
         )
@@ -433,9 +441,10 @@ class TestSessionFindSolution:
 class TestSessionUpdateSolutionOutcome:
     """Tests for session_update_solution_outcome method."""
 
-    def test_without_database_returns_pending(self, engine):
+    @pytest.mark.asyncio
+    async def test_without_database_returns_pending(self, engine):
         """Without database, returns pending_update status."""
-        result = engine.session_update_solution_outcome(
+        result = await engine.session_update_solution_outcome(
             solution_id="sol_123",
             success=True,
         )
@@ -447,7 +456,7 @@ class TestSessionUpdateSolutionOutcome:
     @pytest.mark.asyncio
     async def test_with_database_returns_updated(self, engine_with_db):
         """With database and event loop, returns updated status."""
-        result = engine_with_db.session_update_solution_outcome(
+        result = await engine_with_db.session_update_solution_outcome(
             solution_id="sol_456",
             success=True,
         )
@@ -458,7 +467,7 @@ class TestSessionUpdateSolutionOutcome:
     @pytest.mark.asyncio
     async def test_failure_outcome_message(self, engine_with_db):
         """Failure outcome is reflected in message."""
-        result = engine_with_db.session_update_solution_outcome(
+        result = await engine_with_db.session_update_solution_outcome(
             solution_id="sol_789",
             success=False,
         )
@@ -466,9 +475,10 @@ class TestSessionUpdateSolutionOutcome:
         assert result.status == "updated"
         assert "failure" in result.message.lower()
 
-    def test_preserves_solution_id(self, engine):
+    @pytest.mark.asyncio
+    async def test_preserves_solution_id(self, engine):
         """Solution ID is preserved in result."""
-        result = engine.session_update_solution_outcome(
+        result = await engine.session_update_solution_outcome(
             solution_id="my_solution_id",
             success=True,
         )
@@ -478,7 +488,7 @@ class TestSessionUpdateSolutionOutcome:
     @pytest.mark.asyncio
     async def test_calls_database_update(self, engine_with_db, mock_database):
         """Verifies database.update_solution_outcome is called."""
-        engine_with_db.session_update_solution_outcome(
+        await engine_with_db.session_update_solution_outcome(
             solution_id="sol_abc",
             success=True,
         )
@@ -507,7 +517,7 @@ class TestOriginalBugDetection:
     @pytest.mark.asyncio
     async def test_learning_not_permanently_pending(self, engine_with_db):
         """Learning must not remain in 'pending_save' when DB is available."""
-        result = engine_with_db.session_log_learning(
+        result = await engine_with_db.session_log_learning(
             category="pattern",
             learning_content="Test content",
         )
@@ -549,7 +559,7 @@ class TestOriginalBugDetection:
     @pytest.mark.asyncio
     async def test_outcome_not_permanently_pending(self, engine_with_db):
         """Outcome must not remain in 'pending_update' when DB is available."""
-        result = engine_with_db.session_update_solution_outcome(
+        result = await engine_with_db.session_update_solution_outcome(
             solution_id="sol_1",
             success=True,
         )

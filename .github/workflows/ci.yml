@@ -1,4 +1,5 @@
 ---
+# CI pipeline using ci-framework reusable workflow
 name: CI
 
 on:

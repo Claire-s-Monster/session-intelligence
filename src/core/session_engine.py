@@ -997,9 +997,14 @@ class SessionIntelligenceEngine:
 
             # Always persist to database (not gated by session_cache)
             if self.database:
+                effective_session_id = (
+                    session_id
+                    or self._current_session_id
+                    or self._get_or_create_current_session_id()
+                )
                 decision_data = {
                     "id": decision_id,
-                    "session_id": session_id or self._current_session_id,
+                    "session_id": effective_session_id,
                     "timestamp": datetime.now(UTC),
                     "description": decision,
                     "context": json.dumps(context or {}),

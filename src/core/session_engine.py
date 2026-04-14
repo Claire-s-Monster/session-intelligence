@@ -285,7 +285,7 @@ class SessionIntelligenceEngine:
 
     # ===== SESSION LIFECYCLE MANAGEMENT =====
 
-    def session_manage_lifecycle(
+    async def session_manage_lifecycle(
         self,
         operation: str,
         mode: str = "local",
@@ -304,7 +304,7 @@ class SessionIntelligenceEngine:
             claudecode_capture_enhanced_state
         """
         try:
-            return self._manage_lifecycle_sync(
+            return await self._manage_lifecycle_impl(
                 operation, mode, project_name, metadata, auto_recovery
             )
         except Exception as e:
@@ -315,7 +315,7 @@ class SessionIntelligenceEngine:
                 message=f"Session lifecycle error: {str(e)}",
             )
 
-    def _manage_lifecycle_sync(
+    async def _manage_lifecycle_impl(
         self,
         operation: str,
         mode: str,
@@ -323,10 +323,23 @@ class SessionIntelligenceEngine:
         metadata: dict[str, Any] | None,
         auto_recovery: bool,
     ) -> SessionResult:
-        """Synchronous session lifecycle management."""
+        """Session lifecycle management."""
 
         if operation == "create":
-            return self._create_session(mode, project_name, metadata or {})
+            result = self._create_session(
+                mode, project_name, metadata or {}
+            )
+            # Persist session to DB so FK references work
+            if result.status == "success" and self.database:
+                try:
+                    await self.database.save_session(
+                        result.session_data.model_dump(mode="python")
+                    )
+                except Exception as e:
+                    debug_logger.error(
+                        f"Error persisting session to DB: {e}"
+                    )
+            return result
         elif operation == "resume":
             return self._resume_session(auto_recovery)
         elif operation == "finalize":
@@ -997,9 +1010,31 @@ class SessionIntelligenceEngine:
 
             # Always persist to database (not gated by session_cache)
             if self.database:
+                effective_session_id = (
+                    session_id
+                    or self._current_session_id
+                )
+                # Auto-create and persist session if needed
+                if not effective_session_id:
+                    effective_session_id = (
+                        self._get_or_create_current_session_id()
+                    )
+                    if effective_session_id and self.database:
+                        session = self.session_cache.get(
+                            effective_session_id
+                        )
+                        if session:
+                            try:
+                                await self.database.save_session(
+                                    session.model_dump(
+                                        mode="python"
+                                    )
+                                )
+                            except Exception:
+                                pass  # Best-effort
                 decision_data = {
                     "id": decision_id,
-                    "session_id": session_id or self._current_session_id,
+                    "session_id": effective_session_id,
                     "timestamp": datetime.now(UTC),
                     "description": decision,
                     "context": json.dumps(context or {}),

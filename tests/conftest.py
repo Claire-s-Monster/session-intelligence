@@ -8,7 +8,6 @@ This module provides common fixtures used across all test categories:
 - Live tests (tests/live/)
 """
 
-import asyncio
 import os
 import sys
 import tempfile
@@ -19,18 +18,8 @@ import pytest
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-
-# ============================================================================
-# Async Support
-# ============================================================================
-
-@pytest.fixture(scope="session")
-def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
-    """Create an event loop for the test session."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+# Add tests/ to path for imports within test packages
+sys.path.insert(0, str(Path(__file__).parent))
 
 
 # ============================================================================

@@ -16,10 +16,11 @@ from typing import AsyncGenerator, Generator
 
 import pytest
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-# Add tests/ to path for imports within test packages
-sys.path.insert(0, str(Path(__file__).parent))
+# Add tests/ first, then src — src must come first so that top-level
+# package names (e.g. `persistence`) resolve to src/ rather than to the
+# tests/persistence/ subdirectory which shadows it.
+sys.path.insert(0, str(Path(__file__).parent))       # tests/
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))  # src/ — wins
 
 
 # ============================================================================

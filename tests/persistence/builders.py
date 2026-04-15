@@ -204,13 +204,11 @@ def make_mcp_session_data(**overrides) -> dict:
     """Build a minimal valid MCP session data dict."""
     uid = _uid()
     defaults = {
-        "session_id": f"mcp-{uid}",
-        "client_name": f"client-{uid}",
-        "server_version": "1.0.0",
-        "started_at": _now(),
-        "ended_at": None,
-        "tools_called": 0,
-        "metadata": {},
+        "mcp_session_id": f"mcp-{uid}",
+        "engine_session_id": None,
+        "created_at": _now(),
+        "last_activity": _now(),
+        "client_info": {},
     }
     return {**defaults, **overrides}
 

@@ -198,15 +198,7 @@ def _agent_execution(session_id: str, agent_name: str = "test-agent", **override
 
 def _mcp_session(**overrides) -> dict:
     """Return an MCP session dict ready for ``save_mcp_session``."""
-    raw = make_mcp_session_data(**overrides)
-    m = dict(raw)
-    m["mcp_session_id"] = m.pop("session_id")
-    for dt_field in ("started_at", "ended_at"):
-        if isinstance(m.get(dt_field), datetime):
-            m[dt_field] = m[dt_field].isoformat()
-    m["created_at"] = m.pop("started_at", datetime.now(UTC).isoformat())
-    m["last_activity"] = m.get("created_at")
-    return m
+    return make_mcp_session_data(**overrides)
 
 
 # ---------------------------------------------------------------------------

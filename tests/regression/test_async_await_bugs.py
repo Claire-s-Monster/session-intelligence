@@ -26,12 +26,11 @@ class TestAsyncAwaitBugs:
     async def test_session_log_decision_persists_data(self, engine):
         """Verify decision data actually reaches the database (not fire-and-forget)."""
         result = await engine.session_manage_lifecycle(operation="create", mode="local", project_name="test")
-        session_id = result["session_id"]
+        session_id = result.session_id
 
         await engine.session_log_decision(
-            description="Test decision",
-            rationale="Test rationale",
-            category="test",
+            decision="Test decision",
+            context={"rationale": "Test rationale", "category": "test"},
         )
 
         decisions = await engine.database.query_decisions_by_session(session_id)
@@ -48,8 +47,9 @@ class TestAsyncAwaitBugs:
             trigger_context="Test trigger",
         )
 
+        project_path = str(engine.claude_sessions_path.parent)
         learnings = await engine.database.query_project_learnings(
-            project_path=engine.repository_path
+            project_path=project_path
         )
         assert len(learnings) >= 1
 

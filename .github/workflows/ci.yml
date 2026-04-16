@@ -11,12 +11,13 @@ on:
 
 jobs:
   ci:
-    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@v2.5.1
+    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@v2.9.0
     with:
       pixi-environment: "ci"
       python-versions: '["3.11", "3.12"]'
       os-matrix: '["ubuntu-latest"]'
       enable-performance: false
+      enable-postgres: true
     secrets: inherit
 
   ci-success:

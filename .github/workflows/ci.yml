@@ -9,6 +9,12 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  security-events: write
+  contents: read
+  actions: read
+  id-token: write
+
 jobs:
   ci:
     uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@v2.9.0

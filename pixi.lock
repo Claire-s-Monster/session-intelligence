@@ -2792,7 +2792,7 @@ packages:
 - pypi: ./
   name: session-intelligence
   version: 1.0.0
-  sha256: 20409e124fec5eaa0366454c67c89742d43c637fbb532f64e697c92b68ffb8ce
+  sha256: 002c0e863fe1e83d19cfbed0446c620afdc3e30ed52a44345e6e8f10066a9eaf
   requires_dist:
   - pytest>=7.0.0 ; extra == 'dev'
   - pytest-asyncio>=0.21.0 ; extra == 'dev'

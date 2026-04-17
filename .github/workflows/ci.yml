@@ -24,6 +24,7 @@ jobs:
       os-matrix: '["ubuntu-latest"]'
       enable-performance: false
       enable-postgres: true
+      editable-install: false
     secrets: inherit
 
   ci-success:

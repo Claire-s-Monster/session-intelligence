@@ -444,6 +444,16 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         """Save or update a session."""
         pool = self._ensure_connected()
 
+        from datetime import datetime
+
+        started_at = session_data.get("started") or session_data.get("started_at")
+        if isinstance(started_at, str):
+            started_at = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+
+        ended_at = session_data.get("completed") or session_data.get("ended_at")
+        if isinstance(ended_at, str):
+            ended_at = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
+
         async with pool.acquire() as conn:
             await conn.execute(
                 """
@@ -459,8 +469,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     health_status = EXCLUDED.health_status
                 """,
                 session_data["id"],
-                session_data.get("started") or session_data.get("started_at"),
-                session_data.get("completed") or session_data.get("ended_at"),
+                started_at,
+                ended_at,
                 session_data.get("project_path", ""),
                 session_data.get("project_name"),
                 session_data.get("mode", "local"),
@@ -560,6 +570,12 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         """Save a decision."""
         pool = self._ensure_connected()
 
+        from datetime import datetime
+
+        timestamp = decision_data.get("timestamp", self._get_timestamp())
+        if isinstance(timestamp, str):
+            timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+
         async with pool.acquire() as conn:
             await conn.execute(
                 """
@@ -574,7 +590,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 """,
                 decision_data.get("decision_id") or decision_data.get("id"),
                 decision_data["session_id"],
-                decision_data.get("timestamp", self._get_timestamp()),
+                timestamp,
                 decision_data.get("category"),
                 decision_data.get("description") or decision_data.get("decision", ""),
                 decision_data.get("rationale"),
@@ -631,6 +647,12 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         """Save metrics snapshot."""
         pool = self._ensure_connected()
 
+        from datetime import datetime
+
+        timestamp = metrics_data.get("timestamp", self._get_timestamp())
+        if isinstance(timestamp, str):
+            timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+
         async with pool.acquire() as conn:
             await conn.execute(
                 """
@@ -641,7 +663,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 """,
                 metrics_data["session_id"],
                 metrics_data.get("branch"),
-                metrics_data.get("timestamp", self._get_timestamp()),
+                timestamp,
                 metrics_data.get("coverage"),
                 metrics_data.get("complexity"),
                 metrics_data.get("test_count"),
@@ -692,6 +714,12 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         """Save a session note."""
         pool = self._ensure_connected()
 
+        from datetime import date
+
+        note_date = note_data.get("date")
+        if isinstance(note_date, str):
+            note_date = date.fromisoformat(note_date)
+
         async with pool.acquire() as conn:
             await conn.execute(
                 """
@@ -699,14 +727,18 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 VALUES ($1, $2, $3, $4)
                 """,
                 note_data["session_id"],
-                note_data.get("date"),
+                note_date,
                 note_data["content"],
                 json.dumps(note_data.get("tags", [])),
             )
 
     async def query_notes_by_date(self, date: str, limit: int = 100) -> list[dict[str, Any]]:
         """Query notes by date across sessions."""
+        from datetime import date as date_type
+
         pool = self._ensure_connected()
+
+        query_date = date_type.fromisoformat(date) if isinstance(date, str) else date
 
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -718,10 +750,17 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 ORDER BY n.id DESC
                 LIMIT $2
                 """,
-                date,
+                query_date,
                 limit,
             )
-            return [self._from_record(row) for row in rows]
+            results = []
+            for row in rows:
+                result = self._from_record(row)
+                # Normalize DATE column: PostgreSQL returns datetime.date, tests expect string
+                if "date" in result and not isinstance(result["date"], str):
+                    result["date"] = str(result["date"])
+                results.append(result)
+            return results
 
     # File operations tracking
 
@@ -874,12 +913,74 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
             return [self._from_record(row) for row in rows]
 
+    async def query_summaries_by_tag(self, tag: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Query session summaries that contain a specific tag."""
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT ss.*, s.project_path, s.project_name
+                FROM session_summaries ss
+                JOIN sessions s ON ss.session_id = s.id
+                WHERE ss.tags @> $1::jsonb
+                ORDER BY ss.created_at DESC
+                LIMIT $2
+                """,
+                json.dumps([tag]),
+                limit,
+            )
+            return [self._from_record(row) for row in rows]
+
+    async def query_recent_summaries(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Get most recent session summaries."""
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT ss.*, s.project_path, s.project_name
+                FROM session_summaries ss
+                JOIN sessions s ON ss.session_id = s.id
+                ORDER BY ss.created_at DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+            return [self._from_record(row) for row in rows]
+
+    async def search_by_file_change(
+        self, file_pattern: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Search sessions by file changes stored in session_summaries.key_changes."""
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT ss.*, s.project_name, s.project_path
+                FROM session_summaries ss
+                JOIN sessions s ON ss.session_id = s.id
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements_text(ss.key_changes) AS kc
+                    WHERE kc ILIKE $1
+                )
+                ORDER BY ss.created_at DESC
+                LIMIT $2
+                """,
+                f"%{file_pattern}%",
+                limit,
+            )
+            return [self._from_record(row) for row in rows]
+
     async def recall_project(
         self,
         project_name: str,
         include: list[str] | None = None,
         limit: int = 10,
         days: int = 30,
+        query: str | None = None,
     ) -> dict[str, Any]:
         """Recall recent sessions, decisions, learnings, and notebooks for a project."""
         from datetime import UTC, datetime, timedelta
@@ -1007,6 +1108,16 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         """Save agent execution record."""
         pool = self._ensure_connected()
 
+        from datetime import datetime
+
+        started_at = execution_data.get("started_at", self._get_timestamp())
+        if isinstance(started_at, str):
+            started_at = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+
+        completed_at = execution_data.get("completed_at")
+        if isinstance(completed_at, str):
+            completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+
         async with pool.acquire() as conn:
             await conn.execute(
                 """
@@ -1025,8 +1136,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 execution_data["session_id"],
                 execution_data["agent_name"],
                 execution_data.get("agent_type"),
-                execution_data.get("started_at", self._get_timestamp()),
-                execution_data.get("completed_at"),
+                started_at,
+                completed_at,
                 execution_data.get("status", "running"),
                 json.dumps(execution_data.get("execution_steps", [])),
                 json.dumps(execution_data.get("performance", {})),
@@ -1515,8 +1626,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     total_executions, total_decisions, total_learnings,
                     total_notebooks, is_active
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                ON CONFLICT (id) DO UPDATE SET
-                    name = EXCLUDED.name,
+                ON CONFLICT (name) DO UPDATE SET
                     agent_type = EXCLUDED.agent_type,
                     display_name = EXCLUDED.display_name,
                     description = EXCLUDED.description,

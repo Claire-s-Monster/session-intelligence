@@ -87,18 +87,24 @@ class NotificationManager:
     def __init__(self) -> None:
         self._subscribers: dict[str, asyncio.Queue[dict[str, Any]]] = {}
 
-    async def subscribe(self, mcp_session_id: str) -> AsyncGenerator[dict[str, Any], None]:
+    async def subscribe(
+        self, mcp_session_id: str, idle_timeout: float = 300.0
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Subscribe to notifications for an MCP session."""
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._subscribers[mcp_session_id] = queue
 
         try:
             while True:
-                notification = await queue.get()
-                yield notification
+                try:
+                    notification = await asyncio.wait_for(
+                        queue.get(), timeout=idle_timeout
+                    )
+                    yield notification
+                except asyncio.TimeoutError:
+                    break
         finally:
-            if mcp_session_id in self._subscribers:
-                del self._subscribers[mcp_session_id]
+            self._subscribers.pop(mcp_session_id, None)
 
     async def notify(self, mcp_session_id: str, event_type: str, data: dict[str, Any]) -> None:
         """Send notification to a specific MCP session."""

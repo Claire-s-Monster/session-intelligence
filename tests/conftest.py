@@ -8,7 +8,6 @@ This module provides common fixtures used across all test categories:
 - Live tests (tests/live/)
 """
 
-import asyncio
 import os
 import sys
 import tempfile
@@ -17,20 +16,11 @@ from typing import AsyncGenerator, Generator
 
 import pytest
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-
-
-# ============================================================================
-# Async Support
-# ============================================================================
-
-@pytest.fixture(scope="session")
-def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
-    """Create an event loop for the test session."""
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+# Add tests/ first, then src — src must come first so that top-level
+# package names (e.g. `persistence`) resolve to src/ rather than to the
+# tests/persistence/ subdirectory which shadows it.
+sys.path.insert(0, str(Path(__file__).parent))       # tests/
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))  # src/ — wins
 
 
 # ============================================================================
@@ -82,7 +72,7 @@ async def sqlite_backend(sqlite_db_path: Path) -> AsyncGenerator:
     backend = SQLiteBackend(str(sqlite_db_path))
     await backend.initialize()
     yield backend
-    # Cleanup handled by temp_dir fixture
+    await backend.close()
 
 
 # ============================================================================

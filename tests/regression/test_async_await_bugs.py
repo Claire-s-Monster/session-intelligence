@@ -13,15 +13,17 @@ from core.session_engine import SessionIntelligenceEngine
 from persistence.sqlite import SQLiteBackend
 
 
+@pytest.fixture
+async def engine(tmp_path):
+    eng = SessionIntelligenceEngine(repository_path=str(tmp_path))
+    eng.database = SQLiteBackend(str(tmp_path / "test.db"))
+    await eng.database.initialize()
+    yield eng
+    await eng.database.close()
+
+
 @pytest.mark.regression
 class TestAsyncAwaitBugs:
-
-    @pytest.fixture
-    async def engine(self, tmp_path):
-        eng = SessionIntelligenceEngine(repository_path=str(tmp_path))
-        eng.database = SQLiteBackend(str(tmp_path / "test.db"))
-        await eng.database.initialize()
-        yield eng
 
     async def test_session_log_decision_persists_data(self, engine):
         """Verify decision data actually reaches the database (not fire-and-forget)."""

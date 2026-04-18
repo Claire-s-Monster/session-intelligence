@@ -72,7 +72,7 @@ async def sqlite_backend(sqlite_db_path: Path) -> AsyncGenerator:
     backend = SQLiteBackend(str(sqlite_db_path))
     await backend.initialize()
     yield backend
-    # Cleanup handled by temp_dir fixture
+    await backend.close()
 
 
 # ============================================================================

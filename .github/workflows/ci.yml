@@ -9,12 +9,15 @@ on:
     branches: [main]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  actions: read
+permissions: read-all
 
 jobs:
   ci:
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+      id-token: write
     uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@e4eb667206af98c5499c8adf2ba46d395220b0f9  # v2.9.1
     with:
       pixi-environment: "ci"

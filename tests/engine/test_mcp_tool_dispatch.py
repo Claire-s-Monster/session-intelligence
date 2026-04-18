@@ -33,6 +33,7 @@ async def lean_interface(tmp_path):
     )
     interface = LeanMCPInterface(engine)
     yield interface
+    await db.close()
 
 
 # ---------------------------------------------------------------------------

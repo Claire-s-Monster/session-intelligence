@@ -29,3 +29,4 @@ async def engine(tmp_path):
         database=db,
     )
     yield eng
+    await db.close()

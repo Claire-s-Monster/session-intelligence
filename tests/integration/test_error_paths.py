@@ -28,6 +28,7 @@ async def db(tmp_path):
     backend = SQLiteBackend(str(tmp_path / "test_errors.db"))
     await backend.initialize()
     yield backend
+    await backend.close()
 
 
 @pytest.fixture
@@ -42,7 +43,7 @@ async def engine(tmp_path, db):
 
 
 @pytest.fixture
-def lean(engine):
+async def lean(engine):
     """LeanMCPInterface wrapping the engine."""
     return LeanMCPInterface(engine)
 

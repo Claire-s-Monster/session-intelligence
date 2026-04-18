@@ -38,6 +38,7 @@ async def db(tmp_path):
     backend = SQLiteBackend(str(tmp_path / "test_http.db"))
     await backend.initialize()
     yield backend
+    await backend.close()
 
 
 @pytest.fixture

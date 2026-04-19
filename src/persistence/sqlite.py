@@ -1295,9 +1295,35 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
         await conn.commit()
 
-    async def search_sessions(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
-        """Full-text search across sessions."""
+    async def search_sessions(
+        self, query: str, search_type: str = "fulltext", limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Full-text search across sessions or learnings."""
         conn = self._ensure_connected()
+
+        if search_type == "learnings":
+            # Search project_learnings table using LIKE pattern matching
+            pattern = f"%{query}%"
+            cursor = await conn.execute(
+                """
+                SELECT
+                    id as session_id,
+                    category as title,
+                    learning_content as snippet,
+                    NULL as relevance,
+                    NULL as project_name,
+                    project_path,
+                    created_at as started_at,
+                    '[]' as tags
+                FROM project_learnings
+                WHERE learning_content LIKE ? OR trigger_context LIKE ? OR category LIKE ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (pattern, pattern, pattern, limit),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
         # Use FTS5 MATCH syntax for full-text search
         # JOIN with sessions table to avoid N+1 query pattern

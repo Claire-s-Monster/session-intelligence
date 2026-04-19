@@ -2016,54 +2016,96 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
         Args:
             query: Search query string
-            search_type: Type of search - "fulltext", "tag", or "file" (only fulltext supported)
+            search_type: Type of search - "fulltext", "tag", "file", or "learnings"
             limit: Maximum results to return
 
         Returns:
-            List of dicts with session_id, title, summary, tags, relevance, snippet
+            List of dicts with session_id, title, snippet, relevance, project_name,
+            project_path, started_at, tags
         """
         pool = self._ensure_connected()
 
         async with pool.acquire() as conn:
-            # PostgreSQL full-text search using to_tsvector and plainto_tsquery
-            # Search in both title and summary_markdown fields
-            # JOIN with sessions table to avoid N+1 query pattern
-            rows = await conn.fetch(
-                """
-                SELECT
-                    ss.session_id,
-                    ss.title,
-                    ss.summary_markdown as summary,
-                    ss.tags,
-                    ss.created_at,
-                    s.project_name,
-                    s.project_path,
-                    s.started_at,
-                    ts_rank(
-                        to_tsvector(
+            if search_type == "learnings":
+                # Search project_learnings table using PostgreSQL FTS
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        id as session_id,
+                        category as title,
+                        ts_headline(
+                            'english',
+                            coalesce(learning_content, ''),
+                            plainto_tsquery('english', $1),
+                            'MaxWords=50, MinWords=25, MaxFragments=1'
+                        ) as snippet,
+                        ts_rank(
+                            to_tsvector(
+                                'english',
+                                coalesce(category, '') || ' ' ||
+                                coalesce(trigger_context, '') || ' ' ||
+                                coalesce(learning_content, '')
+                            ),
+                            plainto_tsquery('english', $1)
+                        ) as relevance,
+                        NULL::text as project_name,
+                        project_path,
+                        created_at as started_at,
+                        '[]'::jsonb as tags
+                    FROM project_learnings
+                    WHERE to_tsvector(
+                            'english',
+                            coalesce(category, '') || ' ' ||
+                            coalesce(trigger_context, '') || ' ' ||
+                            coalesce(learning_content, '')
+                          )
+                          @@ plainto_tsquery('english', $1)
+                    ORDER BY relevance DESC
+                    LIMIT $2
+                    """,
+                    query,
+                    limit,
+                )
+            else:
+                # PostgreSQL full-text search using to_tsvector and plainto_tsquery
+                # Search in both title and summary_markdown fields
+                # JOIN with sessions table to avoid N+1 query pattern
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        ss.session_id,
+                        ss.title,
+                        ss.summary_markdown as summary,
+                        ss.tags,
+                        ss.created_at,
+                        s.project_name,
+                        s.project_path,
+                        s.started_at,
+                        ts_rank(
+                            to_tsvector(
+                                'english',
+                                coalesce(ss.title, '') || ' ' || coalesce(ss.summary_markdown, '')
+                            ),
+                            plainto_tsquery('english', $1)
+                        ) as relevance,
+                        ts_headline(
+                            'english',
+                            coalesce(ss.summary_markdown, ''),
+                            plainto_tsquery('english', $1),
+                            'MaxWords=50, MinWords=25, MaxFragments=1'
+                        ) as snippet
+                    FROM session_summaries ss
+                    JOIN sessions s ON ss.session_id = s.id
+                    WHERE to_tsvector(
                             'english',
                             coalesce(ss.title, '') || ' ' || coalesce(ss.summary_markdown, '')
-                        ),
-                        plainto_tsquery('english', $1)
-                    ) as relevance,
-                    ts_headline(
-                        'english',
-                        coalesce(ss.summary_markdown, ''),
-                        plainto_tsquery('english', $1),
-                        'MaxWords=50, MinWords=25, MaxFragments=1'
-                    ) as snippet
-                FROM session_summaries ss
-                JOIN sessions s ON ss.session_id = s.id
-                WHERE to_tsvector(
-                        'english',
-                        coalesce(ss.title, '') || ' ' || coalesce(ss.summary_markdown, '')
-                      )
-                      @@ plainto_tsquery('english', $1)
-                ORDER BY relevance DESC
-                LIMIT $2
-                """,
-                query,
-                limit,
-            )
+                          )
+                          @@ plainto_tsquery('english', $1)
+                    ORDER BY relevance DESC
+                    LIMIT $2
+                    """,
+                    query,
+                    limit,
+                )
 
         return [dict(row) for row in rows]

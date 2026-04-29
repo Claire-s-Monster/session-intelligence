@@ -2216,7 +2216,7 @@ class SessionIntelligenceEngine:
                         session_id=result.get("session_id", ""),
                         title=result.get("title"),
                         snippet=result.get("snippet", ""),
-                        relevance=float(result.get("relevance", 0.0)),
+                        relevance=float(result.get("relevance") or 0.0),
                         project_name=result.get("project_name"),
                         project_path=result.get("project_path"),
                         started_at=started_at,

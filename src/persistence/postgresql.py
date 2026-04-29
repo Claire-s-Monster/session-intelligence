@@ -2016,7 +2016,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
         Args:
             query: Search query string
-            search_type: Type of search - "fulltext", "tag", "file", or "learnings"
+            search_type: Type of search - "fulltext", "tag", "file", "learnings",
+                or "decisions"
             limit: Maximum results to return
 
         Returns:
@@ -2026,7 +2027,49 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         pool = self._ensure_connected()
 
         async with pool.acquire() as conn:
-            if search_type == "learnings":
+            if search_type == "decisions":
+                # Search decisions table cross-project using PostgreSQL FTS.
+                # JOIN with sessions to surface project_name/project_path.
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        d.id as session_id,
+                        d.category as title,
+                        ts_headline(
+                            'english',
+                            coalesce(d.description, ''),
+                            plainto_tsquery('english', $1),
+                            'MaxWords=50, MinWords=25, MaxFragments=1'
+                        ) as snippet,
+                        ts_rank(
+                            to_tsvector(
+                                'english',
+                                coalesce(d.category, '') || ' ' ||
+                                coalesce(d.description, '') || ' ' ||
+                                coalesce(d.rationale, '')
+                            ),
+                            plainto_tsquery('english', $1)
+                        ) as relevance,
+                        s.project_name,
+                        s.project_path,
+                        d.timestamp as started_at,
+                        '[]'::jsonb as tags
+                    FROM decisions d
+                    JOIN sessions s ON d.session_id = s.id
+                    WHERE to_tsvector(
+                            'english',
+                            coalesce(d.category, '') || ' ' ||
+                            coalesce(d.description, '') || ' ' ||
+                            coalesce(d.rationale, '')
+                          )
+                          @@ plainto_tsquery('english', $1)
+                    ORDER BY relevance DESC
+                    LIMIT $2
+                    """,
+                    query,
+                    limit,
+                )
+            elif search_type == "learnings":
                 # Search project_learnings table using PostgreSQL FTS
                 rows = await conn.fetch(
                     """

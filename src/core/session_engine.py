@@ -230,8 +230,8 @@ class SessionIntelligenceEngine:
         debug_logger.info("Creating new session")
         result = self._create_session(
             mode="auto",
-            project_name=self.claude_sessions_path.parent.name,
-            metadata={"project_path": str(self.claude_sessions_path.parent)},
+            project_name="_unbound_",
+            metadata={"project_path": str(Path.cwd().resolve())},
         )
 
         if result.status == "success":
@@ -384,6 +384,7 @@ class SessionIntelligenceEngine:
 
         # Cache session in memory
         self.session_cache[session_id] = session
+        self._current_session_id = session_id
 
         # Only create filesystem artifacts if enabled
         if self.use_filesystem:
@@ -969,6 +970,7 @@ class SessionIntelligenceEngine:
         context: dict[str, Any] | str | None = None,
         impact_analysis: bool = True,
         link_artifacts: list[str] | None = None,
+        project_name: str | None = None,
     ) -> DecisionResult:
         """
         Intelligent decision logging with context and impact analysis.
@@ -982,6 +984,32 @@ class SessionIntelligenceEngine:
                 context = {"description": context}
 
             decision_id = f"decision-{uuid.uuid4().hex[:8]}"
+
+            # If caller passed project_name and no explicit session_id,
+            # ensure a session exists for that project; create if needed.
+            if project_name and not session_id:
+                matching = next(
+                    (sid for sid, s in self.session_cache.items()
+                     if getattr(s, "project_name", None) == project_name),
+                    None,
+                )
+                if matching:
+                    session_id = matching
+                    self._current_session_id = matching
+                else:
+                    # Create a new session bound to this project
+                    create_result = self._create_session(
+                        mode="local", project_name=project_name, metadata={}
+                    )
+                    if create_result.status == "success":
+                        session_id = create_result.session_id
+                        if self.database:
+                            try:
+                                await self.database.save_session(
+                                    create_result.session_data.model_dump(mode="python")
+                                )
+                            except Exception as e:
+                                debug_logger.error(f"Error persisting session: {e}")
 
             # Get current session
             if not session_id and self.session_cache:

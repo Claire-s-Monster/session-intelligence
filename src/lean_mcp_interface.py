@@ -180,7 +180,11 @@ class LeanMCPInterface:
                     },
                     "project_name": {
                         "type": "string",
-                        "description": "Optional project name to bind decision to. Creates/selects a session with this project_name if needed.",
+                        "description": (
+                            "Optional project name to bind decision to. "
+                            "Creates/selects a session with this project_name "
+                            "if needed."
+                        ),
                     },
                 },
                 "required": ["decision"],

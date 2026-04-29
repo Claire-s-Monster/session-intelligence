@@ -1,3 +1,4 @@
+import os
 import uuid
 
 import pytest
@@ -6,12 +7,19 @@ import pytest_asyncio
 from core.session_engine import SessionIntelligenceEngine as SessionEngine
 from persistence.postgresql import PostgreSQLBackend
 
-DSN = "postgresql://localhost/session_intelligence"
+POSTGRES_DSN = os.environ.get("POSTGRES_DSN", "")
+
+pytestmark = [
+    pytest.mark.postgresql,
+    pytest.mark.skipif(
+        not POSTGRES_DSN, reason="POSTGRES_DSN not set; PostgreSQL not available"
+    ),
+]
 
 
 @pytest_asyncio.fixture
 async def db():
-    database = PostgreSQLBackend(DSN)
+    database = PostgreSQLBackend(POSTGRES_DSN)
     await database.initialize()
     yield database
     await database.close()

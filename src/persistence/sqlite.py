@@ -1301,6 +1301,32 @@ class SQLiteBackend(BaseDatabaseBackend):
         """Full-text search across sessions or learnings."""
         conn = self._ensure_connected()
 
+        if search_type == "decisions":
+            # Search decisions table cross-project using LIKE pattern matching.
+            # JOIN with sessions to surface project_name/project_path.
+            pattern = f"%{query}%"
+            cursor = await conn.execute(
+                """
+                SELECT
+                    d.id as session_id,
+                    d.category as title,
+                    d.description as snippet,
+                    NULL as relevance,
+                    s.project_name,
+                    s.project_path,
+                    d.timestamp as started_at,
+                    '[]' as tags
+                FROM decisions d
+                JOIN sessions s ON d.session_id = s.id
+                WHERE d.description LIKE ? OR d.rationale LIKE ? OR d.category LIKE ?
+                ORDER BY d.timestamp DESC
+                LIMIT ?
+                """,
+                (pattern, pattern, pattern, limit),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
         if search_type == "learnings":
             # Search project_learnings table using LIKE pattern matching
             pattern = f"%{query}%"

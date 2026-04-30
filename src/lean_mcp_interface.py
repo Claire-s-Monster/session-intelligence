@@ -488,9 +488,12 @@ class LeanMCPInterface:
                     },
                     "search_type": {
                         "type": "string",
-                        "enum": ["fulltext", "tag", "file"],
+                        "enum": ["fulltext", "tag", "file", "learnings", "decisions"],
                         "default": "fulltext",
-                        "description": "Type of search to perform",
+                        "description": (
+                            "Type of search to perform. 'decisions' and "
+                            "'learnings' search across all projects (cross-project)."
+                        ),
                     },
                     "limit": {
                         "type": "integer",

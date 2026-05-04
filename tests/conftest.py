@@ -11,8 +11,8 @@ This module provides common fixtures used across all test categories:
 import os
 import sys
 import tempfile
+from collections.abc import AsyncGenerator, Generator
 from pathlib import Path
-from typing import AsyncGenerator, Generator
 
 import pytest
 
@@ -80,9 +80,13 @@ async def sqlite_backend(sqlite_db_path: Path) -> AsyncGenerator:
 # ============================================================================
 
 @pytest.fixture
-def session_engine(temp_dir: Path):
+def session_engine(temp_dir: Path, monkeypatch):
     """Create a session engine for testing."""
     from core.session_engine import SessionIntelligenceEngine
+
+    # Disable agent-name validation so tests using synthetic names like
+    # "test-agent" do not require matching files under ~/.claude/agents/.
+    monkeypatch.setenv("SESSION_INTELLIGENCE_AGENT_VALIDATION", "off")
 
     engine = SessionIntelligenceEngine(repository_path=str(temp_dir))
     return engine

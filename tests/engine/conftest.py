@@ -12,13 +12,18 @@ from persistence.sqlite import SQLiteBackend
 
 
 @pytest.fixture
-async def engine(tmp_path):
+async def engine(tmp_path, monkeypatch):
     """
     Yield a fully-initialised SessionIntelligenceEngine backed by SQLite.
 
     A fresh database file is created under pytest's tmp_path for each test,
     so tests are fully isolated from one another.
+
+    Agent-name validation is disabled so tests using synthetic names like
+    "test-agent" do not require matching files under ~/.claude/agents/.
     """
+    monkeypatch.setenv("SESSION_INTELLIGENCE_AGENT_VALIDATION", "off")
+
     db_path = str(tmp_path / "test_engine.db")
     db = SQLiteBackend(db_path)
     await db.initialize()

@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from core.agent_validator import AgentValidator
 from models.session_models import (
     Agent,
     AgentDecision,
@@ -167,6 +168,8 @@ class SessionIntelligenceEngine:
             debug_logger.info(
                 "Filesystem persistence disabled - using memory only"
             )
+
+        self._agent_validator = AgentValidator()  # env-driven config, defaults to strict
 
     def _get_or_create_current_session_id(self) -> str | None:
         """Get current session ID from cache/file, or create new session if needed."""
@@ -2601,6 +2604,21 @@ class SessionIntelligenceEngine:
             AgentRegistrationResult with status 'created', 'updated', or
                 'error'
         """
+        # Raises AgentNotFoundError in strict mode; None in lenient/off
+        validated = self._agent_validator.validate(agent_name)
+        if validated is not None:
+            # Frontmatter is canonical; caller args are advisory hints
+            if agent_type and agent_type != validated.agent_type:
+                debug_logger.warning(
+                    f"agent_register: caller passed agent_type={agent_type!r} but "
+                    f"{agent_name!r} lives in {validated.agent_type!r} dir; using filesystem value"
+                )
+            agent_type = validated.agent_type
+            if not description:
+                description = validated.description
+            if not display_name:
+                display_name = validated.raw_frontmatter.get("display_name") or agent_name
+
         if not self.database:
             debug_logger.warning("agent_register called without database")
             return AgentRegistrationResult(
@@ -2816,6 +2834,8 @@ class SessionIntelligenceEngine:
         Returns:
             AgentDecisionResult with decision_id and status
         """
+        self._agent_validator.validate(agent_name)  # raises AgentNotFoundError in strict mode
+
         if not self.database:
             debug_logger.warning(
                 "agent_log_decision called without database"
@@ -3083,6 +3103,8 @@ class SessionIntelligenceEngine:
         Returns:
             AgentLearningResult with learning_id and status
         """
+        self._agent_validator.validate(agent_name)  # raises AgentNotFoundError in strict mode
+
         if not self.database:
             debug_logger.warning(
                 "agent_log_learning called without database"
@@ -3379,6 +3401,8 @@ class SessionIntelligenceEngine:
         Returns:
             AgentNotebookResult with notebook_id and status
         """
+        self._agent_validator.validate(agent_name)  # raises AgentNotFoundError in strict mode
+
         if not self.database:
             debug_logger.warning(
                 "agent_create_notebook called without database"

@@ -143,6 +143,11 @@ class SessionIntelligenceEngine:
         self.use_filesystem = use_filesystem
         self.database = database  # Optional database for persistence
         self._current_session_id: str | None = None
+        # True only when THIS process explicitly created or adopted a session.
+        # Disk-loaded (stale) session IDs leave this False so the pre-resolver
+        # guard in session_log_decision (and peers) does not silently bind to
+        # a 5-day-old session from a previous server run.
+        self._current_session_set_in_process: bool = False
 
         # Use provided repository path or auto-detect project directory
         if repository_path:
@@ -490,6 +495,7 @@ class SessionIntelligenceEngine:
         # Cache session in memory
         self.session_cache[session_id] = session
         self._current_session_id = session_id
+        self._current_session_set_in_process = True  # in-process creation
 
         # Only create filesystem artifacts if enabled
         if self.use_filesystem:
@@ -1095,9 +1101,12 @@ class SessionIntelligenceEngine:
 
             decision_id = f"decision-{uuid.uuid4().hex[:8]}"
 
-            # If no identifier given but a current session exists in cache,
-            # thread it as session_id so the resolver validates rather than
-            # falling through to the unbound path.
+            # If no identifier given but a current session was created by THIS
+            # process, thread it as session_id so the resolver validates rather
+            # than falling through to the unbound path.  The guard is gated on
+            # _current_session_set_in_process so that a stale session ID loaded
+            # from disk at startup does NOT silently hijack the call — that
+            # would defeat the SessionContextRequiredError guarantee.
             effective_session_id = session_id
             if (
                 effective_session_id is None
@@ -1106,6 +1115,7 @@ class SessionIntelligenceEngine:
                 and not allow_unbound
                 and self._current_session_id
                 and self._current_session_id in self.session_cache
+                and self._current_session_set_in_process
             ):
                 effective_session_id = self._current_session_id
 

@@ -70,10 +70,12 @@ async def test_explicit_create_recall_finds_decision(db):
 
 
 @pytest.mark.asyncio
-async def test_log_without_create_uses_unbound_not_claude(db):
+async def test_log_without_create_with_allow_unbound_uses_sentinel(db):
     engine = _make_engine(db)
     try:
-        result = await engine.session_log_decision(decision="no-create-probe")
+        result = await engine.session_log_decision(
+            decision="no-create-probe", allow_unbound=True
+        )
         assert result.decision_id != "error"
 
         sid = engine._current_session_id
@@ -89,6 +91,15 @@ async def test_log_without_create_uses_unbound_not_claude(db):
         assert row["project_name"] != ".claude"
     finally:
         await _cleanup(db, ["_unbound_"])
+
+
+@pytest.mark.asyncio
+async def test_log_without_create_raises_without_allow_unbound(db):
+    from core.session_engine import SessionContextRequiredError
+
+    engine = _make_engine(db)
+    with pytest.raises(SessionContextRequiredError):
+        await engine.session_log_decision(decision="no-identifier-probe")
 
 
 @pytest.mark.asyncio

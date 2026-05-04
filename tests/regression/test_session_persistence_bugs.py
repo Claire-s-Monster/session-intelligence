@@ -43,6 +43,7 @@ class TestSessionPersistenceBugs:
         await engine.session_log_decision(
             decision="Decision without session",
             context={"rationale": "Testing auto-create", "category": "test"},
+            allow_unbound=True,
         )
 
         assert engine._current_session_id is not None

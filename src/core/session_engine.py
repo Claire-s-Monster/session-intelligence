@@ -8,6 +8,7 @@ capabilities.
 
 import json
 import logging
+import secrets
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -102,6 +103,10 @@ def safe_parse_datetime(value: Any) -> datetime | None:
     return None
 
 
+class SessionContextRequiredError(ValueError):
+    """Raised when a session_* write tool is called without any session identifier."""
+
+
 class SessionIntelligenceEngine:
     """
     Core session intelligence engine providing unified session management,
@@ -171,6 +176,97 @@ class SessionIntelligenceEngine:
 
         self._agent_validator = AgentValidator()  # env-driven config, defaults to strict
 
+    async def _resolve_session_context(
+        self,
+        session_id: str | None = None,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        *,
+        allow_unbound: bool = False,
+        create_if_missing: bool = True,
+    ) -> str:
+        """Resolve a session ID from a flexible identifier set.
+
+        Priority: session_id (exact) > session_name (scoped to project) >
+        project_name (most-recent active session, or new one if create_if_missing).
+
+        Raises SessionContextRequiredError if all three are None and
+        allow_unbound is False.
+
+        The legacy `_unbound_` fallback is reachable only via allow_unbound=True
+        or via _get_or_create_current_session_id (kept for back-compat in code
+        paths that don't go through the resolver).
+        """
+        # 1. session_id: trust caller, validate
+        if session_id is not None:
+            if not self.database:
+                return session_id  # no DB to validate against; trust it
+            existing = await self.database.get_session(session_id)
+            if existing is None:
+                raise ValueError(
+                    f"session_id={session_id!r} not found in database"
+                )
+            # Cache for back-compat
+            self._current_session_id = session_id
+            return session_id
+
+        # 2. session_name (optionally scoped to project_name)
+        if session_name is not None:
+            if not self.database:
+                raise ValueError(
+                    "session_name resolution requires a database backend"
+                )
+            # Caller-controlled label; query by name (and optionally project)
+            match = await self.database.find_session_by_name(
+                session_name, project_name=project_name
+            )
+            if match is not None:
+                self._current_session_id = match["id"]
+                return match["id"]
+            if not create_if_missing:
+                raise ValueError(
+                    f"session_name={session_name!r} not found "
+                    f"(project_name={project_name!r})"
+                )
+            # Create with the given name + project
+            result = self._create_session(
+                mode="explicit",
+                project_name=project_name or "_unbound_",
+                metadata={"session_name": session_name},
+                session_name=session_name,
+            )
+            return result.session_id
+
+        # 3. project_name: find most-recent active OR create new
+        if project_name is not None:
+            if self.database:
+                match = await self.database.find_recent_session_by_project(
+                    project_name, status="active"
+                )
+                if match is not None:
+                    self._current_session_id = match["id"]
+                    return match["id"]
+            if not create_if_missing:
+                raise ValueError(
+                    f"no active session for project_name={project_name!r}"
+                )
+            result = self._create_session(
+                mode="explicit",
+                project_name=project_name,
+                metadata={},
+            )
+            return result.session_id
+
+        # All three None
+        if allow_unbound:
+            return self._get_or_create_current_session_id()  # legacy path
+
+        raise SessionContextRequiredError(
+            "session_log_*, session_create_notebook require at least one of: "
+            "session_id, session_name, or project_name. "
+            "(Pass allow_unbound=True to opt into the legacy '_unbound_' fallback.)"
+        )
+
     def _get_or_create_current_session_id(self) -> str | None:
         """Get current session ID from cache/file, or create new session if needed."""
         # Check in-memory cache first
@@ -235,6 +331,7 @@ class SessionIntelligenceEngine:
             mode="auto",
             project_name="_unbound_",
             metadata={"project_path": str(Path.cwd().resolve())},
+            session_name=None,
         )
 
         if result.status == "success":
@@ -330,7 +427,7 @@ class SessionIntelligenceEngine:
 
         if operation == "create":
             result = self._create_session(
-                mode, project_name, metadata or {}
+                mode, project_name, metadata or {}, session_name=None
             )
             # Persist session to DB so FK references work
             if result.status == "success" and self.database:
@@ -358,10 +455,14 @@ class SessionIntelligenceEngine:
             )
 
     def _create_session(
-        self, mode: str, project_name: str, metadata: dict[str, Any]
+        self,
+        mode: str,
+        project_name: str,
+        metadata: dict[str, Any],
+        session_name: str | None = None,
     ) -> SessionResult:
         """Create a new session with comprehensive setup."""
-        session_id = f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        session_id = f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
 
         # Create session metadata
         session_metadata = SessionMetadata(
@@ -380,6 +481,7 @@ class SessionIntelligenceEngine:
             mode=mode,
             project_name=project_name or "unknown",
             project_path=metadata.get("project_path", str(Path.cwd())),
+            session_name=session_name,
             metadata=session_metadata,
             health_status=HealthStatus(),
             performance_metrics=PerformanceMetrics(),
@@ -974,12 +1076,17 @@ class SessionIntelligenceEngine:
         impact_analysis: bool = True,
         link_artifacts: list[str] | None = None,
         project_name: str | None = None,
+        session_name: str | None = None,
+        allow_unbound: bool = False,
     ) -> DecisionResult:
         """
         Intelligent decision logging with context and impact analysis.
 
         Consolidates: claudecode_log_decision, claudecode_log_workflow_step
         Enhanced: Adds decision impact analysis and relationship mapping
+
+        Pass at least one of session_id, session_name, or project_name.
+        Use allow_unbound=True to opt into the legacy unbound fallback (deprecated).
         """
         try:
             # Coerce context to dict if caller passed a string
@@ -988,35 +1095,38 @@ class SessionIntelligenceEngine:
 
             decision_id = f"decision-{uuid.uuid4().hex[:8]}"
 
-            # If caller passed project_name and no explicit session_id,
-            # ensure a session exists for that project; create if needed.
-            if project_name and not session_id:
-                matching = next(
-                    (sid for sid, s in self.session_cache.items()
-                     if getattr(s, "project_name", None) == project_name),
-                    None,
-                )
-                if matching:
-                    session_id = matching
-                    self._current_session_id = matching
-                else:
-                    # Create a new session bound to this project
-                    create_result = self._create_session(
-                        mode="local", project_name=project_name, metadata={}
-                    )
-                    if create_result.status == "success":
-                        session_id = create_result.session_id
-                        if self.database:
-                            try:
-                                await self.database.save_session(
-                                    create_result.session_data.model_dump(mode="python")
-                                )
-                            except Exception as e:
-                                debug_logger.error(f"Error persisting session: {e}")
+            # If no identifier given but a current session exists in cache,
+            # thread it as session_id so the resolver validates rather than
+            # falling through to the unbound path.
+            effective_session_id = session_id
+            if (
+                effective_session_id is None
+                and session_name is None
+                and project_name is None
+                and not allow_unbound
+                and self._current_session_id
+                and self._current_session_id in self.session_cache
+            ):
+                effective_session_id = self._current_session_id
 
-            # Get current session
-            if not session_id and self.session_cache:
-                session_id = list(self.session_cache.keys())[-1]
+            # Resolve session via the flexible resolver
+            resolved_id = await self._resolve_session_context(
+                session_id=effective_session_id,
+                session_name=session_name,
+                project_name=project_name,
+                allow_unbound=allow_unbound,
+            )
+            # Persist newly-created session to DB if needed
+            if resolved_id and resolved_id not in (session_id or ""):
+                cached = self.session_cache.get(resolved_id)
+                if cached and self.database:
+                    try:
+                        await self.database.save_session(
+                            cached.model_dump(mode="python")
+                        )
+                    except Exception:
+                        pass  # Best-effort
+            session_id = resolved_id
 
             # Update in-memory cache if session exists there
             if session_id and session_id in self.session_cache:
@@ -1040,32 +1150,10 @@ class SessionIntelligenceEngine:
                 session.decisions.append(decision_obj)
 
             # Always persist to database (not gated by session_cache)
-            if self.database:
-                effective_session_id = (
-                    session_id
-                    or self._current_session_id
-                )
-                # Auto-create and persist session if needed
-                if not effective_session_id:
-                    effective_session_id = (
-                        self._get_or_create_current_session_id()
-                    )
-                    if effective_session_id and self.database:
-                        session = self.session_cache.get(
-                            effective_session_id
-                        )
-                        if session:
-                            try:
-                                await self.database.save_session(
-                                    session.model_dump(
-                                        mode="python"
-                                    )
-                                )
-                            except Exception:
-                                pass  # Best-effort
+            if self.database and session_id:
                 decision_data = {
                     "id": decision_id,
-                    "session_id": effective_session_id,
+                    "session_id": session_id,
                     "timestamp": datetime.now(UTC),
                     "description": decision,
                     "context": json.dumps(context or {}),
@@ -1090,6 +1178,8 @@ class SessionIntelligenceEngine:
                 linked_decisions=[],
                 predicted_outcomes=["Continue with planned execution"],
             )
+        except SessionContextRequiredError:
+            raise
         except Exception as e:
             return DecisionResult(
                 decision_id="error",
@@ -1328,6 +1418,9 @@ class SessionIntelligenceEngine:
         tags: list[str] | None = None,
         save_to_file: bool = True,
         save_to_database: bool = True,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        allow_unbound: bool = False,
     ) -> NotebookResult:
         """
         Generate a comprehensive markdown notebook/summary for a session.
@@ -1336,7 +1429,7 @@ class SessionIntelligenceEngine:
         including decisions made, agents executed, file changes, and metrics.
 
         Args:
-            session_id: Session to summarize (defaults to current session)
+            session_id: Session to summarize
             title: Custom title for the notebook
             include_decisions: Include decision log section
             include_agents: Include agent execution summary
@@ -1344,11 +1437,25 @@ class SessionIntelligenceEngine:
             tags: Tags for cross-session search
             save_to_file: Save markdown to file in session directory
             save_to_database: Persist summary to database for search
+            session_name: Named session to summarize
+            project_name: Project whose most-recent active session to use
+            allow_unbound: If True, fall back to legacy unbound session
+                (deprecated)
+
+        Pass at least one of session_id, session_name, or project_name, or
+        set allow_unbound=True to opt into the legacy fallback.
 
         Returns:
             NotebookResult with generated notebook and file path
         """
         try:
+            if session_id is None:
+                session_id = await self._resolve_session_context(
+                    session_id=None,
+                    session_name=session_name,
+                    project_name=project_name,
+                    allow_unbound=allow_unbound,
+                )
             return await self._create_notebook_impl(
                 session_id,
                 title,
@@ -1359,6 +1466,8 @@ class SessionIntelligenceEngine:
                 save_to_file,
                 save_to_database,
             )
+        except SessionContextRequiredError:
+            raise
         except Exception as e:
             debug_logger.error(f"Error creating notebook: {e}")
             return NotebookResult(
@@ -1377,12 +1486,20 @@ class SessionIntelligenceEngine:
         tags: list[str] | None = None,
         save_to_file: bool = True,
         save_to_database: bool = True,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        allow_unbound: bool = False,
     ) -> NotebookResult:
         """Async version: Generate notebook with full database queries."""
         try:
-            # Get session
-            if not session_id:
-                session_id = self._get_or_create_current_session_id()
+            # Resolve session via the flexible resolver
+            if session_id is None:
+                session_id = await self._resolve_session_context(
+                    session_id=None,
+                    session_name=session_name,
+                    project_name=project_name,
+                    allow_unbound=allow_unbound,
+                )
             if not session_id or session_id not in self.session_cache:
                 return NotebookResult(
                     session_id=session_id or "unknown",
@@ -1582,6 +1699,8 @@ class SessionIntelligenceEngine:
                 search_indexed=True,
                 message=f"Notebook created with {len(sections)} sections",
             )
+        except SessionContextRequiredError:
+            raise
         except Exception as e:
             debug_logger.error(f"Error creating async notebook: {e}")
             return NotebookResult(
@@ -2356,6 +2475,10 @@ class SessionIntelligenceEngine:
         learning_content: str,
         trigger_context: str | None = None,
         project_path: str | None = None,
+        session_id: str | None = None,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        allow_unbound: bool = False,
     ) -> LearningResult:
         """
         Log a project-specific learning (pattern, fix, preference).
@@ -2365,7 +2488,17 @@ class SessionIntelligenceEngine:
                 workflow
             learning_content: The actual knowledge/solution
             trigger_context: When to apply this learning
-            project_path: Project scope (uses current if not specified)
+            project_path: Project scope for the learning row (uses current if
+                not specified). Preserved for back-compat; does not control
+                session binding.
+            session_id: Explicit session to bind learning to.
+            session_name: Named session to bind learning to.
+            project_name: Project whose most-recent active session to use.
+            allow_unbound: If True, fall back to legacy unbound session
+                (deprecated).
+
+        Pass at least one of session_id, session_name, or project_name, or
+        set allow_unbound=True to opt into the legacy fallback.
 
         Returns:
             LearningResult with saved learning
@@ -2377,8 +2510,43 @@ class SessionIntelligenceEngine:
             project_path or str(self.claude_sessions_path.parent)
         )
 
-        # Get current session if available
-        source_session = self._current_session_id
+        # Resolve session context
+        # When the caller provides an explicit session identifier, use the
+        # resolver to locate/create the session.  When allow_unbound=True with
+        # no explicit identifier, skip the resolver and use _current_session_id
+        # directly as the FK candidate — the FK validation block below will
+        # check whether it actually exists in the DB and null it out if not.
+        resolved_session_id: str | None = None
+        if session_id or session_name or project_name:
+            resolved_session_id = await self._resolve_session_context(
+                session_id=session_id,
+                session_name=session_name,
+                project_name=project_name,
+                allow_unbound=allow_unbound,
+            )
+            # Persist newly-created session to DB if needed
+            if resolved_session_id:
+                cached = self.session_cache.get(resolved_session_id)
+                if cached and self.database:
+                    try:
+                        await self.database.save_session(
+                            cached.model_dump(mode="python")
+                        )
+                    except Exception:
+                        pass  # Best-effort
+        elif allow_unbound:
+            # Legacy path: no identifier given; use whatever current session
+            # exists (may be None). FK validation below handles the validity
+            # check without raising.
+            resolved_session_id = self._current_session_id
+        else:
+            raise SessionContextRequiredError(
+                "session_log_learning requires at least one of: "
+                "session_id, session_name, project_name. "
+                "(Pass allow_unbound=True to opt into the legacy '_unbound_' fallback.)"
+            )
+
+        source_session = resolved_session_id
 
         debug_logger.info(
             f"Logging learning: {category} for {effective_project}"

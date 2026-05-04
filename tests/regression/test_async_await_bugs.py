@@ -47,6 +47,7 @@ class TestAsyncAwaitBugs:
             category="pattern",
             learning_content="Test learning",
             trigger_context="Test trigger",
+            allow_unbound=True,
         )
 
         project_path = str(engine.claude_sessions_path.parent)

@@ -41,6 +41,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         ended_at TEXT,
         project_path TEXT NOT NULL,
         project_name TEXT,
+        session_name TEXT,
         mode TEXT DEFAULT 'local',
         status TEXT DEFAULT 'active',
         metadata TEXT,
@@ -51,6 +52,7 @@ class SQLiteBackend(BaseDatabaseBackend):
     CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_path);
     CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
     CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
+    CREATE INDEX IF NOT EXISTS idx_sessions_session_name ON sessions(session_name);
 
     -- Decisions table with category index for filtering
     CREATE TABLE IF NOT EXISTS decisions (
@@ -346,6 +348,26 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
         await self._connection.commit()
 
+        # Idempotent migration for existing databases: add session_name column
+        try:
+            await self._connection.execute(
+                "ALTER TABLE sessions ADD COLUMN session_name TEXT"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+        # Add index for session_name (safe if already exists via SCHEMA)
+        try:
+            await self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_session_name "
+                "ON sessions(session_name)"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            logger.debug(f"session_name index creation: {e}")
+
         self._is_connected = True
         logger.info(f"SQLite database initialized: {self.db_path}")
 
@@ -385,9 +407,9 @@ class SQLiteBackend(BaseDatabaseBackend):
         await conn.execute(
             """
             INSERT OR REPLACE INTO sessions
-            (id, started_at, ended_at, project_path, project_name, mode, status,
-             metadata, performance_metrics, health_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, started_at, ended_at, project_path, project_name, session_name,
+             mode, status, metadata, performance_metrics, health_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 session_data["id"],
@@ -395,6 +417,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 session_data.get("completed") or session_data.get("ended_at"),
                 session_data.get("project_path", ""),
                 session_data.get("project_name"),
+                session_data.get("session_name"),
                 session_data.get("mode", "local"),
                 session_data.get("status", "active"),
                 self._serialize_json(session_data.get("metadata", {})),
@@ -478,6 +501,68 @@ class SQLiteBackend(BaseDatabaseBackend):
         cursor = await conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         await conn.commit()
         return cursor.rowcount > 0
+
+    async def find_session_by_name(
+        self, session_name: str, project_name: str | None = None
+    ) -> dict[str, Any] | None:
+        """Find a session by its human-readable name, optionally scoped to a project.
+
+        Returns the most-recent match (ORDER BY started_at DESC LIMIT 1), or None
+        if no session with that name exists. When project_name is provided, only
+        sessions belonging to that project are considered.
+        """
+        conn = self._ensure_connected()
+
+        if project_name is not None:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE session_name = ? AND project_name = ?
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (session_name, project_name),
+            )
+        else:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE session_name = ?
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (session_name,),
+            )
+
+        row = await cursor.fetchone()
+        if row:
+            return self._normalize_session_data(dict(row))
+        return None
+
+    async def find_recent_session_by_project(
+        self, project_name: str, status: str = "active"
+    ) -> dict[str, Any] | None:
+        """Find the most-recent session for a project name with the given status.
+
+        Returns the most-recent match (ORDER BY started_at DESC LIMIT 1), or None
+        if no matching session exists.
+        """
+        conn = self._ensure_connected()
+
+        cursor = await conn.execute(
+            """
+            SELECT * FROM sessions
+            WHERE project_name = ? AND status = ?
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (project_name, status),
+        )
+
+        row = await cursor.fetchone()
+        if row:
+            return self._normalize_session_data(dict(row))
+        return None
 
     # Decision operations
 

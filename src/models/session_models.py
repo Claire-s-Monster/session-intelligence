@@ -454,6 +454,7 @@ class Session(BaseModel):
     mode: str = "local"  # local, remote, hybrid
     project_name: str
     project_path: str
+    session_name: str | None = None
     status: SessionStatus = SessionStatus.ACTIVE
     metadata: SessionMetadata
     agents_executed: list[AgentExecution] = Field(default_factory=list)

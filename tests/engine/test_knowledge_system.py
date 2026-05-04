@@ -73,6 +73,7 @@ class TestSessionLogLearning:
         result = await engine.session_log_learning(
             category="pattern",
             learning_content="Use fixtures for test data",
+            allow_unbound=True,
         )
 
         assert isinstance(result, LearningResult)
@@ -87,6 +88,7 @@ class TestSessionLogLearning:
         result = await engine.session_log_learning(
             category="error_fix",
             learning_content="Fix import errors with sys.path",
+            allow_unbound=True,
         )
 
         assert result.status == "pending_save"
@@ -99,6 +101,7 @@ class TestSessionLogLearning:
         result = await engine_with_db.session_log_learning(
             category="workflow",
             learning_content="Run lint before commit",
+            allow_unbound=True,
         )
 
         assert result.status == "saved"
@@ -115,6 +118,7 @@ class TestSessionLogLearning:
             category="pattern",
             learning_content="Validate FK references before insert",
             trigger_context="Database FK violation encountered",
+            allow_unbound=True,
         )
 
         assert result.learning.learning_content == "Validate FK references before insert"
@@ -126,6 +130,7 @@ class TestSessionLogLearning:
         result = await engine.session_log_learning(
             category="preference",
             learning_content="Use ruff for linting",
+            allow_unbound=True,
         )
 
         assert result.learning.project_path is not None
@@ -138,6 +143,7 @@ class TestSessionLogLearning:
             category="workflow",
             learning_content="Use TDD workflow",
             project_path="/custom/project",
+            allow_unbound=True,
         )
 
         assert result.learning.project_path == "/custom/project"
@@ -149,6 +155,7 @@ class TestSessionLogLearning:
             result = await engine.session_log_learning(
                 category=cat,
                 learning_content=f"Test learning for {cat}",
+                allow_unbound=True,
             )
             assert result.learning.category == LearningCategory(cat)
 
@@ -169,6 +176,7 @@ class TestSessionLogLearning:
             result = await engine.session_log_learning(
                 category="pattern",
                 learning_content="Repeated learning",
+                allow_unbound=True,
             )
             ids.add(result.id)
 
@@ -184,6 +192,7 @@ class TestSessionLogLearning:
         result = await engine_with_db.session_log_learning(
             category="pattern",
             learning_content="No session learning",
+            allow_unbound=True,
         )
 
         assert result.status == "saved"
@@ -205,6 +214,7 @@ class TestSessionLogLearning:
         result = await engine_with_db.session_log_learning(
             category="workflow",
             learning_content="Session-linked learning",
+            allow_unbound=True,
         )
 
         assert result.status == "saved"
@@ -227,6 +237,7 @@ class TestSessionLogLearning:
         result = await engine_with_db.session_log_learning(
             category="pattern",
             learning_content="Orphan session learning",
+            allow_unbound=True,
         )
 
         assert result.status == "saved"
@@ -244,6 +255,7 @@ class TestSessionLogLearning:
         await engine_with_db.session_log_learning(
             category="error_fix",
             learning_content="Test category extraction",
+            allow_unbound=True,
         )
 
         await asyncio.sleep(0)
@@ -520,6 +532,7 @@ class TestOriginalBugDetection:
         result = await engine_with_db.session_log_learning(
             category="pattern",
             learning_content="Test content",
+            allow_unbound=True,
         )
 
         assert result.status != "pending_save", (

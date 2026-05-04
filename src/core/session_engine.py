@@ -8,6 +8,7 @@ capabilities.
 
 import json
 import logging
+import secrets
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -461,7 +462,7 @@ class SessionIntelligenceEngine:
         session_name: str | None = None,
     ) -> SessionResult:
         """Create a new session with comprehensive setup."""
-        session_id = f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        session_id = f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
 
         # Create session metadata
         session_metadata = SessionMetadata(

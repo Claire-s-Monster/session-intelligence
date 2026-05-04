@@ -40,14 +40,14 @@ async def _create_session(engine, project_name="test-project"):
 
 async def test_log_decision_returns_decision_result(engine):
     """session_log_decision returns a DecisionResult instance."""
-    result = await engine.session_log_decision(decision="Use SQLite for testing")
+    result = await engine.session_log_decision(decision="Use SQLite for testing", allow_unbound=True)
 
     assert isinstance(result, DecisionResult)
 
 
 async def test_log_decision_returns_decision_id(engine):
     """Returned DecisionResult has a non-empty decision_id."""
-    result = await engine.session_log_decision(decision="Choose pytest over unittest")
+    result = await engine.session_log_decision(decision="Choose pytest over unittest", allow_unbound=True)
 
     assert result.decision_id
     assert result.decision_id != "error"
@@ -73,7 +73,8 @@ async def test_log_decision_without_session_auto_creates(engine):
     """session_log_decision succeeds even without a pre-existing session."""
     # Engine starts with no session — should auto-create one
     result = await engine.session_log_decision(
-        decision="Auto-create session on first decision"
+        decision="Auto-create session on first decision",
+        allow_unbound=True,
     )
 
     assert isinstance(result, DecisionResult)
@@ -176,6 +177,7 @@ async def test_log_learning_returns_learning_result(engine):
     result = await engine.session_log_learning(
         category="pattern",
         learning_content="Use fixtures for database isolation",
+        allow_unbound=True,
     )
 
     assert isinstance(result, LearningResult)
@@ -186,6 +188,7 @@ async def test_log_learning_returns_learning_id(engine):
     result = await engine.session_log_learning(
         category="error_fix",
         learning_content="Always await async DB calls",
+        allow_unbound=True,
     )
 
     assert result.id
@@ -202,6 +205,7 @@ async def test_log_learning_with_active_session(engine):
         category="workflow",
         learning_content="Set _current_session_id before logging learnings",
         trigger_context="When engine tests create sessions",
+        allow_unbound=True,
     )
 
     assert result.id.startswith("learn_")
@@ -215,6 +219,7 @@ async def test_log_learning_status_saved(engine):
     result = await engine.session_log_learning(
         category="preference",
         learning_content="Prefer compact assertions in tests",
+        allow_unbound=True,
     )
 
     assert result.status == "saved"
@@ -226,10 +231,12 @@ async def test_query_learnings_by_category(engine):
         category="error_fix",
         learning_content="Fix: use UTC timestamps in SQLite",
         trigger_context="timestamp mismatch errors",
+        allow_unbound=True,
     )
     await engine.session_log_learning(
         category="pattern",
         learning_content="Pattern: always isolate DB in tests",
+        allow_unbound=True,
     )
 
     project_path = str(engine.claude_sessions_path.parent)
@@ -251,6 +258,7 @@ async def test_update_learning_usage(engine):
     learn_result = await engine.session_log_learning(
         category="workflow",
         learning_content="Usage tracking test learning",
+        allow_unbound=True,
     )
     learning_id = learn_result.id
 

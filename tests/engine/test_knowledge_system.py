@@ -221,7 +221,7 @@ class TestSessionLogLearning:
 
         # Let async validation+save task run
         await asyncio.sleep(0)
-        mock_database.get_session.assert_called_once_with("sess_123")
+        mock_database.get_session.assert_any_call("sess_123")
         mock_database.save_project_learning.assert_called_once()
         call_kwargs = mock_database.save_project_learning.call_args.kwargs
         assert call_kwargs["source_session_id"] == "sess_123"

@@ -161,7 +161,16 @@ class LeanMCPInterface:
 
         registry["session_log_decision"] = {
             "implementation": self._wrap_async_tool(self.session_engine.session_log_decision),
-            "description": "Log decisions with context and impact analysis",
+            "description": (
+                "Log a decision made on this project. "
+                "**SYSTEM**: session — project-scoped work history bound to project_name. "
+                "**TIER**: decision — atomic choice (what was decided + reasoning). "
+                "**ANTI-DUPE**: call session_recall(project_name=X) or "
+                "session_search(query=Y) FIRST to find existing decisions covering the "
+                "same ground; extend or supersede rather than re-log. "
+                "**DISCIPLINE**: pass project_name explicitly — never let it fall back "
+                "to _unbound_."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -181,9 +190,9 @@ class LeanMCPInterface:
                     "project_name": {
                         "type": "string",
                         "description": (
-                            "Optional project name to bind decision to. "
-                            "Creates/selects a session with this project_name "
-                            "if needed."
+                            "Project name to bind decision to — pass EXPLICITLY. "
+                            "Creates/selects a session with this project_name if needed. "
+                            "Omitting silently falls back to _unbound_ and corrupts retrieval."
                         ),
                     },
                 },
@@ -191,9 +200,16 @@ class LeanMCPInterface:
             },
             "examples": [
                 {
+                    "_workflow_hint": "STEP 1: query first to dedupe",
+                    "project_name": "my-project",
+                    "decision": "session_recall or session_search goes here first",
+                },
+                {
+                    "_workflow_hint": "STEP 2: log only if no matching decision found above",
                     "decision": "Switch to pytest for testing",
                     "context": {"reason": "Better async support"},
-                }
+                    "project_name": "my-project",
+                },
             ],
         }
 
@@ -428,7 +444,13 @@ class LeanMCPInterface:
                 self.session_engine.session_create_notebook_async
             ),
             "description": (
-                "Generate markdown notebook/summary at session end with searchable content"
+                "Create a reasoning narrative for this project session. "
+                "**SYSTEM**: session — project-scoped work history. "
+                "**TIER**: notebook — reasoning narrative recording abandoned paths, "
+                "hypotheses, and context that lets future readers judge whether stored "
+                "decisions/learnings are still valid. Call at session end or at a "
+                "natural breakpoint. Use session_query_notebooks first if you want to "
+                "avoid duplicate session records."
             ),
             "schema": {
                 "type": "object",
@@ -471,14 +493,29 @@ class LeanMCPInterface:
                 },
             },
             "examples": [
-                {"title": "Feature Implementation Session", "tags": ["feature", "python"]},
-                {"include_metrics": False, "save_to_file": True},
+                {
+                    "_workflow_hint": "STEP 1: check existing notebooks to avoid duplicates",
+                    "project_path": "/path/to/project",
+                },
+                {
+                    "_workflow_hint": "STEP 2: log only if no recent notebook for this session",
+                    "title": "Feature Implementation Session",
+                    "tags": ["feature", "python"],
+                },
             ],
         }
 
         registry["session_search"] = {
             "implementation": self._wrap_async_tool(self.session_engine.session_search),
-            "description": "Full-text search across session notebooks and summaries",
+            "description": (
+                "Full-text search across session notebooks, decisions, and learnings. "
+                "**SYSTEM**: session (with cross-project reach for decisions/learnings). "
+                "**READS**: all three tiers — notebook narratives (fulltext/tag/file), "
+                "project decisions (search_type='decisions', cross-project), "
+                "project learnings (search_type='learnings', cross-project). "
+                "**USE AS STEP 1** in the anti-dupe protocol before logging any "
+                "new session decision or learning. Supports FTS5 syntax: AND, OR, NOT, phrases."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -506,12 +543,20 @@ class LeanMCPInterface:
             "examples": [
                 {"query": "authentication bug fix"},
                 {"query": "python", "search_type": "tag", "limit": 10},
+                {"query": "pytest migration", "search_type": "decisions"},
             ],
         }
 
         registry["session_query_notebooks"] = {
             "implementation": self._wrap_async_tool(self.session_engine.session_query_notebooks),
-            "description": "Query session notebooks/summaries with optional filters",
+            "description": (
+                "Query session notebooks (reasoning narratives) with optional filters. "
+                "**SYSTEM**: session — project-scoped work history. "
+                "**READS**: notebook tier — session narrative records. "
+                "Use as STEP 1 in the anti-dupe protocol before creating a new session "
+                "notebook. Filter by project_path or tags to find existing narratives "
+                "for the current work context."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -540,7 +585,15 @@ class LeanMCPInterface:
 
         registry["session_recall"] = {
             "implementation": self._wrap_async_tool(self.session_engine.session_recall),
-            "description": "Recall project knowledge across all sessions",
+            "description": (
+                "Recall all stored knowledge for a specific project across all sessions. "
+                "**SYSTEM**: session — project-scoped work history. "
+                "**READS**: all three tiers — sessions, decisions, learnings, and notebooks "
+                "for the named project. "
+                "**USE AS STEP 1** in the anti-dupe protocol: call this before logging "
+                "new decisions or learnings to surface what was already recorded. "
+                "Requires project_name (explicit — do not omit)."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -584,7 +637,15 @@ class LeanMCPInterface:
 
         registry["session_log_learning"] = {
             "implementation": self._wrap_async_tool(self.session_engine.session_log_learning),
-            "description": "Log a project-specific learning (pattern, fix, preference, workflow)",
+            "description": (
+                "Log a reusable pattern or fix discovered while working on this project. "
+                "**SYSTEM**: session — project-scoped work history. "
+                "**TIER**: learning — reusable pattern with when/how-to-apply guidance. "
+                "**ANTI-DUPE**: call session_search(query=X, search_type='learnings') "
+                "or session_recall(project_name=Y) FIRST; if a similar pattern exists, "
+                "prefer updating or extending it over creating a duplicate. "
+                "**DISCIPLINE**: pass project_path explicitly to scope the learning."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -610,13 +671,15 @@ class LeanMCPInterface:
             },
             "examples": [
                 {
+                    "_workflow_hint": "STEP 1: search existing learnings before logging",
+                    "query": "ModuleNotFoundError",
+                    "search_type": "learnings",
+                },
+                {
+                    "_workflow_hint": "STEP 2: log only if no matching learning found above",
                     "category": "error_fix",
                     "learning_content": "ImportError for module X: install via pip install X",
                     "trigger_context": "When seeing 'ModuleNotFoundError: X'",
-                },
-                {
-                    "category": "pattern",
-                    "learning_content": "Always run lint before commit in this project",
                 },
             ],
         }
@@ -676,7 +739,14 @@ class LeanMCPInterface:
 
         registry["agent_register"] = {
             "implementation": self._wrap_async_tool(self.session_engine.agent_register),
-            "description": "Register or update an agent in the global agent registry",
+            "description": (
+                "Register or update an agent in the global cross-project agent registry. "
+                "**SYSTEM**: agent — global pattern library, not bound to any project. "
+                "agent_name MUST match the filename stem of a file under "
+                "~/.claude/agents/{type}/{name}.md (validated; raises AgentNotFoundError "
+                "on typo). Call agent_get_info(agent_name=X) first to check if already "
+                "registered before re-registering."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -712,13 +782,17 @@ class LeanMCPInterface:
             },
             "examples": [
                 {
+                    "_workflow_hint": "STEP 1: check if agent already registered",
+                    "agent_name": "focused-quality-resolver",
+                },
+                {
+                    "_workflow_hint": "STEP 2: register only if agent_get_info returned not-found",
                     "agent_name": "focused-quality-resolver",
                     "agent_type": "focused",
                     "display_name": "Quality Resolver",
                     "description": "Resolves code quality issues",
                     "capabilities": ["lint-fix", "format", "type-check"],
                 },
-                {"agent_name": "micro-test-runner", "agent_type": "micro"},
             ],
         }
 
@@ -743,7 +817,16 @@ class LeanMCPInterface:
 
         registry["agent_log_decision"] = {
             "implementation": self._wrap_async_tool(self.session_engine.agent_log_decision),
-            "description": "Log a decision made by an agent with context and reasoning",
+            "description": (
+                "Log a decision made by this agent that applies across projects. "
+                "**SYSTEM**: agent — global cross-project pattern library; agent_name "
+                "MUST match ~/.claude/agents/{type}/{name}.md (validated). "
+                "**TIER**: decision — atomic choice (what was decided + reasoning), "
+                "queryable and valid-now. "
+                "**ANTI-DUPE**: call agent_query_decisions(agent_name=X, "
+                "decision_type=Y) FIRST; if a similar decision exists, update its "
+                "outcome via agent_update_decision_outcome instead of re-logging."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -786,6 +869,12 @@ class LeanMCPInterface:
             },
             "examples": [
                 {
+                    "_workflow_hint": "STEP 1: query existing decisions before logging",
+                    "agent_name": "focused-quality-resolver",
+                    "decision_type": "tool_selection",
+                },
+                {
+                    "_workflow_hint": "STEP 2: log only if no matching decision found above",
                     "agent_name": "focused-quality-resolver",
                     "decision_type": "tool_selection",
                     "context": "Multiple lint errors in Python file",
@@ -794,13 +883,20 @@ class LeanMCPInterface:
                     "alternatives": ["Manual fixes", "Black + isort separately"],
                     "confidence": 0.9,
                     "tags": ["python", "linting"],
-                }
+                },
             ],
         }
 
         registry["agent_query_decisions"] = {
             "implementation": self._wrap_async_tool(self.session_engine.agent_query_decisions),
-            "description": "Query decisions made by an agent with optional filters",
+            "description": (
+                "Query decisions logged for an agent across all projects. "
+                "**SYSTEM**: agent — global cross-project pattern library. "
+                "**READS**: decision tier — atomic choices this agent has recorded. "
+                "**USE AS STEP 1** in the anti-dupe protocol before calling "
+                "agent_log_decision; if a matching decision exists, update its outcome "
+                "via agent_update_decision_outcome rather than creating a duplicate."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -868,7 +964,17 @@ class LeanMCPInterface:
 
         registry["agent_log_learning"] = {
             "implementation": self._wrap_async_tool(self.session_engine.agent_log_learning),
-            "description": "Log a learning or knowledge item discovered by an agent",
+            "description": (
+                "Log a reusable pattern this agent has discovered. "
+                "**SYSTEM**: agent — global cross-project pattern library; agent_name "
+                "MUST match ~/.claude/agents/{type}/{name}.md (validated; raises "
+                "AgentNotFoundError on typo). "
+                "**TIER**: learning — reusable pattern with when/how-to-apply guidance. "
+                "**ANTI-DUPE**: call agent_query_learnings(agent_name=X, "
+                "learning_type=Y) FIRST; if a similar pattern exists, update its "
+                "outcome stats via agent_update_learning_outcome instead of logging "
+                "a duplicate."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -914,6 +1020,12 @@ class LeanMCPInterface:
             },
             "examples": [
                 {
+                    "_workflow_hint": "STEP 1: query existing learnings before logging",
+                    "agent_name": "focused-quality-resolver",
+                    "learning_type": "pattern",
+                },
+                {
+                    "_workflow_hint": "STEP 2: log only if no matching learning found above",
                     "agent_name": "focused-quality-resolver",
                     "learning_type": "pattern",
                     "title": "Ruff handles import sorting",
@@ -921,13 +1033,20 @@ class LeanMCPInterface:
                     "applicability": ["python-projects", "lint-workflows"],
                     "confidence": 0.95,
                     "tags": ["python", "tooling"],
-                }
+                },
             ],
         }
 
         registry["agent_query_learnings"] = {
             "implementation": self._wrap_async_tool(self.session_engine.agent_query_learnings),
-            "description": "Query learnings for an agent with optional filters",
+            "description": (
+                "Query reusable patterns logged for an agent across all projects. "
+                "**SYSTEM**: agent — global cross-project pattern library. "
+                "**READS**: learning tier — reusable patterns this agent has recorded. "
+                "**USE AS STEP 1** in the anti-dupe protocol before calling "
+                "agent_log_learning; if a similar pattern exists, update its stats "
+                "via agent_update_learning_outcome rather than creating a duplicate."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -993,7 +1112,15 @@ class LeanMCPInterface:
 
         registry["agent_create_notebook"] = {
             "implementation": self._wrap_async_tool(self.session_engine.agent_create_notebook),
-            "description": "Create a notebook document for an agent",
+            "description": (
+                "Create a reasoning narrative notebook for this agent. "
+                "**SYSTEM**: agent — global cross-project pattern library; agent_name "
+                "MUST match ~/.claude/agents/{type}/{name}.md (validated). "
+                "**TIER**: notebook — reasoning narrative recording abandoned paths, "
+                "hypotheses, and context that lets future readers judge whether stored "
+                "decisions/learnings are still valid. Use agent_query_notebooks first "
+                "to avoid duplicate notebook records for the same work."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -1014,7 +1141,13 @@ class LeanMCPInterface:
                         "type": "string",
                         "default": "execution",
                         "description": (
-                            "Type of notebook (e.g., 'execution', 'analysis', 'retrospective')"
+                            "Notebook category. Canonical values: 'execution' (chronicle of "
+                            "work done), 'research' (investigation/exploration), 'learning' "
+                            "(reasoning narrative for a discovered pattern). Default: "
+                            "'execution'. NOTE: this differs from the 'learning' entity — a "
+                            "notebook of type 'learning' is the NARRATIVE explaining how/why "
+                            "a learning was discovered; a learning entity is the atomic "
+                            "pattern itself."
                         ),
                     },
                     "context": {"type": "object", "description": "Additional context metadata"},
@@ -1038,19 +1171,32 @@ class LeanMCPInterface:
             },
             "examples": [
                 {
+                    "_workflow_hint": "STEP 1: query existing notebooks to avoid duplicates",
+                    "agent_name": "focused-quality-resolver",
+                    "notebook_type": "execution",
+                },
+                {
+                    "_workflow_hint": "STEP 2: create notebook only if no recent one exists",
                     "agent_name": "focused-quality-resolver",
                     "title": "Quality Resolution Session - 2025-01-05",
                     "content": "## Summary\n\nFixed 15 lint issues...",
                     "summary": "Resolved lint issues in src/module.py",
                     "notebook_type": "execution",
                     "tags": ["quality", "python"],
-                }
+                },
             ],
         }
 
         registry["agent_query_notebooks"] = {
             "implementation": self._wrap_async_tool(self.session_engine.agent_query_notebooks),
-            "description": "Query notebooks for an agent with optional filters",
+            "description": (
+                "Query reasoning narrative notebooks logged for an agent. "
+                "**SYSTEM**: agent — global cross-project pattern library. "
+                "**READS**: notebook tier — narrative records of this agent's work. "
+                "**USE AS STEP 1** in the anti-dupe protocol before calling "
+                "agent_create_notebook; filter by notebook_type and tags to find "
+                "existing narratives for the current work context."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -1081,7 +1227,15 @@ class LeanMCPInterface:
 
         registry["agent_search_all"] = {
             "implementation": self._wrap_async_tool(self.session_engine.agent_search_all),
-            "description": "Search across all agent data (decisions, learnings, notebooks)",
+            "description": (
+                "Search across all data for an agent: decisions, learnings, and notebooks. "
+                "**SYSTEM**: agent — global cross-project pattern library. "
+                "**READS**: all three tiers simultaneously for the named agent. "
+                "**USE AS STEP 1** in the anti-dupe protocol when you are unsure which "
+                "tier to check — a single call surfaces matches across decisions, "
+                "learnings, and notebooks so you can extend or supersede rather than "
+                "create duplicates."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -1130,6 +1284,63 @@ class LeanMCPInterface:
                 return {"error": str(e), "tool": async_tool_func.__name__}
 
         return wrapper
+
+    def _discover_tools(self, pattern: str = "") -> dict[str, Any]:
+        """
+        Core implementation of the discover_tools meta-tool.
+
+        Extracted as a method so it can be called directly in tests without
+        going through the FastMCP tool dispatcher.
+        """
+        tools = []
+
+        for name, info in self.tool_registry.items():
+            # Apply pattern filter if provided
+            if pattern and pattern.strip() and pattern.lower() not in name.lower():
+                continue
+
+            tools.append({"name": name, "description": info["description"]})
+
+        result: dict[str, Any] = {
+            "available_tools": tools,
+            "total_tools": len(self.tool_registry),
+            "filtered_count": len(tools),
+        }
+        if not pattern:
+            result["_framework_guide"] = {
+                "systems": {
+                    "session_*": (
+                        "Project-scoped work history. Use when recording what was tried "
+                        "on a SPECIFIC project. Bind to project_name explicitly."
+                    ),
+                    "agent_*": (
+                        "Global cross-project agent pattern library. Use when refining "
+                        "how YOU (the agent) approach a class of problem regardless of "
+                        "project. agent_name is validated against "
+                        "~/.claude/agents/{type}/{name}.md."
+                    ),
+                    "knowledge_*": "Cross-project searchable knowledge base.",
+                },
+                "data_tiers": {
+                    "decision": "Atomic choice — what was decided. Queryable, valid-now.",
+                    "learning": "Reusable pattern — when/how to apply.",
+                    "notebook": (
+                        "Reasoning narrative — abandoned paths, hypotheses, the context "
+                        "that lets future readers judge whether stored decisions/learnings "
+                        "are still valid."
+                    ),
+                },
+                "anti_dupe_protocol": (
+                    "Before logging, QUERY existing tools (session_search, session_recall, "
+                    "agent_query_*) for matching content. Re-logging the same fact creates "
+                    "duplicates that pollute future retrievals."
+                ),
+                "project_name_discipline": (
+                    "Every session_* write tool accepts project_name. Pass it EXPLICITLY "
+                    "— the silent _unbound_ fallback corrupts retrieval (see PR #17)."
+                ),
+            }
+        return result
 
     def _setup_meta_tools(self):
         """Setup the 3 meta-tools for dynamic discovery."""
@@ -1208,20 +1419,7 @@ class LeanMCPInterface:
             MISSING TOOL? If you need an operation that's not available:
             File an issue at https://github.com/MementoRC/session-intelligence
             """
-            tools = []
-
-            for name, info in self.tool_registry.items():
-                # Apply pattern filter if provided
-                if pattern and pattern.strip() and pattern.lower() not in name.lower():
-                    continue
-
-                tools.append({"name": name, "description": info["description"]})
-
-            return {
-                "available_tools": tools,
-                "total_tools": len(self.tool_registry),
-                "filtered_count": len(tools),
-            }
+            return self._discover_tools(pattern)
 
         @self.app.tool(
             description=(

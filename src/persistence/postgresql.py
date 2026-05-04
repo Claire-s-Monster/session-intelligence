@@ -47,6 +47,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         ended_at TIMESTAMPTZ,
         project_path TEXT NOT NULL,
         project_name TEXT,
+        session_name TEXT,
         mode TEXT DEFAULT 'local',
         status TEXT DEFAULT 'active',
         metadata JSONB DEFAULT '{}',
@@ -58,6 +59,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
     CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
     CREATE INDEX IF NOT EXISTS idx_sessions_metadata ON sessions USING GIN (metadata);
+    CREATE INDEX IF NOT EXISTS idx_sessions_session_name ON sessions(session_name)
+        WHERE session_name IS NOT NULL;
 
     -- Decisions table with category index for filtering
     CREATE TABLE IF NOT EXISTS decisions (
@@ -375,6 +378,15 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 self.SCHEMA_VERSION,
             )
 
+            # Idempotent migrations for existing databases
+            await conn.execute(
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_name TEXT"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_session_name "
+                "ON sessions(session_name) WHERE session_name IS NOT NULL"
+            )
+
         self._is_connected = True
         logger.info(f"PostgreSQL database initialized: {sanitize_dsn(self.dsn)}")
 
@@ -458,12 +470,13 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             await conn.execute(
                 """
                 INSERT INTO sessions
-                (id, started_at, ended_at, project_path, project_name, mode, status,
-                 metadata, performance_metrics, health_status)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                (id, started_at, ended_at, project_path, project_name, session_name,
+                 mode, status, metadata, performance_metrics, health_status)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 ON CONFLICT (id) DO UPDATE SET
                     ended_at = EXCLUDED.ended_at,
                     status = EXCLUDED.status,
+                    session_name = EXCLUDED.session_name,
                     metadata = EXCLUDED.metadata,
                     performance_metrics = EXCLUDED.performance_metrics,
                     health_status = EXCLUDED.health_status
@@ -473,6 +486,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 ended_at,
                 session_data.get("project_path", ""),
                 session_data.get("project_name"),
+                session_data.get("session_name"),
                 session_data.get("mode", "local"),
                 session_data.get("status", "active"),
                 json.dumps(session_data.get("metadata", {})),
@@ -562,6 +576,70 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 )
 
             return deleted
+
+    @db_retry
+    async def find_session_by_name(
+        self, session_name: str, project_name: str | None = None
+    ) -> dict[str, Any] | None:
+        """Find a session by its human-readable name, optionally scoped to a project.
+
+        Returns the most-recent match (ORDER BY started_at DESC LIMIT 1), or None
+        if no session with that name exists. When project_name is provided, only
+        sessions belonging to that project are considered.
+        """
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            if project_name is not None:
+                row = await conn.fetchrow(
+                    """
+                    SELECT * FROM sessions
+                    WHERE session_name = $1 AND project_name = $2
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    session_name,
+                    project_name,
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    SELECT * FROM sessions
+                    WHERE session_name = $1
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    session_name,
+                )
+            if row:
+                return self._normalize_session_data(self._from_record(row))
+            return None
+
+    @db_retry
+    async def find_recent_session_by_project(
+        self, project_name: str, status: str = "active"
+    ) -> dict[str, Any] | None:
+        """Find the most-recent session for a project name with the given status.
+
+        Returns the most-recent match (ORDER BY started_at DESC LIMIT 1), or None
+        if no matching session exists.
+        """
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM sessions
+                WHERE project_name = $1 AND status = $2
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                project_name,
+                status,
+            )
+            if row:
+                return self._normalize_session_data(self._from_record(row))
+            return None
 
     # Decision operations
 

@@ -195,6 +195,22 @@ class LeanMCPInterface:
                             "Omitting silently falls back to _unbound_ and corrupts retrieval."
                         ),
                     },
+                    "session_name": {
+                        "type": "string",
+                        "description": (
+                            "Human-readable session label. Resolved to a session ID; "
+                            "creates a new session if not found (and create_if_missing=True)."
+                        ),
+                    },
+                    "allow_unbound": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "If True, opt into the legacy '_unbound_' fallback when no "
+                            "session identifier is provided. Deprecated — pass project_name "
+                            "or session_name explicitly instead."
+                        ),
+                    },
                 },
                 "required": ["decision"],
             },
@@ -450,14 +466,36 @@ class LeanMCPInterface:
                 "hypotheses, and context that lets future readers judge whether stored "
                 "decisions/learnings are still valid. Call at session end or at a "
                 "natural breakpoint. Use session_query_notebooks first if you want to "
-                "avoid duplicate session records."
+                "avoid duplicate session records. "
+                "**DISCIPLINE**: pass at least one of session_id, session_name, or "
+                "project_name. Use allow_unbound=true to opt into the legacy unbound "
+                "fallback (deprecated)."
             ),
             "schema": {
                 "type": "object",
                 "properties": {
                     "session_id": {
                         "type": "string",
-                        "description": "Session to summarize (defaults to current)",
+                        "description": "Explicit session ID to summarize.",
+                    },
+                    "session_name": {
+                        "type": "string",
+                        "description": "Named session to summarize.",
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": (
+                            "Project name — summarizes the most-recent active session "
+                            "for that project, or creates one if needed."
+                        ),
+                    },
+                    "allow_unbound": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "If True, opt into the legacy '_unbound_' fallback when no "
+                            "session identifier is provided. Deprecated."
+                        ),
                     },
                     "title": {"type": "string", "description": "Custom title for the notebook"},
                     "include_decisions": {
@@ -495,10 +533,11 @@ class LeanMCPInterface:
             "examples": [
                 {
                     "_workflow_hint": "STEP 1: check existing notebooks to avoid duplicates",
-                    "project_path": "/path/to/project",
+                    "project_name": "session-intelligence",
                 },
                 {
                     "_workflow_hint": "STEP 2: log only if no recent notebook for this session",
+                    "project_name": "session-intelligence",
                     "title": "Feature Implementation Session",
                     "tags": ["feature", "python"],
                 },
@@ -644,7 +683,9 @@ class LeanMCPInterface:
                 "**ANTI-DUPE**: call session_search(query=X, search_type='learnings') "
                 "or session_recall(project_name=Y) FIRST; if a similar pattern exists, "
                 "prefer updating or extending it over creating a duplicate. "
-                "**DISCIPLINE**: pass project_path explicitly to scope the learning."
+                "**DISCIPLINE**: pass at least one of session_id, session_name, or "
+                "project_name. Use allow_unbound=true to opt into the legacy unbound "
+                "fallback (deprecated)."
             ),
             "schema": {
                 "type": "object",
@@ -664,7 +705,33 @@ class LeanMCPInterface:
                     },
                     "project_path": {
                         "type": "string",
-                        "description": "Project scope (uses current if not specified)",
+                        "description": (
+                            "Project path for scoping the learning row (back-compat). "
+                            "Does not control session binding; use project_name for that."
+                        ),
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Explicit session ID to bind this learning to.",
+                    },
+                    "session_name": {
+                        "type": "string",
+                        "description": "Named session to bind this learning to.",
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": (
+                            "Project name — binds to the most-recent active session "
+                            "for that project, or creates one if needed."
+                        ),
+                    },
+                    "allow_unbound": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "If True, opt into the legacy '_unbound_' fallback when no "
+                            "session identifier is provided. Deprecated."
+                        ),
                     },
                 },
                 "required": ["category", "learning_content"],
@@ -680,6 +747,7 @@ class LeanMCPInterface:
                     "category": "error_fix",
                     "learning_content": "ImportError for module X: install via pip install X",
                     "trigger_context": "When seeing 'ModuleNotFoundError: X'",
+                    "project_name": "session-intelligence",
                 },
             ],
         }

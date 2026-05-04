@@ -99,6 +99,7 @@ pytest-asyncio = ">=0.21.0,<1.0.0"
 pytest-cov = ">=4.0.0"
 ruff = ">=0.1.0"
 mypy = ">=1.5.0"
+types-pyyaml = ">=6.0"
 
 [tool.pixi.feature.quality.pypi-dependencies]
 black = ">=23.0.0"

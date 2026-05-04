@@ -101,7 +101,7 @@ class NotificationManager:
                         queue.get(), timeout=idle_timeout
                     )
                     yield notification
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     break
         finally:
             self._subscribers.pop(mcp_session_id, None)

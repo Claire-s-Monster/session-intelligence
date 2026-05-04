@@ -2511,8 +2511,13 @@ class SessionIntelligenceEngine:
         )
 
         # Resolve session context
+        # When the caller provides an explicit session identifier, use the
+        # resolver to locate/create the session.  When allow_unbound=True with
+        # no explicit identifier, skip the resolver and use _current_session_id
+        # directly as the FK candidate — the FK validation block below will
+        # check whether it actually exists in the DB and null it out if not.
         resolved_session_id: str | None = None
-        if session_id or session_name or project_name or allow_unbound:
+        if session_id or session_name or project_name:
             resolved_session_id = await self._resolve_session_context(
                 session_id=session_id,
                 session_name=session_name,
@@ -2529,6 +2534,11 @@ class SessionIntelligenceEngine:
                         )
                     except Exception:
                         pass  # Best-effort
+        elif allow_unbound:
+            # Legacy path: no identifier given; use whatever current session
+            # exists (may be None). FK validation below handles the validity
+            # check without raising.
+            resolved_session_id = self._current_session_id
         else:
             raise SessionContextRequiredError(
                 "session_log_learning requires at least one of: "
@@ -2536,9 +2546,7 @@ class SessionIntelligenceEngine:
                 "(Pass allow_unbound=True to opt into the legacy '_unbound_' fallback.)"
             )
 
-        # Use resolved session or fall back to current (for back-compat when
-        # source_session is used only for FK linkage, not enforcement)
-        source_session = resolved_session_id or self._current_session_id
+        source_session = resolved_session_id
 
         debug_logger.info(
             f"Logging learning: {category} for {effective_project}"

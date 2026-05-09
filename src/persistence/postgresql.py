@@ -206,6 +206,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     CREATE TABLE IF NOT EXISTS project_learnings (
         id TEXT PRIMARY KEY,
         project_path TEXT NOT NULL,
+        project_name TEXT,
         category TEXT NOT NULL,
         trigger_context TEXT,
         learning_content TEXT NOT NULL,
@@ -218,6 +219,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     );
 
     CREATE INDEX IF NOT EXISTS idx_learnings_project ON project_learnings(project_path);
+    CREATE INDEX IF NOT EXISTS idx_learnings_project_name ON project_learnings(project_name)
+        WHERE project_name IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_learnings_category ON project_learnings(category);
     CREATE INDEX IF NOT EXISTS idx_learnings_promoted ON project_learnings(promoted_to_universal);
 
@@ -385,6 +388,14 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_sessions_session_name "
                 "ON sessions(session_name) WHERE session_name IS NOT NULL"
+            )
+            await conn.execute(
+                "ALTER TABLE project_learnings "
+                "ADD COLUMN IF NOT EXISTS project_name TEXT"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_learnings_project_name "
+                "ON project_learnings(project_name) WHERE project_name IS NOT NULL"
             )
 
         self._is_connected = True
@@ -1124,29 +1135,26 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 ]
 
             if include_all or "learnings" in include:
-                path_row = await conn.fetchrow(
+                rows = await conn.fetch(
                     """
-                    SELECT project_path FROM sessions
-                    WHERE project_name = $1 AND project_path IS NOT NULL
-                    LIMIT 1
+                    SELECT id, category, trigger_context, learning_content,
+                           project_name, source_session_id, success_count,
+                           failure_count, created_at, last_used
+                    FROM project_learnings
+                    WHERE project_name = $1
+                       OR (project_name IS NULL AND project_path = (
+                           SELECT project_path FROM sessions
+                           WHERE project_name = $1
+                             AND project_path IS NOT NULL
+                           LIMIT 1
+                       ))
+                    ORDER BY success_count DESC, last_used DESC
+                    LIMIT $2
                     """,
                     project_name,
+                    limit,
                 )
-                if path_row:
-                    rows = await conn.fetch(
-                        """
-                        SELECT id, category, trigger_context, learning_content,
-                               source_session_id, success_count, failure_count,
-                               created_at, last_used
-                        FROM project_learnings
-                        WHERE project_path = $1
-                        ORDER BY success_count DESC, last_used DESC
-                        LIMIT $2
-                        """,
-                        path_row["project_path"],
-                        limit,
-                    )
-                    result["learnings"] = [self._from_record(row) for row in rows]
+                result["learnings"] = [self._from_record(row) for row in rows]
 
             if include_all or "notebooks" in include:
                 rows = await conn.fetch(
@@ -1436,6 +1444,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         learning_content: str,
         trigger_context: str | None = None,
         source_session_id: str | None = None,
+        project_name: str | None = None,
     ) -> dict[str, Any]:
         """Save a project-specific learning."""
         pool = self._ensure_connected()
@@ -1444,17 +1453,19 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             await conn.execute(
                 """
                 INSERT INTO project_learnings (
-                    id, project_path, category, trigger_context, learning_content,
-                    source_session_id, success_count, failure_count, last_used,
-                    promoted_to_universal, created_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, 1, 0, NOW(), FALSE, NOW())
+                    id, project_path, project_name, category, trigger_context,
+                    learning_content, source_session_id, success_count, failure_count,
+                    last_used, promoted_to_universal, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 0, NOW(), FALSE, NOW())
                 ON CONFLICT(id) DO UPDATE SET
                     learning_content = EXCLUDED.learning_content,
                     trigger_context = EXCLUDED.trigger_context,
+                    project_name = EXCLUDED.project_name,
                     last_used = NOW()
                 """,
                 learning_id,
                 project_path,
+                project_name,
                 category,
                 trigger_context,
                 learning_content,

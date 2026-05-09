@@ -10,6 +10,7 @@ import json
 import logging
 import secrets
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -107,6 +108,20 @@ class SessionContextRequiredError(ValueError):
     """Raised when a session_* write tool is called without any session identifier."""
 
 
+@dataclass(frozen=True)
+class ResolvedSessionContext:
+    """Full context returned by _resolve_session_context.
+
+    Carries session_id plus the resolved session's project metadata so callers
+    can use the correct project_name / project_path without re-deriving them
+    from engine state.
+    """
+
+    session_id: str
+    project_name: str | None
+    project_path: str | None
+
+
 class SessionIntelligenceEngine:
     """
     Core session intelligence engine providing unified session management,
@@ -189,7 +204,7 @@ class SessionIntelligenceEngine:
         *,
         allow_unbound: bool = False,
         create_if_missing: bool = True,
-    ) -> str:
+    ) -> "ResolvedSessionContext":
         """Resolve a session ID from a flexible identifier set.
 
         Priority: session_id (exact) > session_name (scoped to project) >
@@ -201,11 +216,19 @@ class SessionIntelligenceEngine:
         The legacy `_unbound_` fallback is reachable only via allow_unbound=True
         or via _get_or_create_current_session_id (kept for back-compat in code
         paths that don't go through the resolver).
+
+        Returns:
+            ResolvedSessionContext with session_id, project_name, project_path
+            populated from the resolved session row.
         """
         # 1. session_id: trust caller, validate
         if session_id is not None:
             if not self.database:
-                return session_id  # no DB to validate against; trust it
+                return ResolvedSessionContext(
+                    session_id=session_id,
+                    project_name=None,
+                    project_path=None,
+                )
             existing = await self.database.get_session(session_id)
             if existing is None:
                 raise ValueError(
@@ -213,7 +236,11 @@ class SessionIntelligenceEngine:
                 )
             # Cache for back-compat
             self._current_session_id = session_id
-            return session_id
+            return ResolvedSessionContext(
+                session_id=session_id,
+                project_name=existing.get("project_name"),
+                project_path=existing.get("project_path"),
+            )
 
         # 2. session_name (optionally scoped to project_name)
         if session_name is not None:
@@ -227,7 +254,11 @@ class SessionIntelligenceEngine:
             )
             if match is not None:
                 self._current_session_id = match["id"]
-                return match["id"]
+                return ResolvedSessionContext(
+                    session_id=match["id"],
+                    project_name=match.get("project_name"),
+                    project_path=match.get("project_path"),
+                )
             if not create_if_missing:
                 raise ValueError(
                     f"session_name={session_name!r} not found "
@@ -240,7 +271,12 @@ class SessionIntelligenceEngine:
                 metadata={"session_name": session_name},
                 session_name=session_name,
             )
-            return result.session_id
+            cached = self.session_cache.get(result.session_id)
+            return ResolvedSessionContext(
+                session_id=result.session_id,
+                project_name=cached.project_name if cached else project_name,
+                project_path=cached.project_path if cached else None,
+            )
 
         # 3. project_name: find most-recent active OR create new
         if project_name is not None:
@@ -250,7 +286,11 @@ class SessionIntelligenceEngine:
                 )
                 if match is not None:
                     self._current_session_id = match["id"]
-                    return match["id"]
+                    return ResolvedSessionContext(
+                        session_id=match["id"],
+                        project_name=match.get("project_name"),
+                        project_path=match.get("project_path"),
+                    )
             if not create_if_missing:
                 raise ValueError(
                     f"no active session for project_name={project_name!r}"
@@ -260,11 +300,22 @@ class SessionIntelligenceEngine:
                 project_name=project_name,
                 metadata={},
             )
-            return result.session_id
+            cached = self.session_cache.get(result.session_id)
+            return ResolvedSessionContext(
+                session_id=result.session_id,
+                project_name=project_name,
+                project_path=cached.project_path if cached else None,
+            )
 
         # All three None
         if allow_unbound:
-            return self._get_or_create_current_session_id()  # legacy path
+            fallback_id: str = self._get_or_create_current_session_id() or ""  # legacy path
+            cached = self.session_cache.get(fallback_id) if fallback_id else None
+            return ResolvedSessionContext(
+                session_id=fallback_id,
+                project_name=cached.project_name if cached else None,
+                project_path=cached.project_path if cached else None,
+            )
 
         raise SessionContextRequiredError(
             "session_log_*, session_create_notebook require at least one of: "
@@ -1120,12 +1171,13 @@ class SessionIntelligenceEngine:
                 effective_session_id = self._current_session_id
 
             # Resolve session via the flexible resolver
-            resolved_id = await self._resolve_session_context(
+            resolved = await self._resolve_session_context(
                 session_id=effective_session_id,
                 session_name=session_name,
                 project_name=project_name,
                 allow_unbound=allow_unbound,
             )
+            resolved_id = resolved.session_id
             # Persist newly-created session to DB if needed
             if resolved_id and resolved_id not in (session_id or ""):
                 cached = self.session_cache.get(resolved_id)
@@ -1460,12 +1512,13 @@ class SessionIntelligenceEngine:
         """
         try:
             if session_id is None:
-                session_id = await self._resolve_session_context(
+                resolved = await self._resolve_session_context(
                     session_id=None,
                     session_name=session_name,
                     project_name=project_name,
                     allow_unbound=allow_unbound,
                 )
+                session_id = resolved.session_id
             return await self._create_notebook_impl(
                 session_id,
                 title,
@@ -1504,12 +1557,13 @@ class SessionIntelligenceEngine:
         try:
             # Resolve session via the flexible resolver
             if session_id is None:
-                session_id = await self._resolve_session_context(
+                resolved = await self._resolve_session_context(
                     session_id=None,
                     session_name=session_name,
                     project_name=project_name,
                     allow_unbound=allow_unbound,
                 )
+                session_id = resolved.session_id
             if not session_id or session_id not in self.session_cache:
                 return NotebookResult(
                     session_id=session_id or "unknown",
@@ -2516,9 +2570,6 @@ class SessionIntelligenceEngine:
         import uuid
 
         learning_id = f"learn_{uuid.uuid4().hex[:12]}"
-        effective_project = (
-            project_path or str(self.claude_sessions_path.parent)
-        )
 
         # Resolve session context
         # When the caller provides an explicit session identifier, use the
@@ -2526,14 +2577,16 @@ class SessionIntelligenceEngine:
         # no explicit identifier, skip the resolver and use _current_session_id
         # directly as the FK candidate — the FK validation block below will
         # check whether it actually exists in the DB and null it out if not.
+        resolved_ctx: ResolvedSessionContext | None = None
         resolved_session_id: str | None = None
         if session_id or session_name or project_name:
-            resolved_session_id = await self._resolve_session_context(
+            resolved_ctx = await self._resolve_session_context(
                 session_id=session_id,
                 session_name=session_name,
                 project_name=project_name,
                 allow_unbound=allow_unbound,
             )
+            resolved_session_id = resolved_ctx.session_id
             # Persist newly-created session to DB if needed
             if resolved_session_id:
                 cached = self.session_cache.get(resolved_session_id)
@@ -2555,6 +2608,19 @@ class SessionIntelligenceEngine:
                 "session_id, session_name, project_name. "
                 "(Pass allow_unbound=True to opt into the legacy '_unbound_' fallback.)"
             )
+
+        # Caller-supplied project_name takes priority; otherwise use the
+        # resolved session's project_name.
+        effective_project_name: str | None = project_name or (
+            resolved_ctx.project_name if resolved_ctx else None
+        )
+
+        # project_path: caller-supplied wins, then resolved session, then cwd fallback.
+        effective_project = (
+            project_path
+            or (resolved_ctx.project_path if resolved_ctx else None)
+            or str(self.claude_sessions_path.parent)
+        )
 
         source_session = resolved_session_id
 
@@ -2588,6 +2654,7 @@ class SessionIntelligenceEngine:
                 await self.database.save_project_learning(
                     learning_id=learning_id,
                     project_path=effective_project,
+                    project_name=effective_project_name,
                     category=(
                         category.value
                         if hasattr(category, "value")

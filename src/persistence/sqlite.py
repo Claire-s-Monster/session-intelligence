@@ -166,6 +166,7 @@ class SQLiteBackend(BaseDatabaseBackend):
     CREATE TABLE IF NOT EXISTS project_learnings (
         id TEXT PRIMARY KEY,
         project_path TEXT NOT NULL,
+        project_name TEXT,                -- Project name for direct recall (added in v3)
         category TEXT NOT NULL,           -- 'error_fix', 'pattern', 'preference', 'workflow'
         trigger_context TEXT,             -- What situation triggers this knowledge
         learning_content TEXT NOT NULL,   -- The actual knowledge/solution
@@ -179,6 +180,7 @@ class SQLiteBackend(BaseDatabaseBackend):
     );
 
     CREATE INDEX IF NOT EXISTS idx_learnings_project ON project_learnings(project_path);
+    CREATE INDEX IF NOT EXISTS idx_learnings_project_name ON project_learnings(project_name);
     CREATE INDEX IF NOT EXISTS idx_learnings_category ON project_learnings(category);
     CREATE INDEX IF NOT EXISTS idx_learnings_promoted ON project_learnings(promoted_to_universal);
 
@@ -367,6 +369,26 @@ class SQLiteBackend(BaseDatabaseBackend):
             await self._connection.commit()
         except Exception as e:
             logger.debug(f"session_name index creation: {e}")
+
+        # Idempotent migration: add project_name column to project_learnings
+        try:
+            await self._connection.execute(
+                "ALTER TABLE project_learnings ADD COLUMN project_name TEXT"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+        # Add index for project_name on project_learnings
+        try:
+            await self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_learnings_project_name "
+                "ON project_learnings(project_name)"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            logger.debug(f"project_learnings project_name index creation: {e}")
 
         self._is_connected = True
         logger.info(f"SQLite database initialized: {self.db_path}")
@@ -1502,6 +1524,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         learning_content: str,
         trigger_context: str | None = None,
         source_session_id: str | None = None,
+        project_name: str | None = None,
     ) -> dict[str, Any]:
         """Save a project-specific learning."""
         conn = self._ensure_connected()
@@ -1510,18 +1533,20 @@ class SQLiteBackend(BaseDatabaseBackend):
         await conn.execute(
             """
             INSERT INTO project_learnings (
-                id, project_path, category, trigger_context, learning_content,
-                source_session_id, success_count, failure_count, last_used,
-                promoted_to_universal, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, FALSE, ?)
+                id, project_path, project_name, category, trigger_context,
+                learning_content, source_session_id, success_count, failure_count,
+                last_used, promoted_to_universal, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, FALSE, ?)
             ON CONFLICT(id) DO UPDATE SET
                 learning_content = excluded.learning_content,
                 trigger_context = excluded.trigger_context,
+                project_name = excluded.project_name,
                 last_used = excluded.last_used
         """,
             (
                 learning_id,
                 project_path,
+                project_name,
                 category,
                 trigger_context,
                 learning_content,
@@ -1738,6 +1763,127 @@ class SQLiteBackend(BaseDatabaseBackend):
             "success_rate": new_rate,
             "updated": True,
         }
+
+    async def recall_project(
+        self,
+        project_name: str,
+        include: list[str] | None = None,
+        limit: int = 10,
+        days: int = 30,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        """Recall recent sessions, decisions, learnings, and notebooks for a project."""
+        from datetime import UTC, datetime, timedelta
+
+        conn = self._ensure_connected()
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        include_all = include is None
+        result: dict[str, Any] = {
+            "project_name": project_name,
+            "recall_window_days": days,
+            "sessions": [],
+            "decisions": [],
+            "learnings": [],
+            "notebooks": [],
+        }
+
+        if include_all or "sessions" in include:
+            cursor = await conn.execute(
+                """
+                SELECT id, started_at, ended_at, status, mode
+                FROM sessions
+                WHERE project_name = ? AND started_at > ?
+                ORDER BY started_at DESC
+                LIMIT ?
+                """,
+                (project_name, cutoff, limit),
+            )
+            rows = await cursor.fetchall()
+            result["sessions"] = [
+                {
+                    "id": row["id"],
+                    "started_at": row["started_at"],
+                    "status": row["status"],
+                }
+                for row in rows
+            ]
+
+        if include_all or "decisions" in include:
+            cursor = await conn.execute(
+                """
+                SELECT d.id, d.description, d.category, d.rationale,
+                       d.impact_level, d.timestamp, s.id AS session_id
+                FROM decisions d
+                JOIN sessions s ON d.session_id = s.id
+                WHERE s.project_name = ? AND d.timestamp > ?
+                ORDER BY d.timestamp DESC
+                LIMIT ?
+                """,
+                (project_name, cutoff, limit),
+            )
+            rows = await cursor.fetchall()
+            result["decisions"] = [
+                {
+                    "description": row["description"],
+                    "category": row["category"],
+                    "rationale": row["rationale"],
+                    "timestamp": row["timestamp"],
+                }
+                for row in rows
+            ]
+
+        if include_all or "learnings" in include:
+            cursor = await conn.execute(
+                """
+                SELECT id, category, trigger_context, learning_content,
+                       project_name, source_session_id, success_count,
+                       failure_count, created_at, last_used
+                FROM project_learnings
+                WHERE project_name = ?
+                   OR (project_name IS NULL AND project_path = (
+                       SELECT project_path FROM sessions
+                       WHERE project_name = ?
+                         AND project_path IS NOT NULL
+                       LIMIT 1
+                   ))
+                ORDER BY success_count DESC, last_used DESC
+                LIMIT ?
+                """,
+                (project_name, project_name, limit),
+            )
+            rows = await cursor.fetchall()
+            result["learnings"] = [dict(row) for row in rows]
+
+        if include_all or "notebooks" in include:
+            cursor = await conn.execute(
+                """
+                SELECT ss.title, ss.tags, ss.created_at, ss.session_id
+                FROM session_summaries ss
+                JOIN sessions s ON ss.session_id = s.id
+                WHERE s.project_name = ? AND ss.created_at > ?
+                ORDER BY ss.created_at DESC
+                LIMIT ?
+                """,
+                (project_name, cutoff, limit),
+            )
+            rows = await cursor.fetchall()
+            result["notebooks"] = [
+                {
+                    "title": row["title"],
+                    "tags": self._deserialize_json(row["tags"]),
+                    "created_at": row["created_at"],
+                    "session_id": row["session_id"],
+                }
+                for row in rows
+            ]
+
+        result["counts"] = {
+            "sessions": len(result["sessions"]),
+            "decisions": len(result["decisions"]),
+            "learnings": len(result["learnings"]),
+            "notebooks": len(result["notebooks"]),
+        }
+        return result
 
     # Maintenance operations
 

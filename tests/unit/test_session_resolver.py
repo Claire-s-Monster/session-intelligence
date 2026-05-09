@@ -7,7 +7,11 @@ real filesystem state and PostgreSQL.
 
 import pytest
 
-from core.session_engine import SessionContextRequiredError, SessionIntelligenceEngine
+from core.session_engine import (
+    ResolvedSessionContext,
+    SessionContextRequiredError,
+    SessionIntelligenceEngine,
+)
 from persistence.sqlite import SQLiteBackend
 
 # ---------------------------------------------------------------------------
@@ -63,7 +67,8 @@ class TestResolveBySessionId:
         """Resolving by a known session_id returns that same id."""
         sid = await _create_and_persist(engine, db, "proj-a")
         resolved = await engine._resolve_session_context(session_id=sid)
-        assert resolved == sid
+        assert isinstance(resolved, ResolvedSessionContext)
+        assert resolved.session_id == sid
 
     async def test_resolve_by_session_id_unknown_raises(self, engine, db):
         """Resolving by a nonexistent session_id raises ValueError."""
@@ -76,7 +81,8 @@ class TestResolveBySessionName:
         """Resolving by name returns the id of the named session."""
         sid = await _create_and_persist(engine, db, "proj-b", session_name="my-debug-session")
         resolved = await engine._resolve_session_context(session_name="my-debug-session")
-        assert resolved == sid
+        assert isinstance(resolved, ResolvedSessionContext)
+        assert resolved.session_id == sid
 
     async def test_resolve_by_session_name_with_project_filter(self, engine, db):
         """When two sessions share a name in different projects, project_name scopes correctly."""
@@ -90,9 +96,9 @@ class TestResolveBySessionName:
             session_name="shared-name", project_name="proj-y"
         )
 
-        assert resolved_x == sid_a
-        assert resolved_y == sid_b
-        assert resolved_x != resolved_y
+        assert resolved_x.session_id == sid_a
+        assert resolved_y.session_id == sid_b
+        assert resolved_x.session_id != resolved_y.session_id
 
     async def test_resolve_by_session_name_creates_when_missing_and_create_if_missing_true(
         self, engine, db
@@ -102,11 +108,12 @@ class TestResolveBySessionName:
             session_name="brand-new-session",
             create_if_missing=True,
         )
-        assert resolved is not None
-        assert resolved != ""
+        assert isinstance(resolved, ResolvedSessionContext)
+        assert resolved.session_id is not None
+        assert resolved.session_id != ""
 
         # Verify persisted in cache
-        assert resolved in engine.session_cache
+        assert resolved.session_id in engine.session_cache
 
     async def test_resolve_by_session_name_raises_when_missing_and_create_if_missing_false(
         self, engine, db
@@ -132,7 +139,7 @@ class TestResolveByProjectName:
         sid_new = await _create_and_persist(engine, db, "proj-multi")
 
         resolved = await engine._resolve_session_context(project_name="proj-multi")
-        assert resolved == sid_new
+        assert resolved.session_id == sid_new
 
     async def test_resolve_by_project_name_creates_when_no_active(self, engine, db):
         """When no active session exists for a project, a new one is created."""
@@ -140,9 +147,10 @@ class TestResolveByProjectName:
             project_name="brand-new-project",
             create_if_missing=True,
         )
-        assert resolved is not None
-        assert resolved != ""
-        assert resolved in engine.session_cache
+        assert isinstance(resolved, ResolvedSessionContext)
+        assert resolved.session_id is not None
+        assert resolved.session_id != ""
+        assert resolved.session_id in engine.session_cache
 
 
 class TestResolveAllNone:
@@ -155,8 +163,9 @@ class TestResolveAllNone:
         """allow_unbound=True falls back to _get_or_create_current_session_id."""
         resolved = await engine._resolve_session_context(allow_unbound=True)
         # Should return a valid session id (not raise)
-        assert resolved is not None
-        assert resolved != ""
+        assert isinstance(resolved, ResolvedSessionContext)
+        assert resolved.session_id is not None
+        assert resolved.session_id != ""
 
 
 class TestResolvePriority:
@@ -172,4 +181,17 @@ class TestResolvePriority:
             session_name="other-name",
             project_name="other-proj",
         )
-        assert resolved == sid
+        assert resolved.session_id == sid
+
+
+class TestResolvedSessionContextFields:
+    async def test_resolve_returns_project_name_from_session(self, engine, db):
+        """Resolved context includes the session's project_name."""
+        sid = await _create_and_persist(engine, db, "proj-fields")
+        resolved = await engine._resolve_session_context(session_id=sid)
+        assert resolved.project_name == "proj-fields"
+
+    async def test_resolve_by_project_name_propagates_project_name(self, engine, db):
+        """Resolving by project_name populates project_name in the result."""
+        resolved = await engine._resolve_session_context(project_name="new-proj")
+        assert resolved.project_name == "new-proj"

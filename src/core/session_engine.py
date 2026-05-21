@@ -367,9 +367,25 @@ class SessionIntelligenceEngine:
                         from models.session_models import Session
 
                         session = Session.model_validate(session_data)
-                        self.session_cache[session_id] = session
-                        self._current_session_id = session_id
-                        return session_id
+
+                        # Don't resurrect completed sessions as current
+                        # active session (issue #25 Bug 2). Fall through
+                        # to the "create new session" path below.
+                        if session.status == SessionStatus.COMPLETED:
+                            debug_logger.info(
+                                f"Session {session_id} on disk is "
+                                "completed; starting a fresh session"
+                            )
+                            try:
+                                current_session_file.unlink()
+                            except Exception as e:
+                                debug_logger.error(
+                                    f"Error removing stale current-session-id: {e}"
+                                )
+                        else:
+                            self.session_cache[session_id] = session
+                            self._current_session_id = session_id
+                            return session_id
                     else:
                         debug_logger.warning(
                             f"Session {session_id} not found on disk, "
@@ -499,7 +515,7 @@ class SessionIntelligenceEngine:
         elif operation == "resume":
             return self._resume_session(auto_recovery)
         elif operation == "finalize":
-            return self._finalize_session()
+            return await self._finalize_session()
         elif operation == "validate":
             return self._validate_session()
         else:
@@ -635,8 +651,15 @@ class SessionIntelligenceEngine:
             message="No existing sessions found",
         )
 
-    def _finalize_session(self) -> SessionResult:
-        """Finalize current session with comprehensive summary."""
+    async def _finalize_session(self) -> SessionResult:
+        """Finalize current session with comprehensive summary.
+
+        Persists status='completed' to the database so that subsequent
+        find_recent_session_by_project(status='active') queries stop
+        returning this session, and removes the session from the
+        in-memory cache so disk reloads don't resurrect stale state
+        (see issue #25).
+        """
         # Get current session ID
         session_id = self._get_or_create_current_session_id()
 
@@ -658,8 +681,18 @@ class SessionIntelligenceEngine:
         total_time = (session.completed - session.started).total_seconds() * 1000
         session.performance_metrics.total_execution_time_ms = int(total_time)
 
-        # Clear in-memory current session
-        self._current_session_id = None
+        # Persist completed status to DB (issue #25 Bug 1). Without this,
+        # the row stays status='active' forever and stale sessions keep
+        # matching find_recent_session_by_project lookups.
+        if self.database:
+            try:
+                await self.database.save_session(
+                    session.model_dump(mode="python")
+                )
+            except Exception as e:
+                debug_logger.error(
+                    f"Error persisting finalized session to DB: {e}"
+                )
 
         # Only do filesystem operations if enabled
         if self.use_filesystem:
@@ -683,6 +716,11 @@ class SessionIntelligenceEngine:
             debug_logger.info(
                 f"Session {session_id} finalized in memory only"
             )
+
+        # Clear in-memory current session and drop from cache so disk
+        # reloads can't resurrect this completed session (issue #25 Bug 2).
+        self._current_session_id = None
+        self.session_cache.pop(session_id, None)
 
         return SessionResult(
             session_id=session_id,

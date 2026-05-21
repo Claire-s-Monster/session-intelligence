@@ -30,6 +30,7 @@ class TestDatetimeTypeBugs:
         db = SQLiteBackend(str(tmp_path / "test.db"))
         await db.initialize()
         yield db
+        await db.close()
 
     async def test_session_datetime_roundtrip(self, backend):
         """Verify datetime objects survive save/retrieve without isoformat conversion."""

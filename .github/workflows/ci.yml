@@ -11,6 +11,10 @@ on:
 
 permissions: read-all
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ci:
     permissions:

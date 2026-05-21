@@ -23,6 +23,7 @@ class TestSessionPersistenceBugs:
         eng.database = SQLiteBackend(str(tmp_path / "test.db"))
         await eng.database.initialize()
         yield eng
+        await eng.database.close()
 
     async def test_session_persisted_to_db_not_just_memory(self, engine):
         """_create_session must write to DB, not just memory/filesystem."""

@@ -28,6 +28,7 @@ async def db(tmp_path):
     backend = SQLiteBackend(str(tmp_path / "test_concurrency.db"))
     await backend.initialize()
     yield backend
+    await backend.close()
 
 
 @pytest.fixture

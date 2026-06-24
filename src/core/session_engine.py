@@ -3968,3 +3968,67 @@ class SessionIntelligenceEngine:
                 "notebooks": [],
                 "error": str(e),
             }
+
+    async def session_agent_stats(
+        self,
+        time_window_hours: int = 168,
+    ) -> dict[str, Any]:
+        """
+        Return per-agent-type usage statistics over a configurable time window.
+
+        Args:
+            time_window_hours: Lookback window in hours (default 168 = 7 days)
+
+        Returns:
+            Dict with window_hours, total_sessions_scanned, and agent_stats list
+        """
+        if not self.database:
+            debug_logger.warning("session_agent_stats called without database")
+            return {
+                "window_hours": time_window_hours,
+                "total_sessions_scanned": 0,
+                "agent_stats": [],
+                "error": "Database not available",
+            }
+
+        try:
+            raw = await self.database.get_agent_stats(time_window_hours)
+
+            # Pull total_sessions_scanned from sentinel field on first record
+            total_sessions = raw[0]["_total_sessions_scanned"] if raw else 0
+
+            # Strip internal sentinel and compute success_rate
+            agent_stats = []
+            for entry in raw:
+                invocations = entry["invocations"]
+                successes = entry["successes"]
+                stat = {
+                    "agent_type": entry["agent_type"],
+                    "invocations": invocations,
+                    "successes": successes,
+                    "failures": entry["failures"],
+                    "success_rate": round(successes / invocations, 2) if invocations else 0.0,
+                    "avg_duration_ms": entry["avg_duration_ms"],
+                    "last_used": entry["last_used"],
+                }
+                agent_stats.append(stat)
+
+            debug_logger.info(
+                f"session_agent_stats: window={time_window_hours}h, "
+                f"sessions={total_sessions}, agent_types={len(agent_stats)}"
+            )
+
+            return {
+                "window_hours": time_window_hours,
+                "total_sessions_scanned": total_sessions,
+                "agent_stats": agent_stats,
+            }
+
+        except Exception as e:
+            debug_logger.error(f"Error in session_agent_stats: {e}")
+            return {
+                "window_hours": time_window_hours,
+                "total_sessions_scanned": 0,
+                "agent_stats": [],
+                "error": str(e),
+            }

@@ -205,6 +205,10 @@ class DatabaseBackend(Protocol):
         """Query agent executions with optional filters."""
         ...
 
+    async def get_agent_stats(self, time_window_hours: int = 168) -> list[dict[str, Any]]:
+        """Return per-agent-type usage statistics over the last time_window_hours hours."""
+        ...
+
     # MCP session operations
     async def save_mcp_session(self, mcp_session_data: dict[str, Any]) -> None:
         """Save MCP session mapping."""

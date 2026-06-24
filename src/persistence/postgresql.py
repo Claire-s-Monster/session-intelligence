@@ -1259,6 +1259,104 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             rows = await conn.fetch(query, *params)
             return [self._from_record(row) for row in rows]
 
+    async def get_agent_stats(self, time_window_hours: int = 168) -> list[dict[str, Any]]:
+        """Return per-agent-type usage statistics over the last time_window_hours hours.
+
+        Queries the agent_executions table directly, aggregates by agent_type,
+        and returns sorted by invocations descending.
+        """
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT agent_type, agent_name, status, performance, started_at, completed_at
+                FROM agent_executions
+                WHERE started_at >= NOW() - ($1 * INTERVAL '1 hour')
+                ORDER BY started_at DESC
+                """,
+                time_window_hours,
+            )
+
+            # Count sessions in the window for context
+            session_row = await conn.fetchrow(
+                "SELECT COUNT(*) FROM sessions WHERE started_at >= NOW() - ($1 * INTERVAL '1 hour')",
+                time_window_hours,
+            )
+            total_sessions = session_row[0] if session_row else 0
+
+        # Aggregate by agent_type (fall back to agent_name if type is NULL)
+        stats_map: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            row_dict = dict(row)
+            agent_type = row_dict.get("agent_type") or row_dict.get("agent_name") or "unknown"
+            status = row_dict.get("status") or ""
+            started_at = row_dict.get("started_at")
+            # asyncpg returns datetime objects for TIMESTAMPTZ; normalise to ISO string
+            started_at_str = started_at.isoformat() if hasattr(started_at, "isoformat") else (started_at or "")
+
+            performance_raw = row_dict.get("performance")
+            duration_ms: float | None = None
+            if performance_raw:
+                try:
+                    perf = (
+                        json.loads(performance_raw)
+                        if isinstance(performance_raw, str)
+                        else performance_raw
+                    )
+                    duration_ms = perf.get("duration_ms") or perf.get("total_duration_ms")
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+
+            if agent_type not in stats_map:
+                stats_map[agent_type] = {
+                    "agent_type": agent_type,
+                    "invocations": 0,
+                    "successes": 0,
+                    "failures": 0,
+                    "duration_ms_total": 0.0,
+                    "duration_ms_count": 0,
+                    "last_used": started_at_str,
+                }
+
+            entry = stats_map[agent_type]
+            entry["invocations"] += 1
+
+            if status in ("completed", "success"):
+                entry["successes"] += 1
+            elif status in ("failed", "error"):
+                entry["failures"] += 1
+
+            if duration_ms is not None:
+                entry["duration_ms_total"] += duration_ms
+                entry["duration_ms_count"] += 1
+
+            # Track most recent use
+            if started_at_str > entry["last_used"]:
+                entry["last_used"] = started_at_str
+
+        # Build final list
+        result = []
+        for entry in stats_map.values():
+            dur_count = entry["duration_ms_count"]
+            avg_duration_ms = (
+                round(entry["duration_ms_total"] / dur_count, 1)
+                if dur_count > 0
+                else None
+            )
+            result.append({
+                "agent_type": entry["agent_type"],
+                "invocations": entry["invocations"],
+                "successes": entry["successes"],
+                "failures": entry["failures"],
+                "avg_duration_ms": avg_duration_ms,
+                "last_used": entry["last_used"],
+                "_total_sessions_scanned": total_sessions,
+            })
+
+        result.sort(key=lambda x: x["invocations"], reverse=True)
+        return result
+
     # MCP session operations
 
     @db_retry

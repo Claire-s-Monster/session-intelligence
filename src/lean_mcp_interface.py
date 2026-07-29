@@ -1293,6 +1293,37 @@ class LeanMCPInterface:
             ],
         }
 
+        registry["session_agent_stats"] = {
+            "implementation": self._wrap_async_tool(
+                self._session_agent_stats_handler
+            ),
+            "description": (
+                "Return per-agent-type usage statistics over a configurable time window. "
+                "Aggregates invocations, successes, failures, and average duration from "
+                "agent_executions records. Use this for data-driven decisions about which "
+                "agent types are actually being used."
+            ),
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "time_window_hours": {
+                        "type": "integer",
+                        "default": 168,
+                        "description": "Lookback window in hours (default 168 = 7 days)",
+                    },
+                    "min_invocations": {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "Filter out agents with fewer than this many invocations",
+                    },
+                },
+            },
+            "examples": [
+                {"time_window_hours": 168},
+                {"time_window_hours": 720, "min_invocations": 3},
+            ],
+        }
+
         registry["agent_search_all"] = {
             "implementation": self._wrap_async_tool(self.session_engine.agent_search_all),
             "description": (
@@ -1324,6 +1355,23 @@ class LeanMCPInterface:
         }
 
         return registry
+
+    async def _session_agent_stats_handler(self, **params) -> dict[str, Any]:
+        """Handler for session_agent_stats that applies min_invocations filter."""
+        time_window_hours = params.get("time_window_hours", 168)
+        min_invocations = params.get("min_invocations", 1)
+
+        result = await self.session_engine.session_agent_stats(
+            time_window_hours=time_window_hours,
+        )
+
+        if "agent_stats" in result and min_invocations > 1:
+            result["agent_stats"] = [
+                s for s in result["agent_stats"]
+                if s["invocations"] >= min_invocations
+            ]
+
+        return result
 
     def _wrap_tool(self, tool_func):
         """Wrap tool function with token limiting and error handling."""

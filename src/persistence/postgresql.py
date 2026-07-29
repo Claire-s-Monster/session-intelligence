@@ -1305,7 +1305,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
             # Count sessions in the window for context
             session_row = await conn.fetchrow(
-                "SELECT COUNT(*) FROM sessions WHERE started_at >= NOW() - ($1 * INTERVAL '1 hour')",
+                "SELECT COUNT(*) FROM sessions "
+                "WHERE started_at >= NOW() - ($1 * INTERVAL '1 hour')",
                 time_window_hours,
             )
             total_sessions = session_row[0] if session_row else 0
@@ -1318,7 +1319,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             status = row_dict.get("status") or ""
             started_at = row_dict.get("started_at")
             # asyncpg returns datetime objects for TIMESTAMPTZ; normalise to ISO string
-            started_at_str = started_at.isoformat() if hasattr(started_at, "isoformat") else (started_at or "")
+            started_at_str = (
+                started_at.isoformat() if hasattr(started_at, "isoformat") else (started_at or "")
+            )
 
             performance_raw = row_dict.get("performance")
             duration_ms: float | None = None

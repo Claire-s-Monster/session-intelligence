@@ -532,9 +532,20 @@ class SessionIntelligenceEngine:
         project_name: str,
         metadata: dict[str, Any],
         session_name: str | None = None,
+        session_id: str | None = None,
     ) -> SessionResult:
-        """Create a new session with comprehensive setup."""
-        session_id = f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
+        """Create a new session with comprehensive setup.
+
+        If `session_id` is provided, it is used verbatim as the cache/DB key
+        instead of minting a `session-...` id. This lets callers bind a
+        session to an externally-supplied identifier (e.g. Claude Code's
+        native subagent session UUID) so later lookups by that same id hit
+        the cache instead of failing.
+        """
+        session_id = (
+            session_id
+            or f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
+        )
 
         # Create session metadata
         session_metadata = SessionMetadata(
@@ -847,18 +858,39 @@ class SessionIntelligenceEngine:
             )
 
         if session_id not in self.session_cache:
-            debug_logger.error(f"ERROR: session_id {session_id} not in cache")
-            debug_logger.error(
-                f"Available sessions: {list(self.session_cache.keys())}"
+            debug_logger.info(
+                f"session_id {session_id} not in cache; auto-creating and "
+                "binding a session-intelligence session to it (likely a "
+                "hook-supplied Claude Code native session id)"
             )
-            return ExecutionTrackingResult(
-                step_id="error",
+            create_result = self._create_session(
+                mode="auto",
+                project_name="_unbound_",
+                metadata={
+                    "project_path": step_data.get(
+                        "working_directory", str(Path.cwd().resolve())
+                    ),
+                    "tags": ["hook-bound", "claude-native-session"],
+                },
+                session_name=None,
                 session_id=session_id,
-                agent_name=agent_name,
-                status="error-session-not-found",
-                patterns_detected=[],
-                optimizations=[],
             )
+            if create_result.status != "success":
+                debug_logger.error(
+                    f"ERROR: failed to auto-create session for {session_id}: "
+                    f"{create_result.message}"
+                )
+                debug_logger.error(
+                    f"Available sessions: {list(self.session_cache.keys())}"
+                )
+                return ExecutionTrackingResult(
+                    step_id="error",
+                    session_id=session_id,
+                    agent_name=agent_name,
+                    status="error-session-not-found",
+                    patterns_detected=[],
+                    optimizations=[],
+                )
 
         session = self.session_cache[session_id]
         debug_logger.info(f"Found session in cache: {session.id}")

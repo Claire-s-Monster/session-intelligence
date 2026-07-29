@@ -1191,16 +1191,35 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     # Agent execution operations
 
     async def save_agent_execution(self, execution_data: dict[str, Any]) -> None:
-        """Save agent execution record."""
+        """Save agent execution record.
+
+        Accepts either raw DB-column-shaped dicts (id/started_at/completed_at,
+        as produced by query_agent_executions() round-trips and migration.py)
+        or Pydantic AgentExecution.model_dump() shaped dicts
+        (execution_id/started/completed, as produced by
+        http_server._persist_sessions_to_database). Both key spellings are
+        normalised here so callers don't have to know which shape they hold.
+        """
         pool = self._ensure_connected()
 
         from datetime import datetime
 
-        started_at = execution_data.get("started_at", self._get_timestamp())
+        execution_id = execution_data.get("id") or execution_data.get("execution_id")
+        if not execution_id:
+            raise ValueError(
+                "save_agent_execution: execution_data missing both 'id' and "
+                "'execution_id'"
+            )
+
+        started_at = (
+            execution_data.get("started_at")
+            or execution_data.get("started")
+            or self._get_timestamp()
+        )
         if isinstance(started_at, str):
             started_at = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
 
-        completed_at = execution_data.get("completed_at")
+        completed_at = execution_data.get("completed_at") or execution_data.get("completed")
         if isinstance(completed_at, str):
             completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
 
@@ -1218,16 +1237,16 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     performance = EXCLUDED.performance,
                     errors = EXCLUDED.errors
                 """,
-                execution_data["id"],
+                execution_id,
                 execution_data["session_id"],
                 execution_data["agent_name"],
                 execution_data.get("agent_type"),
                 started_at,
                 completed_at,
-                execution_data.get("status", "running"),
-                json.dumps(execution_data.get("execution_steps", [])),
-                json.dumps(execution_data.get("performance", {})),
-                json.dumps(execution_data.get("errors", [])),
+                str(execution_data.get("status", "running")),
+                json.dumps(execution_data.get("execution_steps", []), default=str),
+                json.dumps(execution_data.get("performance", {}), default=str),
+                json.dumps(execution_data.get("errors", []), default=str),
             )
 
     async def query_agent_executions(
@@ -1259,11 +1278,17 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             rows = await conn.fetch(query, *params)
             return [self._from_record(row) for row in rows]
 
-    async def get_agent_stats(self, time_window_hours: int = 168) -> list[dict[str, Any]]:
+    async def get_agent_stats(self, time_window_hours: int = 168) -> dict[str, Any]:
         """Return per-agent-type usage statistics over the last time_window_hours hours.
 
         Queries the agent_executions table directly, aggregates by agent_type,
         and returns sorted by invocations descending.
+
+        Returns a dict with "total_sessions_scanned" (int) and "agents" (list),
+        rather than embedding the session count as a per-row sentinel - that
+        design previously caused total_sessions_scanned to silently report 0
+        whenever there were zero agent_execution rows in the window, even if
+        the sessions table itself had thousands of matching rows.
         """
         pool = self._ensure_connected()
 
@@ -1351,11 +1376,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 "failures": entry["failures"],
                 "avg_duration_ms": avg_duration_ms,
                 "last_used": entry["last_used"],
-                "_total_sessions_scanned": total_sessions,
             })
 
         result.sort(key=lambda x: x["invocations"], reverse=True)
-        return result
+        return {"total_sessions_scanned": total_sessions, "agents": result}
 
     # MCP session operations
 

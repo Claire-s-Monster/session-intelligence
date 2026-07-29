@@ -3992,12 +3992,17 @@ class SessionIntelligenceEngine:
             }
 
         try:
-            raw = await self.database.get_agent_stats(time_window_hours)
+            stats_result = await self.database.get_agent_stats(time_window_hours)
 
-            # Pull total_sessions_scanned from sentinel field on first record
-            total_sessions = raw[0]["_total_sessions_scanned"] if raw else 0
+            # get_agent_stats returns {"total_sessions_scanned": int, "agents": list}.
+            # total_sessions_scanned is now reported independently of whether any
+            # agent_execution rows exist in the window (previously it was embedded
+            # as a per-row sentinel and silently collapsed to 0 whenever the
+            # agents list was empty).
+            total_sessions = stats_result.get("total_sessions_scanned", 0)
+            raw = stats_result.get("agents", [])
 
-            # Strip internal sentinel and compute success_rate
+            # Compute success_rate for each agent-type entry
             agent_stats = []
             for entry in raw:
                 invocations = entry["invocations"]

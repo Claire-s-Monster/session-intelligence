@@ -889,8 +889,28 @@ class SQLiteBackend(BaseDatabaseBackend):
     # Agent execution operations
 
     async def save_agent_execution(self, execution_data: dict[str, Any]) -> None:
-        """Save agent execution record."""
+        """Save agent execution record.
+
+        Accepts either raw DB-column-shaped dicts (id/started_at/completed_at)
+        or Pydantic AgentExecution.model_dump() shaped dicts
+        (execution_id/started/completed). See postgresql.py counterpart for
+        the same normalisation rationale.
+        """
         conn = self._ensure_connected()
+
+        execution_id = execution_data.get("id") or execution_data.get("execution_id")
+        if not execution_id:
+            raise ValueError(
+                "save_agent_execution: execution_data missing both 'id' and "
+                "'execution_id'"
+            )
+
+        started_at = (
+            execution_data.get("started_at")
+            or execution_data.get("started")
+            or self._get_timestamp()
+        )
+        completed_at = execution_data.get("completed_at") or execution_data.get("completed")
 
         await conn.execute(
             """
@@ -900,13 +920,13 @@ class SQLiteBackend(BaseDatabaseBackend):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
-                execution_data["id"],
+                execution_id,
                 execution_data["session_id"],
                 execution_data["agent_name"],
                 execution_data.get("agent_type"),
-                execution_data.get("started_at", self._get_timestamp()),
-                execution_data.get("completed_at"),
-                execution_data.get("status", "running"),
+                started_at,
+                completed_at,
+                str(execution_data.get("status", "running")),
                 self._serialize_json(execution_data.get("execution_steps", [])),
                 self._serialize_json(execution_data.get("performance", {})),
                 self._serialize_json(execution_data.get("errors", [])),
@@ -940,11 +960,14 @@ class SQLiteBackend(BaseDatabaseBackend):
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
-    async def get_agent_stats(self, time_window_hours: int = 168) -> list[dict[str, Any]]:
+    async def get_agent_stats(self, time_window_hours: int = 168) -> dict[str, Any]:
         """Return per-agent-type usage statistics over the last time_window_hours hours.
 
         Queries the agent_executions table directly (not the sessions JSON blob),
         aggregates by agent_type, and returns sorted by invocations descending.
+
+        Returns a dict with "total_sessions_scanned" (int) and "agents" (list).
+        See postgresql.py counterpart for why this isn't a bare per-row sentinel.
         """
         from datetime import timedelta
 
@@ -1036,11 +1059,10 @@ class SQLiteBackend(BaseDatabaseBackend):
                 "failures": entry["failures"],
                 "avg_duration_ms": avg_duration_ms,
                 "last_used": entry["last_used"],
-                "_total_sessions_scanned": total_sessions,
             })
 
         result.sort(key=lambda x: x["invocations"], reverse=True)
-        return result
+        return {"total_sessions_scanned": total_sessions, "agents": result}
 
     # MCP session operations
 

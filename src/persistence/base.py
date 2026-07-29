@@ -205,8 +205,12 @@ class DatabaseBackend(Protocol):
         """Query agent executions with optional filters."""
         ...
 
-    async def get_agent_stats(self, time_window_hours: int = 168) -> list[dict[str, Any]]:
-        """Return per-agent-type usage statistics over the last time_window_hours hours."""
+    async def get_agent_stats(self, time_window_hours: int = 168) -> dict[str, Any]:
+        """Return per-agent-type usage statistics over the last time_window_hours hours.
+
+        Returns a dict with "total_sessions_scanned" (int) and "agents" (list of
+        per-agent-type stat dicts).
+        """
         ...
 
     # MCP session operations

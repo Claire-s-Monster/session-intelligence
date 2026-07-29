@@ -22,11 +22,12 @@ import logging
 import sys
 from pathlib import Path
 
-# Add src to path for imports
+# Add src to path for imports (must be before local imports)
 src_path = Path(__file__).parent
 if str(src_path) not in sys.path:
     sys.path.insert(0, str(src_path))
 
+# ruff: noqa: E402
 from transport.http_server import HTTPSessionIntelligenceServer
 from transport.security import SecurityConfig
 
@@ -156,9 +157,15 @@ def main() -> None:
     logger.info(f"  GET  http://{server.host}:{server.port}/health - Health check")
     logger.info(f"  GET  http://{server.host}:{server.port}/api/sessions - List sessions")
     logger.info(f"  GET  http://{server.host}:{server.port}/api/sessions/{{id}} - Get session")
-    logger.info(f"  POST http://{server.host}:{server.port}/tools/agent_query_learnings - Query learnings")
-    logger.info(f"  POST http://{server.host}:{server.port}/tools/session_find_solution - Find solutions")
-    logger.info(f"  POST http://{server.host}:{server.port}/tools/session_log_learning - Log learning")
+    logger.info(
+        f"  POST http://{server.host}:{server.port}/tools/agent_query_learnings - Query learnings"
+    )
+    logger.info(
+        f"  POST http://{server.host}:{server.port}/tools/session_find_solution - Find solutions"
+    )
+    logger.info(
+        f"  POST http://{server.host}:{server.port}/tools/session_log_learning - Log learning"
+    )
     logger.info("")
     logger.info("MCP Protocol Endpoints (JSON-RPC 2.0):")
     logger.info(f"  POST http://{server.host}:{server.port}/mcp - MCP requests")

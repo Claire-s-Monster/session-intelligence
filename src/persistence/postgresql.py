@@ -1191,16 +1191,35 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     # Agent execution operations
 
     async def save_agent_execution(self, execution_data: dict[str, Any]) -> None:
-        """Save agent execution record."""
+        """Save agent execution record.
+
+        Accepts either raw DB-column-shaped dicts (id/started_at/completed_at,
+        as produced by query_agent_executions() round-trips and migration.py)
+        or Pydantic AgentExecution.model_dump() shaped dicts
+        (execution_id/started/completed, as produced by
+        http_server._persist_sessions_to_database). Both key spellings are
+        normalised here so callers don't have to know which shape they hold.
+        """
         pool = self._ensure_connected()
 
         from datetime import datetime
 
-        started_at = execution_data.get("started_at", self._get_timestamp())
+        execution_id = execution_data.get("id") or execution_data.get("execution_id")
+        if not execution_id:
+            raise ValueError(
+                "save_agent_execution: execution_data missing both 'id' and "
+                "'execution_id'"
+            )
+
+        started_at = (
+            execution_data.get("started_at")
+            or execution_data.get("started")
+            or self._get_timestamp()
+        )
         if isinstance(started_at, str):
             started_at = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
 
-        completed_at = execution_data.get("completed_at")
+        completed_at = execution_data.get("completed_at") or execution_data.get("completed")
         if isinstance(completed_at, str):
             completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
 
@@ -1218,16 +1237,16 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     performance = EXCLUDED.performance,
                     errors = EXCLUDED.errors
                 """,
-                execution_data["id"],
+                execution_id,
                 execution_data["session_id"],
                 execution_data["agent_name"],
                 execution_data.get("agent_type"),
                 started_at,
                 completed_at,
-                execution_data.get("status", "running"),
-                json.dumps(execution_data.get("execution_steps", [])),
-                json.dumps(execution_data.get("performance", {})),
-                json.dumps(execution_data.get("errors", [])),
+                str(execution_data.get("status", "running")),
+                json.dumps(execution_data.get("execution_steps", []), default=str),
+                json.dumps(execution_data.get("performance", {}), default=str),
+                json.dumps(execution_data.get("errors", []), default=str),
             )
 
     async def query_agent_executions(
@@ -1258,6 +1277,112 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
             return [self._from_record(row) for row in rows]
+
+    async def get_agent_stats(self, time_window_hours: int = 168) -> dict[str, Any]:
+        """Return per-agent-type usage statistics over the last time_window_hours hours.
+
+        Queries the agent_executions table directly, aggregates by agent_type,
+        and returns sorted by invocations descending.
+
+        Returns a dict with "total_sessions_scanned" (int) and "agents" (list),
+        rather than embedding the session count as a per-row sentinel - that
+        design previously caused total_sessions_scanned to silently report 0
+        whenever there were zero agent_execution rows in the window, even if
+        the sessions table itself had thousands of matching rows.
+        """
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT agent_type, agent_name, status, performance, started_at, completed_at
+                FROM agent_executions
+                WHERE started_at >= NOW() - ($1 * INTERVAL '1 hour')
+                ORDER BY started_at DESC
+                """,
+                time_window_hours,
+            )
+
+            # Count sessions in the window for context
+            session_row = await conn.fetchrow(
+                "SELECT COUNT(*) FROM sessions "
+                "WHERE started_at >= NOW() - ($1 * INTERVAL '1 hour')",
+                time_window_hours,
+            )
+            total_sessions = session_row[0] if session_row else 0
+
+        # Aggregate by agent_type (fall back to agent_name if type is NULL)
+        stats_map: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            row_dict = dict(row)
+            agent_type = row_dict.get("agent_type") or row_dict.get("agent_name") or "unknown"
+            status = row_dict.get("status") or ""
+            started_at = row_dict.get("started_at")
+            # asyncpg returns datetime objects for TIMESTAMPTZ; normalise to ISO string
+            started_at_str = (
+                started_at.isoformat() if hasattr(started_at, "isoformat") else (started_at or "")
+            )
+
+            performance_raw = row_dict.get("performance")
+            duration_ms: float | None = None
+            if performance_raw:
+                try:
+                    perf = (
+                        json.loads(performance_raw)
+                        if isinstance(performance_raw, str)
+                        else performance_raw
+                    )
+                    duration_ms = perf.get("duration_ms") or perf.get("total_duration_ms")
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+
+            if agent_type not in stats_map:
+                stats_map[agent_type] = {
+                    "agent_type": agent_type,
+                    "invocations": 0,
+                    "successes": 0,
+                    "failures": 0,
+                    "duration_ms_total": 0.0,
+                    "duration_ms_count": 0,
+                    "last_used": started_at_str,
+                }
+
+            entry = stats_map[agent_type]
+            entry["invocations"] += 1
+
+            if status in ("completed", "success"):
+                entry["successes"] += 1
+            elif status in ("failed", "error"):
+                entry["failures"] += 1
+
+            if duration_ms is not None:
+                entry["duration_ms_total"] += duration_ms
+                entry["duration_ms_count"] += 1
+
+            # Track most recent use
+            if started_at_str > entry["last_used"]:
+                entry["last_used"] = started_at_str
+
+        # Build final list
+        result = []
+        for entry in stats_map.values():
+            dur_count = entry["duration_ms_count"]
+            avg_duration_ms = (
+                round(entry["duration_ms_total"] / dur_count, 1)
+                if dur_count > 0
+                else None
+            )
+            result.append({
+                "agent_type": entry["agent_type"],
+                "invocations": entry["invocations"],
+                "successes": entry["successes"],
+                "failures": entry["failures"],
+                "avg_duration_ms": avg_duration_ms,
+                "last_used": entry["last_used"],
+            })
+
+        result.sort(key=lambda x: x["invocations"], reverse=True)
+        return {"total_sessions_scanned": total_sessions, "agents": result}
 
     # MCP session operations
 

@@ -155,6 +155,12 @@ class SessionIntelligenceEngine:
 
         self.session_cache: dict[str, Session] = {}
         self.pattern_cache: dict[str, list[PatternAnalysis]] = {}
+        # Caches the last known-real agent_type per agent_name so a later
+        # call (e.g. SubagentStop, which may report an empty string due to
+        # a Claude Code harness quirk) can recover the type observed on an
+        # earlier call (e.g. SubagentStart) for the same agent_name.
+        # See issue #41.
+        self._agent_type_cache: dict[str, str] = {}
         self.use_filesystem = use_filesystem
         self.database = database  # Optional database for persistence
         self._current_session_id: str | None = None
@@ -944,6 +950,20 @@ class SessionIntelligenceEngine:
         execution_step.patterns_detected = patterns
         execution_step.optimizations_available = optimizations
 
+        # Resolve agent_type, preferring a cached real value over an
+        # empty/"unknown" one reported on this particular call. See issue
+        # #41: the SubagentStop hook can report agent_type as "" (a
+        # present-but-falsy key) due to a Claude Code harness quirk, which
+        # `.get(key, default)` does not substitute a default for.
+        raw_agent_type = step_data.get("agent_type", "unknown")
+        if raw_agent_type and raw_agent_type != "unknown":
+            resolved_agent_type = raw_agent_type
+            self._agent_type_cache[agent_name] = raw_agent_type
+        else:
+            resolved_agent_type = self._agent_type_cache.get(
+                agent_name, raw_agent_type or "unknown"
+            )
+
         # Find or create agent execution
         agent_execution = None
         for agent_exec in session.agents_executed:
@@ -957,7 +977,7 @@ class SessionIntelligenceEngine:
 
             agent_execution = AgentExecution(
                 agent_name=agent_name,
-                agent_type=step_data.get("agent_type", "unknown"),
+                agent_type=resolved_agent_type,
                 execution_id=f"{agent_name}-{uuid.uuid4().hex[:8]}",
                 started=datetime.now(UTC),
                 context=AgentContext(
@@ -974,6 +994,11 @@ class SessionIntelligenceEngine:
         if is_agent_stop:
             agent_execution.status = terminal_status
             agent_execution.completed = completed_at
+            if resolved_agent_type != "unknown" and not (
+                agent_execution.agent_type
+                and agent_execution.agent_type != "unknown"
+            ):
+                agent_execution.agent_type = resolved_agent_type
 
         # Add step to agent execution
         agent_execution.execution_steps.append(execution_step)

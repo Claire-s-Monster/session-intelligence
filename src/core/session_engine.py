@@ -905,6 +905,17 @@ class SessionIntelligenceEngine:
         )
         debug_logger.info(f"Created step_id: {step_id}")
 
+        # The SubagentStop hook reports phase="agent_stop" with a "success"
+        # flag once an agent finishes. That is the only signal we have to
+        # transition an execution out of RUNNING into a terminal state.
+        is_agent_stop = step_data.get("phase") == "agent_stop"
+        terminal_status = (
+            ExecutionStatus.SUCCESS
+            if step_data.get("success")
+            else ExecutionStatus.ERROR
+        )
+        completed_at = datetime.now(UTC) if is_agent_stop else None
+
         execution_step = ExecutionStep(
             step_id=step_id,
             step_number=len(session.agents_executed) + 1,
@@ -913,7 +924,8 @@ class SessionIntelligenceEngine:
             description=step_data.get("description", ""),
             tools_used=step_data.get("tools_used", []),
             started=datetime.now(UTC),
-            status=ExecutionStatus.RUNNING,
+            completed=completed_at,
+            status=terminal_status if is_agent_stop else ExecutionStatus.RUNNING,
         )
         debug_logger.info(f"Created execution_step: {execution_step}")
 
@@ -958,6 +970,10 @@ class SessionIntelligenceEngine:
                 performance=AgentPerformance(),
             )
             session.agents_executed.append(agent_execution)
+
+        if is_agent_stop:
+            agent_execution.status = terminal_status
+            agent_execution.completed = completed_at
 
         # Add step to agent execution
         agent_execution.execution_steps.append(execution_step)

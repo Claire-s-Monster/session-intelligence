@@ -47,6 +47,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         ended_at TIMESTAMPTZ,
         project_path TEXT NOT NULL,
         project_name TEXT,
+        session_name TEXT,
         mode TEXT DEFAULT 'local',
         status TEXT DEFAULT 'active',
         metadata JSONB DEFAULT '{}',
@@ -58,6 +59,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
     CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
     CREATE INDEX IF NOT EXISTS idx_sessions_metadata ON sessions USING GIN (metadata);
+    CREATE INDEX IF NOT EXISTS idx_sessions_session_name ON sessions(session_name)
+        WHERE session_name IS NOT NULL;
 
     -- Decisions table with category index for filtering
     CREATE TABLE IF NOT EXISTS decisions (
@@ -203,6 +206,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     CREATE TABLE IF NOT EXISTS project_learnings (
         id TEXT PRIMARY KEY,
         project_path TEXT NOT NULL,
+        project_name TEXT,
         category TEXT NOT NULL,
         trigger_context TEXT,
         learning_content TEXT NOT NULL,
@@ -215,6 +219,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     );
 
     CREATE INDEX IF NOT EXISTS idx_learnings_project ON project_learnings(project_path);
+    CREATE INDEX IF NOT EXISTS idx_learnings_project_name ON project_learnings(project_name)
+        WHERE project_name IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_learnings_category ON project_learnings(category);
     CREATE INDEX IF NOT EXISTS idx_learnings_promoted ON project_learnings(promoted_to_universal);
 
@@ -375,6 +381,23 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 self.SCHEMA_VERSION,
             )
 
+            # Idempotent migrations for existing databases
+            await conn.execute(
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_name TEXT"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_session_name "
+                "ON sessions(session_name) WHERE session_name IS NOT NULL"
+            )
+            await conn.execute(
+                "ALTER TABLE project_learnings "
+                "ADD COLUMN IF NOT EXISTS project_name TEXT"
+            )
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_learnings_project_name "
+                "ON project_learnings(project_name) WHERE project_name IS NOT NULL"
+            )
+
         self._is_connected = True
         logger.info(f"PostgreSQL database initialized: {sanitize_dsn(self.dsn)}")
 
@@ -444,25 +467,37 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         """Save or update a session."""
         pool = self._ensure_connected()
 
+        from datetime import datetime
+
+        started_at = session_data.get("started") or session_data.get("started_at")
+        if isinstance(started_at, str):
+            started_at = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+
+        ended_at = session_data.get("completed") or session_data.get("ended_at")
+        if isinstance(ended_at, str):
+            ended_at = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
+
         async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO sessions
-                (id, started_at, ended_at, project_path, project_name, mode, status,
-                 metadata, performance_metrics, health_status)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                (id, started_at, ended_at, project_path, project_name, session_name,
+                 mode, status, metadata, performance_metrics, health_status)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 ON CONFLICT (id) DO UPDATE SET
                     ended_at = EXCLUDED.ended_at,
                     status = EXCLUDED.status,
+                    session_name = EXCLUDED.session_name,
                     metadata = EXCLUDED.metadata,
                     performance_metrics = EXCLUDED.performance_metrics,
                     health_status = EXCLUDED.health_status
                 """,
                 session_data["id"],
-                session_data.get("started") or session_data.get("started_at"),
-                session_data.get("completed") or session_data.get("ended_at"),
+                started_at,
+                ended_at,
                 session_data.get("project_path", ""),
                 session_data.get("project_name"),
+                session_data.get("session_name"),
                 session_data.get("mode", "local"),
                 session_data.get("status", "active"),
                 json.dumps(session_data.get("metadata", {})),
@@ -553,12 +588,82 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
             return deleted
 
+    @db_retry
+    async def find_session_by_name(
+        self, session_name: str, project_name: str | None = None
+    ) -> dict[str, Any] | None:
+        """Find a session by its human-readable name, optionally scoped to a project.
+
+        Returns the most-recent match (ORDER BY started_at DESC LIMIT 1), or None
+        if no session with that name exists. When project_name is provided, only
+        sessions belonging to that project are considered.
+        """
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            if project_name is not None:
+                row = await conn.fetchrow(
+                    """
+                    SELECT * FROM sessions
+                    WHERE session_name = $1 AND project_name = $2
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    session_name,
+                    project_name,
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    SELECT * FROM sessions
+                    WHERE session_name = $1
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    session_name,
+                )
+            if row:
+                return self._normalize_session_data(self._from_record(row))
+            return None
+
+    @db_retry
+    async def find_recent_session_by_project(
+        self, project_name: str, status: str = "active"
+    ) -> dict[str, Any] | None:
+        """Find the most-recent session for a project name with the given status.
+
+        Returns the most-recent match (ORDER BY started_at DESC LIMIT 1), or None
+        if no matching session exists.
+        """
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT * FROM sessions
+                WHERE project_name = $1 AND status = $2
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                project_name,
+                status,
+            )
+            if row:
+                return self._normalize_session_data(self._from_record(row))
+            return None
+
     # Decision operations
 
     @db_retry
     async def save_decision(self, decision_data: dict[str, Any]) -> None:
         """Save a decision."""
         pool = self._ensure_connected()
+
+        from datetime import datetime
+
+        timestamp = decision_data.get("timestamp", self._get_timestamp())
+        if isinstance(timestamp, str):
+            timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
 
         async with pool.acquire() as conn:
             await conn.execute(
@@ -574,7 +679,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 """,
                 decision_data.get("decision_id") or decision_data.get("id"),
                 decision_data["session_id"],
-                decision_data.get("timestamp", self._get_timestamp()),
+                timestamp,
                 decision_data.get("category"),
                 decision_data.get("description") or decision_data.get("decision", ""),
                 decision_data.get("rationale"),
@@ -631,6 +736,12 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         """Save metrics snapshot."""
         pool = self._ensure_connected()
 
+        from datetime import datetime
+
+        timestamp = metrics_data.get("timestamp", self._get_timestamp())
+        if isinstance(timestamp, str):
+            timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+
         async with pool.acquire() as conn:
             await conn.execute(
                 """
@@ -641,7 +752,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 """,
                 metrics_data["session_id"],
                 metrics_data.get("branch"),
-                metrics_data.get("timestamp", self._get_timestamp()),
+                timestamp,
                 metrics_data.get("coverage"),
                 metrics_data.get("complexity"),
                 metrics_data.get("test_count"),
@@ -692,6 +803,12 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         """Save a session note."""
         pool = self._ensure_connected()
 
+        from datetime import date
+
+        note_date = note_data.get("date")
+        if isinstance(note_date, str):
+            note_date = date.fromisoformat(note_date)
+
         async with pool.acquire() as conn:
             await conn.execute(
                 """
@@ -699,14 +816,18 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 VALUES ($1, $2, $3, $4)
                 """,
                 note_data["session_id"],
-                note_data.get("date"),
+                note_date,
                 note_data["content"],
                 json.dumps(note_data.get("tags", [])),
             )
 
     async def query_notes_by_date(self, date: str, limit: int = 100) -> list[dict[str, Any]]:
         """Query notes by date across sessions."""
+        from datetime import date as date_type
+
         pool = self._ensure_connected()
+
+        query_date = date_type.fromisoformat(date) if isinstance(date, str) else date
 
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -718,10 +839,17 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 ORDER BY n.id DESC
                 LIMIT $2
                 """,
-                date,
+                query_date,
                 limit,
             )
-            return [self._from_record(row) for row in rows]
+            results = []
+            for row in rows:
+                result = self._from_record(row)
+                # Normalize DATE column: PostgreSQL returns datetime.date, tests expect string
+                if "date" in result and not isinstance(result["date"], str):
+                    result["date"] = str(result["date"])
+                results.append(result)
+            return results
 
     # File operations tracking
 
@@ -740,7 +868,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             await conn.execute(
                 """
                 INSERT INTO file_operations
-                (session_id, timestamp, operation, file_path, lines_added, lines_removed, summary, tool_name)
+                (session_id, timestamp, operation, file_path, lines_added, lines_removed,
+                 summary, tool_name)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 """,
                 file_op_data["session_id"],
@@ -873,11 +1002,226 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
             return [self._from_record(row) for row in rows]
 
+    async def query_summaries_by_tag(self, tag: str, limit: int = 50) -> list[dict[str, Any]]:
+        """Query session summaries that contain a specific tag."""
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT ss.*, s.project_path, s.project_name
+                FROM session_summaries ss
+                JOIN sessions s ON ss.session_id = s.id
+                WHERE ss.tags @> $1::jsonb
+                ORDER BY ss.created_at DESC
+                LIMIT $2
+                """,
+                json.dumps([tag]),
+                limit,
+            )
+            return [self._from_record(row) for row in rows]
+
+    async def query_recent_summaries(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Get most recent session summaries."""
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT ss.*, s.project_path, s.project_name
+                FROM session_summaries ss
+                JOIN sessions s ON ss.session_id = s.id
+                ORDER BY ss.created_at DESC
+                LIMIT $1
+                """,
+                limit,
+            )
+            return [self._from_record(row) for row in rows]
+
+    async def search_by_file_change(
+        self, file_pattern: str, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Search sessions by file changes stored in session_summaries.key_changes."""
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT ss.*, s.project_name, s.project_path
+                FROM session_summaries ss
+                JOIN sessions s ON ss.session_id = s.id
+                WHERE EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements_text(ss.key_changes) AS kc
+                    WHERE kc ILIKE $1
+                )
+                ORDER BY ss.created_at DESC
+                LIMIT $2
+                """,
+                f"%{file_pattern}%",
+                limit,
+            )
+            return [self._from_record(row) for row in rows]
+
+    async def recall_project(
+        self,
+        project_name: str,
+        include: list[str] | None = None,
+        limit: int = 10,
+        days: int = 30,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        """Recall recent sessions, decisions, learnings, and notebooks for a project."""
+        from datetime import UTC, datetime, timedelta
+
+        pool = self._ensure_connected()
+        cutoff = datetime.now(UTC) - timedelta(days=days)
+        include_all = include is None
+        result: dict[str, Any] = {
+            "project_name": project_name,
+            "recall_window_days": days,
+            "sessions": [],
+            "decisions": [],
+            "learnings": [],
+            "notebooks": [],
+        }
+
+        async with pool.acquire() as conn:
+            if include_all or "sessions" in include:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, started_at, ended_at, status, mode
+                    FROM sessions
+                    WHERE project_name = $1 AND started_at > $2
+                    ORDER BY started_at DESC
+                    LIMIT $3
+                    """,
+                    project_name,
+                    cutoff,
+                    limit,
+                )
+                result["sessions"] = [
+                    {
+                        "id": row["id"],
+                        "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+                        "status": row["status"],
+                    }
+                    for row in rows
+                ]
+
+            if include_all or "decisions" in include:
+                rows = await conn.fetch(
+                    """
+                    SELECT d.id, d.description, d.category, d.rationale,
+                           d.impact_level, d.timestamp, s.id AS session_id
+                    FROM decisions d
+                    JOIN sessions s ON d.session_id = s.id
+                    WHERE s.project_name = $1 AND d.timestamp > $2
+                    ORDER BY d.timestamp DESC
+                    LIMIT $3
+                    """,
+                    project_name,
+                    cutoff,
+                    limit,
+                )
+                result["decisions"] = [
+                    {
+                        "description": row["description"],
+                        "category": row["category"],
+                        "rationale": row["rationale"],
+                        "timestamp": row["timestamp"].isoformat() if row["timestamp"] else None,
+                    }
+                    for row in rows
+                ]
+
+            if include_all or "learnings" in include:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, category, trigger_context, learning_content,
+                           project_name, source_session_id, success_count,
+                           failure_count, created_at, last_used
+                    FROM project_learnings
+                    WHERE project_name = $1
+                       OR (project_name IS NULL AND project_path = (
+                           SELECT project_path FROM sessions
+                           WHERE project_name = $1
+                             AND project_path IS NOT NULL
+                           LIMIT 1
+                       ))
+                    ORDER BY success_count DESC, last_used DESC
+                    LIMIT $2
+                    """,
+                    project_name,
+                    limit,
+                )
+                result["learnings"] = [self._from_record(row) for row in rows]
+
+            if include_all or "notebooks" in include:
+                rows = await conn.fetch(
+                    """
+                    SELECT ss.title, ss.tags, ss.created_at, ss.session_id
+                    FROM session_summaries ss
+                    JOIN sessions s ON ss.session_id = s.id
+                    WHERE s.project_name = $1 AND ss.created_at > $2
+                    ORDER BY ss.created_at DESC
+                    LIMIT $3
+                    """,
+                    project_name,
+                    cutoff,
+                    limit,
+                )
+                result["notebooks"] = [
+                    {
+                        "title": row["title"],
+                        "tags": row["tags"],
+                        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                        "session_id": row["session_id"],
+                    }
+                    for row in rows
+                ]
+
+        result["counts"] = {
+            "sessions": len(result["sessions"]),
+            "decisions": len(result["decisions"]),
+            "learnings": len(result["learnings"]),
+            "notebooks": len(result["notebooks"]),
+        }
+        return result
+
     # Agent execution operations
 
     async def save_agent_execution(self, execution_data: dict[str, Any]) -> None:
-        """Save agent execution record."""
+        """Save agent execution record.
+
+        Accepts either raw DB-column-shaped dicts (id/started_at/completed_at,
+        as produced by query_agent_executions() round-trips and migration.py)
+        or Pydantic AgentExecution.model_dump() shaped dicts
+        (execution_id/started/completed, as produced by
+        http_server._persist_sessions_to_database). Both key spellings are
+        normalised here so callers don't have to know which shape they hold.
+        """
         pool = self._ensure_connected()
+
+        from datetime import datetime
+
+        execution_id = execution_data.get("id") or execution_data.get("execution_id")
+        if not execution_id:
+            raise ValueError(
+                "save_agent_execution: execution_data missing both 'id' and "
+                "'execution_id'"
+            )
+
+        started_at = (
+            execution_data.get("started_at")
+            or execution_data.get("started")
+            or self._get_timestamp()
+        )
+        if isinstance(started_at, str):
+            started_at = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+
+        completed_at = execution_data.get("completed_at") or execution_data.get("completed")
+        if isinstance(completed_at, str):
+            completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
 
         async with pool.acquire() as conn:
             await conn.execute(
@@ -893,16 +1237,16 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     performance = EXCLUDED.performance,
                     errors = EXCLUDED.errors
                 """,
-                execution_data["id"],
+                execution_id,
                 execution_data["session_id"],
                 execution_data["agent_name"],
                 execution_data.get("agent_type"),
-                execution_data.get("started_at", self._get_timestamp()),
-                execution_data.get("completed_at"),
-                execution_data.get("status", "running"),
-                json.dumps(execution_data.get("execution_steps", [])),
-                json.dumps(execution_data.get("performance", {})),
-                json.dumps(execution_data.get("errors", [])),
+                started_at,
+                completed_at,
+                str(execution_data.get("status", "running")),
+                json.dumps(execution_data.get("execution_steps", []), default=str),
+                json.dumps(execution_data.get("performance", {}), default=str),
+                json.dumps(execution_data.get("errors", []), default=str),
             )
 
     async def query_agent_executions(
@@ -933,6 +1277,112 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
             return [self._from_record(row) for row in rows]
+
+    async def get_agent_stats(self, time_window_hours: int = 168) -> dict[str, Any]:
+        """Return per-agent-type usage statistics over the last time_window_hours hours.
+
+        Queries the agent_executions table directly, aggregates by agent_type,
+        and returns sorted by invocations descending.
+
+        Returns a dict with "total_sessions_scanned" (int) and "agents" (list),
+        rather than embedding the session count as a per-row sentinel - that
+        design previously caused total_sessions_scanned to silently report 0
+        whenever there were zero agent_execution rows in the window, even if
+        the sessions table itself had thousands of matching rows.
+        """
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT agent_type, agent_name, status, performance, started_at, completed_at
+                FROM agent_executions
+                WHERE started_at >= NOW() - ($1 * INTERVAL '1 hour')
+                ORDER BY started_at DESC
+                """,
+                time_window_hours,
+            )
+
+            # Count sessions in the window for context
+            session_row = await conn.fetchrow(
+                "SELECT COUNT(*) FROM sessions "
+                "WHERE started_at >= NOW() - ($1 * INTERVAL '1 hour')",
+                time_window_hours,
+            )
+            total_sessions = session_row[0] if session_row else 0
+
+        # Aggregate by agent_type (fall back to agent_name if type is NULL)
+        stats_map: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            row_dict = dict(row)
+            agent_type = row_dict.get("agent_type") or row_dict.get("agent_name") or "unknown"
+            status = row_dict.get("status") or ""
+            started_at = row_dict.get("started_at")
+            # asyncpg returns datetime objects for TIMESTAMPTZ; normalise to ISO string
+            started_at_str = (
+                started_at.isoformat() if hasattr(started_at, "isoformat") else (started_at or "")
+            )
+
+            performance_raw = row_dict.get("performance")
+            duration_ms: float | None = None
+            if performance_raw:
+                try:
+                    perf = (
+                        json.loads(performance_raw)
+                        if isinstance(performance_raw, str)
+                        else performance_raw
+                    )
+                    duration_ms = perf.get("duration_ms") or perf.get("total_duration_ms")
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+
+            if agent_type not in stats_map:
+                stats_map[agent_type] = {
+                    "agent_type": agent_type,
+                    "invocations": 0,
+                    "successes": 0,
+                    "failures": 0,
+                    "duration_ms_total": 0.0,
+                    "duration_ms_count": 0,
+                    "last_used": started_at_str,
+                }
+
+            entry = stats_map[agent_type]
+            entry["invocations"] += 1
+
+            if status in ("completed", "success"):
+                entry["successes"] += 1
+            elif status in ("failed", "error"):
+                entry["failures"] += 1
+
+            if duration_ms is not None:
+                entry["duration_ms_total"] += duration_ms
+                entry["duration_ms_count"] += 1
+
+            # Track most recent use
+            if started_at_str > entry["last_used"]:
+                entry["last_used"] = started_at_str
+
+        # Build final list
+        result = []
+        for entry in stats_map.values():
+            dur_count = entry["duration_ms_count"]
+            avg_duration_ms = (
+                round(entry["duration_ms_total"] / dur_count, 1)
+                if dur_count > 0
+                else None
+            )
+            result.append({
+                "agent_type": entry["agent_type"],
+                "invocations": entry["invocations"],
+                "successes": entry["successes"],
+                "failures": entry["failures"],
+                "avg_duration_ms": avg_duration_ms,
+                "last_used": entry["last_used"],
+            })
+
+        result.sort(key=lambda x: x["invocations"], reverse=True)
+        return {"total_sessions_scanned": total_sessions, "agents": result}
 
     # MCP session operations
 
@@ -1119,6 +1569,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         learning_content: str,
         trigger_context: str | None = None,
         source_session_id: str | None = None,
+        project_name: str | None = None,
     ) -> dict[str, Any]:
         """Save a project-specific learning."""
         pool = self._ensure_connected()
@@ -1127,17 +1578,19 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             await conn.execute(
                 """
                 INSERT INTO project_learnings (
-                    id, project_path, category, trigger_context, learning_content,
-                    source_session_id, success_count, failure_count, last_used,
-                    promoted_to_universal, created_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, 1, 0, NOW(), FALSE, NOW())
+                    id, project_path, project_name, category, trigger_context,
+                    learning_content, source_session_id, success_count, failure_count,
+                    last_used, promoted_to_universal, created_at
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 0, NOW(), FALSE, NOW())
                 ON CONFLICT(id) DO UPDATE SET
                     learning_content = EXCLUDED.learning_content,
                     trigger_context = EXCLUDED.trigger_context,
+                    project_name = EXCLUDED.project_name,
                     last_used = NOW()
                 """,
                 learning_id,
                 project_path,
+                project_name,
                 category,
                 trigger_context,
                 learning_content,
@@ -1387,8 +1840,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     total_executions, total_decisions, total_learnings,
                     total_notebooks, is_active
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-                ON CONFLICT (id) DO UPDATE SET
-                    name = EXCLUDED.name,
+                ON CONFLICT (name) DO UPDATE SET
                     agent_type = EXCLUDED.agent_type,
                     display_name = EXCLUDED.display_name,
                     description = EXCLUDED.description,
@@ -1778,48 +2230,139 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
         Args:
             query: Search query string
-            search_type: Type of search - "fulltext", "tag", or "file" (only fulltext supported)
+            search_type: Type of search - "fulltext", "tag", "file", "learnings",
+                or "decisions"
             limit: Maximum results to return
 
         Returns:
-            List of dicts with session_id, title, summary, tags, relevance, snippet
+            List of dicts with session_id, title, snippet, relevance, project_name,
+            project_path, started_at, tags
         """
         pool = self._ensure_connected()
 
         async with pool.acquire() as conn:
-            # PostgreSQL full-text search using to_tsvector and plainto_tsquery
-            # Search in both title and summary_markdown fields
-            # JOIN with sessions table to avoid N+1 query pattern
-            rows = await conn.fetch(
-                """
-                SELECT
-                    ss.session_id,
-                    ss.title,
-                    ss.summary_markdown as summary,
-                    ss.tags,
-                    ss.created_at,
-                    s.project_name,
-                    s.project_path,
-                    s.started_at,
-                    ts_rank(
-                        to_tsvector('english', coalesce(ss.title, '') || ' ' || coalesce(ss.summary_markdown, '')),
-                        plainto_tsquery('english', $1)
-                    ) as relevance,
-                    ts_headline(
-                        'english',
-                        coalesce(ss.summary_markdown, ''),
-                        plainto_tsquery('english', $1),
-                        'MaxWords=50, MinWords=25, MaxFragments=1'
-                    ) as snippet
-                FROM session_summaries ss
-                JOIN sessions s ON ss.session_id = s.id
-                WHERE to_tsvector('english', coalesce(ss.title, '') || ' ' || coalesce(ss.summary_markdown, ''))
-                      @@ plainto_tsquery('english', $1)
-                ORDER BY relevance DESC
-                LIMIT $2
-                """,
-                query,
-                limit,
-            )
+            if search_type == "decisions":
+                # Search decisions table cross-project using PostgreSQL FTS.
+                # JOIN with sessions to surface project_name/project_path.
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        d.id as session_id,
+                        d.category as title,
+                        ts_headline(
+                            'english',
+                            coalesce(d.description, ''),
+                            plainto_tsquery('english', $1),
+                            'MaxWords=50, MinWords=25, MaxFragments=1'
+                        ) as snippet,
+                        ts_rank(
+                            to_tsvector(
+                                'english',
+                                coalesce(d.category, '') || ' ' ||
+                                coalesce(d.description, '') || ' ' ||
+                                coalesce(d.rationale, '')
+                            ),
+                            plainto_tsquery('english', $1)
+                        ) as relevance,
+                        s.project_name,
+                        s.project_path,
+                        d.timestamp as started_at,
+                        '[]'::jsonb as tags
+                    FROM decisions d
+                    JOIN sessions s ON d.session_id = s.id
+                    WHERE to_tsvector(
+                            'english',
+                            coalesce(d.category, '') || ' ' ||
+                            coalesce(d.description, '') || ' ' ||
+                            coalesce(d.rationale, '')
+                          )
+                          @@ plainto_tsquery('english', $1)
+                    ORDER BY relevance DESC
+                    LIMIT $2
+                    """,
+                    query,
+                    limit,
+                )
+            elif search_type == "learnings":
+                # Search project_learnings table using PostgreSQL FTS
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        id as session_id,
+                        category as title,
+                        ts_headline(
+                            'english',
+                            coalesce(learning_content, ''),
+                            plainto_tsquery('english', $1),
+                            'MaxWords=50, MinWords=25, MaxFragments=1'
+                        ) as snippet,
+                        ts_rank(
+                            to_tsvector(
+                                'english',
+                                coalesce(category, '') || ' ' ||
+                                coalesce(trigger_context, '') || ' ' ||
+                                coalesce(learning_content, '')
+                            ),
+                            plainto_tsquery('english', $1)
+                        ) as relevance,
+                        NULL::text as project_name,
+                        project_path,
+                        created_at as started_at,
+                        '[]'::jsonb as tags
+                    FROM project_learnings
+                    WHERE to_tsvector(
+                            'english',
+                            coalesce(category, '') || ' ' ||
+                            coalesce(trigger_context, '') || ' ' ||
+                            coalesce(learning_content, '')
+                          )
+                          @@ plainto_tsquery('english', $1)
+                    ORDER BY relevance DESC
+                    LIMIT $2
+                    """,
+                    query,
+                    limit,
+                )
+            else:
+                # PostgreSQL full-text search using to_tsvector and plainto_tsquery
+                # Search in both title and summary_markdown fields
+                # JOIN with sessions table to avoid N+1 query pattern
+                rows = await conn.fetch(
+                    """
+                    SELECT
+                        ss.session_id,
+                        ss.title,
+                        ss.summary_markdown as summary,
+                        ss.tags,
+                        ss.created_at,
+                        s.project_name,
+                        s.project_path,
+                        s.started_at,
+                        ts_rank(
+                            to_tsvector(
+                                'english',
+                                coalesce(ss.title, '') || ' ' || coalesce(ss.summary_markdown, '')
+                            ),
+                            plainto_tsquery('english', $1)
+                        ) as relevance,
+                        ts_headline(
+                            'english',
+                            coalesce(ss.summary_markdown, ''),
+                            plainto_tsquery('english', $1),
+                            'MaxWords=50, MinWords=25, MaxFragments=1'
+                        ) as snippet
+                    FROM session_summaries ss
+                    JOIN sessions s ON ss.session_id = s.id
+                    WHERE to_tsvector(
+                            'english',
+                            coalesce(ss.title, '') || ' ' || coalesce(ss.summary_markdown, '')
+                          )
+                          @@ plainto_tsquery('english', $1)
+                    ORDER BY relevance DESC
+                    LIMIT $2
+                    """,
+                    query,
+                    limit,
+                )
 
         return [dict(row) for row in rows]

@@ -4,6 +4,7 @@ updates:
   # Python dependencies via pip
   - package-ecosystem: "pip"
     directory: "/"
+    target-branch: "development"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
@@ -14,6 +15,7 @@ updates:
   # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "development"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5

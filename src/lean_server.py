@@ -23,6 +23,7 @@ from pathlib import Path
 
 from core.session_engine import SessionIntelligenceEngine
 from lean_mcp_interface import create_lean_interface
+from persistence import DatabaseConfig, create_database, sanitize_dsn
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,11 @@ def parse_args():
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging level (default: INFO)",
+    )
+    parser.add_argument(
+        "--no-database",
+        action="store_true",
+        help="Run without database (learnings will not persist)",
     )
     return parser.parse_args()
 
@@ -64,11 +70,26 @@ def main():
         repository_path = Path(args.repository).resolve()
         logger.info(f"Initializing lean MCP server for repository: {repository_path}")
 
-        # Initialize session intelligence engine
-        session_engine = SessionIntelligenceEngine(repository_path=str(repository_path))
+        # Initialize database for persistence
+        database = None
+        if not args.no_database:
+            try:
+                db_config = DatabaseConfig.load()
+                database = create_database(config=db_config)
+                logger.info("Database backend: postgresql")
+                logger.info(f"Database: {sanitize_dsn(db_config.postgresql_dsn or '')}")
+            except Exception as e:
+                logger.warning(f"Could not create database connection: {e}")
+                logger.warning("Running without database - learnings will not persist")
+
+        # Initialize session intelligence engine with database
+        session_engine = SessionIntelligenceEngine(
+            repository_path=str(repository_path),
+            database=database,
+        )
 
         # Create lean interface with 3 meta-tools
-        app = create_lean_interface(session_engine)
+        app = create_lean_interface(session_engine, database=database)
 
         logger.info("Starting lean MCP server with meta-tool pattern")
         logger.info("Context consumption: ~500 tokens (vs 20-50K tokens for traditional MCP)")

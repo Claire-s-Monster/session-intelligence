@@ -44,24 +44,6 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 
-
-class DataclassJSONEncoder(json.JSONEncoder):
-    """JSON encoder that handles dataclasses and common non-serializable types."""
-
-    def default(self, obj: Any) -> Any:
-        if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-            return dataclasses.asdict(obj)
-        if hasattr(obj, "model_dump"):  # Pydantic v2
-            return obj.model_dump()
-        if hasattr(obj, "dict"):  # Pydantic v1
-            return obj.dict()
-        if isinstance(obj, datetime):
-            return obj.isoformat()
-        if hasattr(obj, "__dict__"):
-            return obj.__dict__
-        return super().default(obj)
-
-
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -79,6 +61,23 @@ from transport.security import (
 )
 from utils.token_limiter import apply_token_limits
 
+
+class DataclassJSONEncoder(json.JSONEncoder):
+    """JSON encoder that handles dataclasses and common non-serializable types."""
+
+    def default(self, obj: Any) -> Any:
+        if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+            return dataclasses.asdict(obj)
+        if hasattr(obj, "model_dump"):  # Pydantic v2
+            return obj.model_dump()
+        if hasattr(obj, "dict"):  # Pydantic v1
+            return obj.dict()
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        if hasattr(obj, "__dict__"):
+            return obj.__dict__
+        return super().default(obj)
+
 logger = logging.getLogger(__name__)
 
 
@@ -88,18 +87,24 @@ class NotificationManager:
     def __init__(self) -> None:
         self._subscribers: dict[str, asyncio.Queue[dict[str, Any]]] = {}
 
-    async def subscribe(self, mcp_session_id: str) -> AsyncGenerator[dict[str, Any], None]:
+    async def subscribe(
+        self, mcp_session_id: str, idle_timeout: float = 300.0
+    ) -> AsyncGenerator[dict[str, Any], None]:
         """Subscribe to notifications for an MCP session."""
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self._subscribers[mcp_session_id] = queue
 
         try:
             while True:
-                notification = await queue.get()
-                yield notification
+                try:
+                    notification = await asyncio.wait_for(
+                        queue.get(), timeout=idle_timeout
+                    )
+                    yield notification
+                except TimeoutError:
+                    break
         finally:
-            if mcp_session_id in self._subscribers:
-                del self._subscribers[mcp_session_id]
+            self._subscribers.pop(mcp_session_id, None)
 
     async def notify(self, mcp_session_id: str, event_type: str, data: dict[str, Any]) -> None:
         """Send notification to a specific MCP session."""
@@ -739,7 +744,20 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
         elif tool_name == "execute_tool":
             target = arguments.get("tool_name")
             tool_params = arguments.get("parameters", {})
-            if target not in tool_registry:
+            # Coerce JSON string parameters to dict (MCP proxies may serialize objects as strings)
+            if isinstance(tool_params, str):
+                try:
+                    tool_params = json.loads(tool_params)
+                except (json.JSONDecodeError, TypeError):
+                    result = {"error": f"Invalid parameters JSON string for tool '{target}'"}
+                    tool_params = None
+            if tool_params is not None and not isinstance(tool_params, dict):
+                tp = type(tool_params).__name__
+                result = {"error": f"parameters must be a mapping, got {tp}"}
+                tool_params = None
+            if tool_params is None:
+                pass  # result already set above
+            elif target not in tool_registry:
                 result = {
                     "error": f"Tool '{target}' not found",
                     "available_tools": list(tool_registry.keys()),

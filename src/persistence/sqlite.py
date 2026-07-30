@@ -41,6 +41,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         ended_at TEXT,
         project_path TEXT NOT NULL,
         project_name TEXT,
+        session_name TEXT,
         mode TEXT DEFAULT 'local',
         status TEXT DEFAULT 'active',
         metadata TEXT,
@@ -51,6 +52,7 @@ class SQLiteBackend(BaseDatabaseBackend):
     CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_path);
     CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
     CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at);
+    CREATE INDEX IF NOT EXISTS idx_sessions_session_name ON sessions(session_name);
 
     -- Decisions table with category index for filtering
     CREATE TABLE IF NOT EXISTS decisions (
@@ -164,6 +166,7 @@ class SQLiteBackend(BaseDatabaseBackend):
     CREATE TABLE IF NOT EXISTS project_learnings (
         id TEXT PRIMARY KEY,
         project_path TEXT NOT NULL,
+        project_name TEXT,                -- Project name for direct recall (added in v3)
         category TEXT NOT NULL,           -- 'error_fix', 'pattern', 'preference', 'workflow'
         trigger_context TEXT,             -- What situation triggers this knowledge
         learning_content TEXT NOT NULL,   -- The actual knowledge/solution
@@ -177,6 +180,7 @@ class SQLiteBackend(BaseDatabaseBackend):
     );
 
     CREATE INDEX IF NOT EXISTS idx_learnings_project ON project_learnings(project_path);
+    CREATE INDEX IF NOT EXISTS idx_learnings_project_name ON project_learnings(project_name);
     CREATE INDEX IF NOT EXISTS idx_learnings_category ON project_learnings(category);
     CREATE INDEX IF NOT EXISTS idx_learnings_promoted ON project_learnings(promoted_to_universal);
 
@@ -301,7 +305,8 @@ class SQLiteBackend(BaseDatabaseBackend):
         """Initialize SQLite backend.
 
         Args:
-            db_path: Path to SQLite database file. Defaults to ~/.claude/session-intelligence/sessions.db.
+            db_path: Path to SQLite database file.
+                    Defaults to ~/.claude/session-intelligence/sessions.db.
                     Use ":memory:" for testing.
         """
         super().__init__()
@@ -345,6 +350,46 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
         await self._connection.commit()
 
+        # Idempotent migration for existing databases: add session_name column
+        try:
+            await self._connection.execute(
+                "ALTER TABLE sessions ADD COLUMN session_name TEXT"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+        # Add index for session_name (safe if already exists via SCHEMA)
+        try:
+            await self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_session_name "
+                "ON sessions(session_name)"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            logger.debug(f"session_name index creation: {e}")
+
+        # Idempotent migration: add project_name column to project_learnings
+        try:
+            await self._connection.execute(
+                "ALTER TABLE project_learnings ADD COLUMN project_name TEXT"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+        # Add index for project_name on project_learnings
+        try:
+            await self._connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_learnings_project_name "
+                "ON project_learnings(project_name)"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            logger.debug(f"project_learnings project_name index creation: {e}")
+
         self._is_connected = True
         logger.info(f"SQLite database initialized: {self.db_path}")
 
@@ -384,9 +429,9 @@ class SQLiteBackend(BaseDatabaseBackend):
         await conn.execute(
             """
             INSERT OR REPLACE INTO sessions
-            (id, started_at, ended_at, project_path, project_name, mode, status,
-             metadata, performance_metrics, health_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, started_at, ended_at, project_path, project_name, session_name,
+             mode, status, metadata, performance_metrics, health_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 session_data["id"],
@@ -394,6 +439,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 session_data.get("completed") or session_data.get("ended_at"),
                 session_data.get("project_path", ""),
                 session_data.get("project_name"),
+                session_data.get("session_name"),
                 session_data.get("mode", "local"),
                 session_data.get("status", "active"),
                 self._serialize_json(session_data.get("metadata", {})),
@@ -477,6 +523,68 @@ class SQLiteBackend(BaseDatabaseBackend):
         cursor = await conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         await conn.commit()
         return cursor.rowcount > 0
+
+    async def find_session_by_name(
+        self, session_name: str, project_name: str | None = None
+    ) -> dict[str, Any] | None:
+        """Find a session by its human-readable name, optionally scoped to a project.
+
+        Returns the most-recent match (ORDER BY started_at DESC LIMIT 1), or None
+        if no session with that name exists. When project_name is provided, only
+        sessions belonging to that project are considered.
+        """
+        conn = self._ensure_connected()
+
+        if project_name is not None:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE session_name = ? AND project_name = ?
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (session_name, project_name),
+            )
+        else:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE session_name = ?
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (session_name,),
+            )
+
+        row = await cursor.fetchone()
+        if row:
+            return self._normalize_session_data(dict(row))
+        return None
+
+    async def find_recent_session_by_project(
+        self, project_name: str, status: str = "active"
+    ) -> dict[str, Any] | None:
+        """Find the most-recent session for a project name with the given status.
+
+        Returns the most-recent match (ORDER BY started_at DESC LIMIT 1), or None
+        if no matching session exists.
+        """
+        conn = self._ensure_connected()
+
+        cursor = await conn.execute(
+            """
+            SELECT * FROM sessions
+            WHERE project_name = ? AND status = ?
+            ORDER BY started_at DESC
+            LIMIT 1
+            """,
+            (project_name, status),
+        )
+
+        row = await cursor.fetchone()
+        if row:
+            return self._normalize_session_data(dict(row))
+        return None
 
     # Decision operations
 
@@ -651,7 +759,8 @@ class SQLiteBackend(BaseDatabaseBackend):
         await conn.execute(
             """
             INSERT INTO file_operations
-            (session_id, timestamp, operation, file_path, lines_added, lines_removed, summary, tool_name)
+            (session_id, timestamp, operation, file_path, lines_added, lines_removed,
+             summary, tool_name)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
@@ -780,8 +889,28 @@ class SQLiteBackend(BaseDatabaseBackend):
     # Agent execution operations
 
     async def save_agent_execution(self, execution_data: dict[str, Any]) -> None:
-        """Save agent execution record."""
+        """Save agent execution record.
+
+        Accepts either raw DB-column-shaped dicts (id/started_at/completed_at)
+        or Pydantic AgentExecution.model_dump() shaped dicts
+        (execution_id/started/completed). See postgresql.py counterpart for
+        the same normalisation rationale.
+        """
         conn = self._ensure_connected()
+
+        execution_id = execution_data.get("id") or execution_data.get("execution_id")
+        if not execution_id:
+            raise ValueError(
+                "save_agent_execution: execution_data missing both 'id' and "
+                "'execution_id'"
+            )
+
+        started_at = (
+            execution_data.get("started_at")
+            or execution_data.get("started")
+            or self._get_timestamp()
+        )
+        completed_at = execution_data.get("completed_at") or execution_data.get("completed")
 
         await conn.execute(
             """
@@ -791,13 +920,13 @@ class SQLiteBackend(BaseDatabaseBackend):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
-                execution_data["id"],
+                execution_id,
                 execution_data["session_id"],
                 execution_data["agent_name"],
                 execution_data.get("agent_type"),
-                execution_data.get("started_at", self._get_timestamp()),
-                execution_data.get("completed_at"),
-                execution_data.get("status", "running"),
+                started_at,
+                completed_at,
+                str(execution_data.get("status", "running")),
                 self._serialize_json(execution_data.get("execution_steps", [])),
                 self._serialize_json(execution_data.get("performance", {})),
                 self._serialize_json(execution_data.get("errors", [])),
@@ -830,6 +959,110 @@ class SQLiteBackend(BaseDatabaseBackend):
         cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    async def get_agent_stats(self, time_window_hours: int = 168) -> dict[str, Any]:
+        """Return per-agent-type usage statistics over the last time_window_hours hours.
+
+        Queries the agent_executions table directly (not the sessions JSON blob),
+        aggregates by agent_type, and returns sorted by invocations descending.
+
+        Returns a dict with "total_sessions_scanned" (int) and "agents" (list).
+        See postgresql.py counterpart for why this isn't a bare per-row sentinel.
+        """
+        from datetime import timedelta
+
+        conn = self._ensure_connected()
+
+        cutoff = (datetime.now(UTC) - timedelta(hours=time_window_hours)).isoformat()
+
+        cursor = await conn.execute(
+            """
+            SELECT agent_type, agent_name, status, performance, started_at, completed_at
+            FROM agent_executions
+            WHERE started_at >= ?
+            ORDER BY started_at DESC
+            """,
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+
+        # Count sessions in the window for context
+        session_cursor = await conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE started_at >= ?",
+            (cutoff,),
+        )
+        session_row = await session_cursor.fetchone()
+        total_sessions = session_row[0] if session_row else 0
+
+        # Aggregate by agent_type (fall back to agent_name if type is NULL)
+        stats_map: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            row_dict = dict(row)
+            agent_type = row_dict.get("agent_type") or row_dict.get("agent_name") or "unknown"
+            status = row_dict.get("status") or ""
+            started_at = row_dict.get("started_at") or ""
+
+            performance_raw = row_dict.get("performance")
+            duration_ms: float | None = None
+            if performance_raw:
+                try:
+                    perf = (
+                        json.loads(performance_raw)
+                        if isinstance(performance_raw, str)
+                        else performance_raw
+                    )
+                    duration_ms = perf.get("duration_ms") or perf.get("total_duration_ms")
+                except (json.JSONDecodeError, AttributeError):
+                    pass
+
+            if agent_type not in stats_map:
+                stats_map[agent_type] = {
+                    "agent_type": agent_type,
+                    "invocations": 0,
+                    "successes": 0,
+                    "failures": 0,
+                    "duration_ms_total": 0.0,
+                    "duration_ms_count": 0,
+                    "last_used": started_at,
+                }
+
+            entry = stats_map[agent_type]
+            entry["invocations"] += 1
+
+            if status in ("completed", "success"):
+                entry["successes"] += 1
+            elif status in ("failed", "error"):
+                entry["failures"] += 1
+
+            if duration_ms is not None:
+                entry["duration_ms_total"] += duration_ms
+                entry["duration_ms_count"] += 1
+
+            # Track most recent use
+            if started_at > entry["last_used"]:
+                entry["last_used"] = started_at
+
+        # Build final list
+        result = []
+        for entry in stats_map.values():
+            invocations = entry["invocations"]
+            dur_count = entry["duration_ms_count"]
+            avg_duration_ms = (
+                round(entry["duration_ms_total"] / dur_count, 1)
+                if dur_count > 0
+                else None
+            )
+            result.append({
+                "agent_type": entry["agent_type"],
+                "invocations": invocations,
+                "successes": entry["successes"],
+                "failures": entry["failures"],
+                "avg_duration_ms": avg_duration_ms,
+                "last_used": entry["last_used"],
+            })
+
+        result.sort(key=lambda x: x["invocations"], reverse=True)
+        return {"total_sessions_scanned": total_sessions, "agents": result}
 
     # MCP session operations
 
@@ -886,46 +1119,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
         await conn.commit()
 
-    # Session summary operations
-
-    async def save_session_summary(self, summary_data: dict[str, Any]) -> None:
-        """Save or update a session summary."""
-        conn = self._ensure_connected()
-
-        await conn.execute(
-            """
-            INSERT OR REPLACE INTO session_summaries
-            (session_id, title, summary_markdown, key_changes, tags, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """,
-            (
-                summary_data["session_id"],
-                summary_data.get("title"),
-                summary_data.get("summary_markdown"),
-                self._serialize_json(summary_data.get("key_changes", [])),
-                self._serialize_json(summary_data.get("tags", [])),
-                summary_data.get("created_at", self._get_timestamp()),
-            ),
-        )
-        await conn.commit()
-
-        # Update FTS index
-        await self._update_search_index(summary_data["session_id"])
-
-    async def get_session_summary(self, session_id: str) -> dict[str, Any] | None:
-        """Get session summary by session ID."""
-        conn = self._ensure_connected()
-
-        cursor = await conn.execute(
-            "SELECT * FROM session_summaries WHERE session_id = ?", (session_id,)
-        )
-        row = await cursor.fetchone()
-        if row:
-            result = dict(row)
-            result["key_changes"] = self._deserialize_json(result.get("key_changes"))
-            result["tags"] = self._deserialize_json(result.get("tags"))
-            return result
-        return None
+    # Duplicate methods removed - see lines 692-732 for session summary operations
 
     async def query_summaries_by_tag(self, tag: str, limit: int = 50) -> list[dict[str, Any]]:
         """Query session summaries that contain a specific tag."""
@@ -1332,9 +1526,61 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
         await conn.commit()
 
-    async def search_sessions(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
-        """Full-text search across sessions."""
+    async def search_sessions(
+        self, query: str, search_type: str = "fulltext", limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Full-text search across sessions or learnings."""
         conn = self._ensure_connected()
+
+        if search_type == "decisions":
+            # Search decisions table cross-project using LIKE pattern matching.
+            # JOIN with sessions to surface project_name/project_path.
+            pattern = f"%{query}%"
+            cursor = await conn.execute(
+                """
+                SELECT
+                    d.id as session_id,
+                    d.category as title,
+                    d.description as snippet,
+                    NULL as relevance,
+                    s.project_name,
+                    s.project_path,
+                    d.timestamp as started_at,
+                    '[]' as tags
+                FROM decisions d
+                JOIN sessions s ON d.session_id = s.id
+                WHERE d.description LIKE ? OR d.rationale LIKE ? OR d.category LIKE ?
+                ORDER BY d.timestamp DESC
+                LIMIT ?
+                """,
+                (pattern, pattern, pattern, limit),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+        if search_type == "learnings":
+            # Search project_learnings table using LIKE pattern matching
+            pattern = f"%{query}%"
+            cursor = await conn.execute(
+                """
+                SELECT
+                    id as session_id,
+                    category as title,
+                    learning_content as snippet,
+                    NULL as relevance,
+                    NULL as project_name,
+                    project_path,
+                    created_at as started_at,
+                    '[]' as tags
+                FROM project_learnings
+                WHERE learning_content LIKE ? OR trigger_context LIKE ? OR category LIKE ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (pattern, pattern, pattern, limit),
+            )
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
 
         # Use FTS5 MATCH syntax for full-text search
         # JOIN with sessions table to avoid N+1 query pattern
@@ -1402,6 +1648,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         learning_content: str,
         trigger_context: str | None = None,
         source_session_id: str | None = None,
+        project_name: str | None = None,
     ) -> dict[str, Any]:
         """Save a project-specific learning."""
         conn = self._ensure_connected()
@@ -1410,18 +1657,20 @@ class SQLiteBackend(BaseDatabaseBackend):
         await conn.execute(
             """
             INSERT INTO project_learnings (
-                id, project_path, category, trigger_context, learning_content,
-                source_session_id, success_count, failure_count, last_used,
-                promoted_to_universal, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, FALSE, ?)
+                id, project_path, project_name, category, trigger_context,
+                learning_content, source_session_id, success_count, failure_count,
+                last_used, promoted_to_universal, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, FALSE, ?)
             ON CONFLICT(id) DO UPDATE SET
                 learning_content = excluded.learning_content,
                 trigger_context = excluded.trigger_context,
+                project_name = excluded.project_name,
                 last_used = excluded.last_used
         """,
             (
                 learning_id,
                 project_path,
+                project_name,
                 category,
                 trigger_context,
                 learning_content,
@@ -1638,6 +1887,127 @@ class SQLiteBackend(BaseDatabaseBackend):
             "success_rate": new_rate,
             "updated": True,
         }
+
+    async def recall_project(
+        self,
+        project_name: str,
+        include: list[str] | None = None,
+        limit: int = 10,
+        days: int = 30,
+        query: str | None = None,
+    ) -> dict[str, Any]:
+        """Recall recent sessions, decisions, learnings, and notebooks for a project."""
+        from datetime import UTC, datetime, timedelta
+
+        conn = self._ensure_connected()
+        cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        include_all = include is None
+        result: dict[str, Any] = {
+            "project_name": project_name,
+            "recall_window_days": days,
+            "sessions": [],
+            "decisions": [],
+            "learnings": [],
+            "notebooks": [],
+        }
+
+        if include_all or "sessions" in include:
+            cursor = await conn.execute(
+                """
+                SELECT id, started_at, ended_at, status, mode
+                FROM sessions
+                WHERE project_name = ? AND started_at > ?
+                ORDER BY started_at DESC
+                LIMIT ?
+                """,
+                (project_name, cutoff, limit),
+            )
+            rows = await cursor.fetchall()
+            result["sessions"] = [
+                {
+                    "id": row["id"],
+                    "started_at": row["started_at"],
+                    "status": row["status"],
+                }
+                for row in rows
+            ]
+
+        if include_all or "decisions" in include:
+            cursor = await conn.execute(
+                """
+                SELECT d.id, d.description, d.category, d.rationale,
+                       d.impact_level, d.timestamp, s.id AS session_id
+                FROM decisions d
+                JOIN sessions s ON d.session_id = s.id
+                WHERE s.project_name = ? AND d.timestamp > ?
+                ORDER BY d.timestamp DESC
+                LIMIT ?
+                """,
+                (project_name, cutoff, limit),
+            )
+            rows = await cursor.fetchall()
+            result["decisions"] = [
+                {
+                    "description": row["description"],
+                    "category": row["category"],
+                    "rationale": row["rationale"],
+                    "timestamp": row["timestamp"],
+                }
+                for row in rows
+            ]
+
+        if include_all or "learnings" in include:
+            cursor = await conn.execute(
+                """
+                SELECT id, category, trigger_context, learning_content,
+                       project_name, source_session_id, success_count,
+                       failure_count, created_at, last_used
+                FROM project_learnings
+                WHERE project_name = ?
+                   OR (project_name IS NULL AND project_path = (
+                       SELECT project_path FROM sessions
+                       WHERE project_name = ?
+                         AND project_path IS NOT NULL
+                       LIMIT 1
+                   ))
+                ORDER BY success_count DESC, last_used DESC
+                LIMIT ?
+                """,
+                (project_name, project_name, limit),
+            )
+            rows = await cursor.fetchall()
+            result["learnings"] = [dict(row) for row in rows]
+
+        if include_all or "notebooks" in include:
+            cursor = await conn.execute(
+                """
+                SELECT ss.title, ss.tags, ss.created_at, ss.session_id
+                FROM session_summaries ss
+                JOIN sessions s ON ss.session_id = s.id
+                WHERE s.project_name = ? AND ss.created_at > ?
+                ORDER BY ss.created_at DESC
+                LIMIT ?
+                """,
+                (project_name, cutoff, limit),
+            )
+            rows = await cursor.fetchall()
+            result["notebooks"] = [
+                {
+                    "title": row["title"],
+                    "tags": self._deserialize_json(row["tags"]),
+                    "created_at": row["created_at"],
+                    "session_id": row["session_id"],
+                }
+                for row in rows
+            ]
+
+        result["counts"] = {
+            "sessions": len(result["sessions"]),
+            "decisions": len(result["decisions"]),
+            "learnings": len(result["learnings"]),
+            "notebooks": len(result["notebooks"]),
+        }
+        return result
 
     # Maintenance operations
 

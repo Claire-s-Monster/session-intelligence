@@ -24,6 +24,7 @@ debug_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(mess
 debug_logger.addHandler(debug_handler)
 debug_logger.setLevel(logging.INFO)
 
+# ruff: noqa: E402
 from core.session_engine import SessionIntelligenceEngine
 from models.session_models import (
     AnalysisScope,
@@ -171,7 +172,8 @@ def session_track_execution(
         debug_logger.info(f"[EXEC-TRACK] Repository path: {repository_path}")
         debug_logger.info(f"[EXEC-TRACK] Step data: {step_data}")
         debug_logger.info(
-            f"[EXEC-TRACK] Session engine claude_sessions_path: {session_engine.claude_sessions_path}"
+            "[EXEC-TRACK] Session engine claude_sessions_path: "
+            f"{session_engine.claude_sessions_path}"
         )
 
         result = session_engine.session_track_execution(

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 
 import httpx
 import pytest
@@ -342,3 +343,120 @@ async def test_concurrent_health_checks(asgi_client):
     for resp in responses:
         assert resp.status_code == 200
         assert resp.json()["status"] == "healthy"
+
+
+# ===========================================================================
+# Race condition regressions (#43): "dictionary changed size during iteration"
+# ===========================================================================
+#
+# Both _persist_sessions_to_database and NotificationManager.broadcast iterate
+# a shared dict while awaiting inside the loop body. If a concurrent coroutine
+# mutates that same dict during the await, Python raises
+# RuntimeError: dictionary changed size during iteration. The fix wraps the
+# dict in list(...) before iterating to snapshot keys/values up front.
+
+
+class _FakeState:
+    def __init__(self, database, session_engine):
+        self.database = database
+        self.session_engine = session_engine
+
+
+class _FakeApp:
+    def __init__(self, state):
+        self.state = state
+
+
+class _FakeRequest:
+    """Minimal stand-in for fastapi.Request — only app.state is used."""
+
+    def __init__(self, database, session_engine):
+        self.app = _FakeApp(_FakeState(database, session_engine))
+
+
+def _make_session(session_id: str, project_path: str):
+    from models.session_models import Session, SessionMetadata
+
+    return Session(
+        id=session_id,
+        started=datetime.now(),
+        project_name="race-test",
+        project_path=project_path,
+        metadata=SessionMetadata(session_type="development", environment="local", user="user"),
+    )
+
+
+async def test_persist_sessions_survives_cache_mutation_during_iteration(tmp_path, db):
+    """_persist_sessions_to_database must not raise when the session cache is
+    mutated (a new session inserted) by a concurrent request mid-iteration."""
+    engine = SessionIntelligenceEngine(
+        repository_path=str(tmp_path), use_filesystem=False, database=db
+    )
+    engine.session_cache["s1"] = _make_session("s1", str(tmp_path))
+    engine.session_cache["s2"] = _make_session("s2", str(tmp_path))
+
+    persisted_ids: list[str] = []
+    original_save_session = db.save_session
+    call_count = {"n": 0}
+
+    async def racy_save_session(session_data):
+        call_count["n"] += 1
+        persisted_ids.append(session_data["id"])
+        if call_count["n"] == 1:
+            # Simulate a concurrent request adding a new session mid-iteration.
+            engine.session_cache["s3-concurrent"] = _make_session(
+                "s3-concurrent", str(tmp_path)
+            )
+        await original_save_session(session_data)
+
+    db.save_session = racy_save_session
+
+    from persistence import DatabaseConfig
+
+    server = HTTPSessionIntelligenceServer(
+        host="127.0.0.1",
+        port=4099,
+        repository_path=str(tmp_path),
+        db_config=DatabaseConfig(),
+        security_config=SecurityConfig(
+            localhost_only=False, allowed_origins=["*"], require_api_key=False
+        ),
+    )
+    request = _FakeRequest(database=db, session_engine=engine)
+
+    # Should complete without RuntimeError: dictionary changed size during iteration
+    await server._persist_sessions_to_database(request)
+
+    assert "s1" in persisted_ids
+    assert "s2" in persisted_ids
+
+
+async def test_broadcast_survives_subscriber_mutation_during_iteration():
+    """NotificationManager.broadcast must not raise when a subscriber queue is
+    removed (client disconnect) by another coroutine mid-broadcast."""
+    manager = NotificationManager()
+
+    class DisconnectingQueue(asyncio.Queue):
+        """A queue whose first .put() simulates another client disconnecting,
+        removing a different entry from manager._subscribers mid-broadcast."""
+
+        def __init__(self, notification_manager: NotificationManager, key_to_remove: str):
+            super().__init__()
+            self._manager = notification_manager
+            self._key_to_remove = key_to_remove
+            self._put_calls = 0
+
+        async def put(self, item):
+            self._put_calls += 1
+            if self._put_calls == 1:
+                self._manager._subscribers.pop(self._key_to_remove, None)
+            await super().put(item)
+
+    manager._subscribers["sub-a"] = DisconnectingQueue(manager, key_to_remove="sub-b")
+    manager._subscribers["sub-b"] = asyncio.Queue()
+
+    # Should complete without RuntimeError: dictionary changed size during iteration
+    await manager.broadcast("test_event", {"foo": "bar"})
+
+    assert "sub-b" not in manager._subscribers
+    assert manager._subscribers["sub-a"].qsize() == 1

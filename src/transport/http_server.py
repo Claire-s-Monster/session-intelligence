@@ -124,7 +124,7 @@ class NotificationManager:
             "data": data,
             "timestamp": datetime.now().isoformat(),
         }
-        for queue in self._subscribers.values():
+        for queue in list(self._subscribers.values()):
             await queue.put(notification)
 
     def get_subscriber_count(self) -> int:
@@ -558,7 +558,7 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
         database = request.app.state.database
         session_engine = request.app.state.session_engine
 
-        for session_id, session in session_engine.session_cache.items():
+        for session_id, session in list(session_engine.session_cache.items()):
             try:
                 session_data = session.model_dump()
                 await database.save_session(session_data)

@@ -1533,7 +1533,7 @@ class LeanMCPInterface:
                 discover_tools("learning")      # Find learning/knowledge tools
 
             MISSING TOOL? If you need an operation that's not available:
-            File an issue at https://github.com/MementoRC/session-intelligence
+            File an issue at https://github.com/Claire-s-Monster/session-intelligence
             """
             return self._discover_tools(pattern)
 
@@ -1624,7 +1624,7 @@ class LeanMCPInterface:
 
             TOOL NOT FOUND? Use discover_tools() first to find available tools.
             If the tool should exist but doesn't, file a feature request at:
-            https://github.com/MementoRC/session-intelligence
+            https://github.com/Claire-s-Monster/session-intelligence
             """
             if tool_name not in self.tool_registry:
                 available_tools = list(self.tool_registry.keys())
@@ -1713,7 +1713,7 @@ class LeanMCPInterface:
             Call discover_tools(pattern) first to find the right tool for your task.
 
             FOUND A BUG OR MISSING FEATURE?
-            File an issue at https://github.com/MementoRC/session-intelligence
+            File an issue at https://github.com/Claire-s-Monster/session-intelligence
             Include: tool name, parameters used, error message, expected vs actual behavior
             """
             import inspect

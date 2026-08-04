@@ -92,10 +92,9 @@ def test_hook_bound_execution_tracking_does_not_produce_unbound_session(
         "session_recall"
     )
     assert session.project_name == "session-intelligence"
-    assert session.project_path == str(working_dir), (
-        "project_path must stay self-consistent with the derived "
-        "project_name's source directory"
-    )
+    assert session.project_path == str(
+        working_dir
+    ), "project_path must stay consistent with the derived name's source dir"
 
 
 # ---------------------------------------------------------------------------

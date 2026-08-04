@@ -149,18 +149,25 @@ def test_derive_project_name_none_or_empty_input_is_unbound(
     assert derive_project_name(bad_input) == UNBOUND
 
 
-def test_derive_project_name_nonexistent_path_walks_up_to_existing_parent(
+def test_derive_project_name_nonexistent_path_falls_back_to_own_basename(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A path that doesn't exist on disk still derives a name by walking up
-    to the nearest existing parent directory, rather than falling straight
-    to UNBOUND."""
+    """A path that doesn't exist on disk derives a name from its own
+    basename rather than walking up an unbounded chain of parents.
+
+    The walk-up is bounded to at most one level (the path itself, or its
+    immediate parent if the path names a file) because the backfill
+    migration feeds this function thousands of historical paths whose
+    directories no longer exist. An unbounded walk-up would keep climbing
+    until it reached the home directory and mislabel all of those rows
+    under the same ancestor name."""
     monkeypatch.setattr(project_naming, "_run_git", lambda args, cwd: None)
 
     missing = tmp_path / "does" / "not" / "exist"
 
     result = derive_project_name(str(missing))
 
+    assert result == "exist"
     assert result != UNBOUND
 
 
@@ -170,8 +177,18 @@ def test_derive_project_name_nonexistent_path_walks_up_to_existing_parent(
 
 
 @pytest.mark.skipif(not shutil.which("git"), reason="git binary not available")
+@pytest.mark.skipif(
+    not (Path(__file__).resolve().parents[2] / ".git").exists(),
+    reason="not a git checkout",
+)
 def test_derive_project_name_real_repo_resolves_to_session_intelligence() -> None:
-    result = derive_project_name(
-        "/home/memento/ClaudeCode/Servers/session-intelligence/development"
-    )
+    """Resolve the repo root relative to this test file's own location
+    (tests/unit/<file> -> repo root) rather than hardcoding a developer
+    machine's absolute path, so this test is portable across local
+    machines and CI runners alike. On CI, actions/checkout leaves an
+    'origin' remote pointing at the repo, and git-remote is the first
+    step of the derivation chain, so the assertion holds in both
+    environments."""
+    repo_root = Path(__file__).resolve().parents[2]
+    result = derive_project_name(str(repo_root))
     assert result == "session-intelligence"

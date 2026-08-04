@@ -32,8 +32,14 @@ async def db(tmp_path):
 
 
 @pytest.fixture
-async def engine(tmp_path, db):
+async def engine(tmp_path, db, monkeypatch):
     """Engine backed by the test SQLite database."""
+    # Disable agent-name validation so tests using synthetic names like
+    # "agent-concurrent-0" do not require matching files under ~/.claude/agents/.
+    # Mirrors the shared session_engine fixture in tests/conftest.py, which this
+    # fixture replaces in order to inject the SQLite backend.
+    monkeypatch.setenv("SESSION_INTELLIGENCE_AGENT_VALIDATION", "off")
+
     eng = SessionIntelligenceEngine(
         repository_path=str(tmp_path),
         use_filesystem=False,

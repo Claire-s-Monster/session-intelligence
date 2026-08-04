@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from core.agent_validator import AgentValidator
+from core.project_naming import derive_project_name
 from models.session_models import (
     Agent,
     AgentDecision,
@@ -405,6 +406,14 @@ class SessionIntelligenceEngine:
 
         # Create new session if none exists or is valid
         debug_logger.info("Creating new session")
+        # Deliberately still "_unbound_". Unlike the hook-bound site below,
+        # this path has no caller-supplied working directory -- it can only
+        # use the *server process* cwd, which under the systemd HTTP
+        # deployment is pinned to the session-intelligence checkout and would
+        # stamp that name onto every caller's session. Callers reaching here
+        # via allow_unbound=True have also explicitly opted into the legacy
+        # sentinel; see tests/test_session_recall_project_binding.py::
+        # test_log_without_create_with_allow_unbound_uses_sentinel.
         result = self._create_session(
             mode="auto",
             project_name="_unbound_",
@@ -869,13 +878,14 @@ class SessionIntelligenceEngine:
                 "binding a session-intelligence session to it (likely a "
                 "hook-supplied Claude Code native session id)"
             )
+            hook_cwd = step_data.get(
+                "working_directory", str(Path.cwd().resolve())
+            )
             create_result = self._create_session(
                 mode="auto",
-                project_name="_unbound_",
+                project_name=derive_project_name(hook_cwd),
                 metadata={
-                    "project_path": step_data.get(
-                        "working_directory", str(Path.cwd().resolve())
-                    ),
+                    "project_path": hook_cwd,
                     "tags": ["hook-bound", "claude-native-session"],
                 },
                 session_name=None,

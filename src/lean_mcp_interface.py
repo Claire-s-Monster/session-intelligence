@@ -1745,6 +1745,32 @@ class LeanMCPInterface:
                     "error": f"parameters must be a mapping, got {type(parameters).__name__}",
                 }
 
+            # Validate parameters against the declared schema before dispatch, so a
+            # mistyped name surfaces as an actionable error instead of a raw TypeError
+            # leaking out of the engine. Schemas without declared properties are not
+            # validated (nothing to check against).
+            schema = tool_info.get("schema") or {}
+            valid_params = set(schema.get("properties", {}))
+            if valid_params:
+                unknown = sorted(set(parameters) - valid_params)
+                missing = sorted(set(schema.get("required", [])) - set(parameters))
+                if unknown or missing:
+                    problems = []
+                    if unknown:
+                        problems.append(f"unexpected parameter(s): {unknown}")
+                    if missing:
+                        problems.append(f"missing required parameter(s): {missing}")
+                    return {
+                        "tool": tool_name,
+                        "status": "error",
+                        "error": (
+                            f"Invalid parameters for '{tool_name}' - "
+                            f"{'; '.join(problems)}. "
+                            f"Valid parameters: {sorted(valid_params)}. "
+                            f"Call get_tool_spec('{tool_name}') for the full schema."
+                        ),
+                    }
+
             try:
                 # Execute tool - await if async, call directly if sync
                 if inspect.iscoroutinefunction(tool_func):

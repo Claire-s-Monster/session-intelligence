@@ -79,6 +79,13 @@ debug_handler.setFormatter(
 debug_logger.addHandler(debug_handler)
 debug_logger.setLevel(logging.INFO)
 
+# Sentinel for "the caller did not tell us where they were working".
+# Never fall back to the server's own cwd: this process runs from the
+# systemd/pixi launch dir, so recording it silently misattributes the row
+# to wherever the daemon lives rather than to the caller's project.
+# Parallels the existing "_unbound_" sentinel used for project_name.
+UNKNOWN_PROJECT_PATH = "_unknown_"
+
 
 def safe_parse_datetime(value: Any) -> datetime | None:
     """Safely parse datetime from various input types.
@@ -578,7 +585,7 @@ class SessionIntelligenceEngine:
             started=datetime.now(UTC),
             mode=mode,
             project_name=project_name or "unknown",
-            project_path=metadata.get("project_path", str(Path.cwd())),
+            project_path=metadata.get("project_path") or UNKNOWN_PROJECT_PATH,
             session_name=session_name,
             metadata=session_metadata,
             health_status=HealthStatus(),
@@ -2736,11 +2743,11 @@ class SessionIntelligenceEngine:
             resolved_ctx.project_name if resolved_ctx else None
         )
 
-        # project_path: caller-supplied wins, then resolved session, then cwd fallback.
+        # project_path: caller-supplied wins, then resolved session, then the _unknown_ sentinel.
         effective_project = (
             project_path
             or (resolved_ctx.project_path if resolved_ctx else None)
-            or str(self.claude_sessions_path.parent)
+            or UNKNOWN_PROJECT_PATH
         )
 
         source_session = resolved_session_id

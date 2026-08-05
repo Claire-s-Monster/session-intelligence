@@ -23,7 +23,7 @@ import argparse
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -156,8 +156,12 @@ class MigrationManager:
         # Get notes for recent dates
         from datetime import timedelta
 
+        # Anchor the scan to UTC: note.date is derived from datetime.now(UTC).
+        # Using naive local time here meant that after local/UTC date rollover
+        # the newest notes were dated "ahead" of the scan's starting point and,
+        # because the scan only walks backward, were silently never migrated.
         for days_ago in range(365):  # Last year
-            date = (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+            date = (datetime.now(UTC) - timedelta(days=days_ago)).strftime("%Y-%m-%d")
             notes = await self.source.query_notes_by_date(date, limit=1000)
 
             for note in notes:

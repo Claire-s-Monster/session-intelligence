@@ -46,6 +46,7 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -952,7 +953,7 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
         """Add REST API endpoints for tool-like queries."""
 
         @app.post("/tools/agent_query_learnings")
-        async def agent_query_learnings(request: Request) -> dict[str, Any]:
+        async def agent_query_learnings(request: Request) -> JSONResponse:
             """Query learnings for a specific agent with text search and filtering."""
             body = await request.json()
             agent_name = body.get("agent_name")
@@ -987,26 +988,31 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             learnings = learnings[:limit]
 
             # Format response
-            return {
-                "status": "success",
-                "learnings": [
+            return JSONResponse(
+                status_code=200,
+                content=jsonable_encoder(
                     {
-                        "id": ln.id,
-                        "category": ln.learning_type,
-                        "learning_content": ln.content,
-                        "trigger_context": ln.source_context,
-                        "success_count": int(ln.times_applied * ln.success_rate),
-                        "failure_count": int(ln.times_applied * (1 - ln.success_rate)),
-                        "success_rate": ln.success_rate,
-                        "last_used": ln.updated_at,
+                        "status": "success",
+                        "learnings": [
+                            {
+                                "id": ln.id,
+                                "category": ln.learning_type,
+                                "learning_content": ln.content,
+                                "trigger_context": ln.source_context,
+                                "success_count": int(ln.times_applied * ln.success_rate),
+                                "failure_count": int(ln.times_applied * (1 - ln.success_rate)),
+                                "success_rate": ln.success_rate,
+                                "last_used": ln.updated_at,
+                            }
+                            for ln in learnings
+                        ],
+                        "total_matches": len(learnings),
                     }
-                    for ln in learnings
-                ],
-                "total_matches": len(learnings),
-            }
+                ),
+            )
 
         @app.post("/tools/session_find_solution")
-        async def session_find_solution(request: Request) -> dict[str, Any]:
+        async def session_find_solution(request: Request) -> JSONResponse:
             """Cross-agent solution search, scoped to project or universal."""
             body = await request.json()
             error_context = body.get("error_context", "")
@@ -1051,10 +1057,13 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             solutions.sort(key=lambda x: x["success_count"], reverse=True)
             solutions = solutions[:limit]
 
-            return {"status": "success", "solutions": solutions}
+            return JSONResponse(
+                status_code=200,
+                content=jsonable_encoder({"status": "success", "solutions": solutions}),
+            )
 
         @app.post("/tools/session_log_learning")
-        async def session_log_learning(request: Request) -> dict[str, Any]:
+        async def session_log_learning(request: Request) -> JSONResponse:
             """Log a learning directly to database without MCP session requirement.
 
             Accepts:
@@ -1067,6 +1076,14 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                 status: success/error
                 learning_id: Generated UUID for the learning
                 message: Confirmation message
+
+            Status codes:
+                200 on save, 400 on malformed/incomplete body, 500 when the
+                write fails. This endpoint previously returned 200 for every
+                outcome (errors were serialized as plain dicts), which caused
+                callers -- notably the hooks in ~/.claude/hooks/ -- to treat
+                rejected writes as successes and silently lose data. Any new
+                failure path added here MUST carry a non-2xx status.
             """
             body = await request.json()
             category = body.get("category")
@@ -1076,11 +1093,23 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
 
             # Validate required fields
             if not category:
-                return {"status": "error", "message": "category is required"}
+                return JSONResponse(
+                    status_code=400,
+                    content={"status": "error", "message": "category is required"},
+                )
             if not learning_content:
-                return {"status": "error", "message": "learning_content is required"}
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "status": "error",
+                        "message": "learning_content is required",
+                    },
+                )
             if not project_path:
-                return {"status": "error", "message": "project_path is required"}
+                return JSONResponse(
+                    status_code=400,
+                    content={"status": "error", "message": "project_path is required"},
+                )
 
             database = request.app.state.database
 
@@ -1097,17 +1126,23 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                     source_session_id=None,  # No MCP session required
                 )
 
-                return {
-                    "status": "success",
-                    "learning_id": learning_id,
-                    "message": f"Learning saved to project {project_path}",
-                }
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "status": "success",
+                        "learning_id": learning_id,
+                        "message": f"Learning saved to project {project_path}",
+                    },
+                )
             except Exception as e:
                 logger.exception(f"Failed to save learning: {e}")
-                return {"status": "error", "message": str(e)}
+                return JSONResponse(
+                    status_code=500,
+                    content={"status": "error", "message": str(e)},
+                )
 
         @app.post("/tools/query_project_learnings")
-        async def query_project_learnings(request: Request) -> dict[str, Any]:
+        async def query_project_learnings(request: Request) -> JSONResponse:
             """Query project learnings from database.
 
             Accepts:
@@ -1127,7 +1162,10 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             limit = body.get("limit", 20)
 
             if not project_path:
-                return {"status": "error", "message": "project_path is required"}
+                return JSONResponse(
+                    status_code=400,
+                    content={"status": "error", "message": "project_path is required"},
+                )
 
             database = request.app.state.database
 
@@ -1148,14 +1186,22 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                         or query_lower in (ln.get("trigger_context") or "").lower()
                     ]
 
-                return {
-                    "status": "success",
-                    "learnings": learnings,
-                    "count": len(learnings),
-                }
+                return JSONResponse(
+                    status_code=200,
+                    content=jsonable_encoder(
+                        {
+                            "status": "success",
+                            "learnings": learnings,
+                            "count": len(learnings),
+                        }
+                    ),
+                )
             except Exception as e:
                 logger.exception(f"Failed to query learnings: {e}")
-                return {"status": "error", "message": str(e)}
+                return JSONResponse(
+                    status_code=500,
+                    content={"status": "error", "message": str(e)},
+                )
 
     async def run(self) -> None:
         """Run the HTTP server."""

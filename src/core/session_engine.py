@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from core.agent_validator import AgentValidator
-from core.project_naming import derive_project_name
+from core.project_naming import UNBOUND, derive_project_name
 from models.session_models import (
     Agent,
     AgentDecision,
@@ -2707,6 +2707,31 @@ class SessionIntelligenceEngine:
         # check whether it actually exists in the DB and null it out if not.
         resolved_ctx: ResolvedSessionContext | None = None
         resolved_session_id: str | None = None
+
+        # No explicit session identifier and not opting into the legacy
+        # unbound fallback: try to derive a project_name from project_path
+        # before giving up. This is safe here in a way it is NOT for the
+        # legacy _get_or_create_current_session_id path (which PR #48
+        # deliberately left deriving from the SERVER's own cwd, since that
+        # path has no other data to go on) because project_path is data the
+        # CALLER supplied about their own cwd. Guard against a relative
+        # project_path too: derive_project_name() resolves relative paths
+        # against the SERVER's cwd, which under the systemd deployment is
+        # this checkout -- deriving from a relative path would misattribute
+        # every caller's row to "session-intelligence", the exact bug #48/#49
+        # fixed. A derived UNBOUND result is discarded rather than used, to
+        # avoid recreating the invisible-rows bug #48 fixed.
+        if (
+            not (session_id or session_name or project_name)
+            and not allow_unbound
+            and project_path
+            and project_path != UNKNOWN_PROJECT_PATH
+            and Path(project_path).is_absolute()
+        ):
+            derived_name = derive_project_name(project_path)
+            if derived_name != UNBOUND:
+                project_name = derived_name
+
         if session_id or session_name or project_name:
             resolved_ctx = await self._resolve_session_context(
                 session_id=session_id,

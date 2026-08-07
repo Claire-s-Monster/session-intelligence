@@ -1262,6 +1262,7 @@ class SessionIntelligenceEngine:
         link_artifacts: list[str] | None = None,
         project_name: str | None = None,
         session_name: str | None = None,
+        project_path: str | None = None,
         allow_unbound: bool = False,
     ) -> DecisionResult:
         """
@@ -1270,7 +1271,8 @@ class SessionIntelligenceEngine:
         Consolidates: claudecode_log_decision, claudecode_log_workflow_step
         Enhanced: Adds decision impact analysis and relationship mapping
 
-        Pass at least one of session_id, session_name, or project_name.
+        Pass at least one of session_id, session_name, project_name, or
+        project_path.
         Use allow_unbound=True to opt into the legacy unbound fallback (deprecated).
         """
         try:
@@ -1279,6 +1281,34 @@ class SessionIntelligenceEngine:
                 context = {"description": context}
 
             decision_id = f"decision-{uuid.uuid4().hex[:8]}"
+
+            # No explicit session identifier: try to derive a project_name from
+            # a caller-supplied project_path before falling back to anything
+            # ambient. This mirrors session_log_learning (issue #53 restored the
+            # symmetry that PR #52 established there but did not extend here);
+            # see that method for the full rationale. The same two guards apply:
+            # a relative project_path is rejected because derive_project_name()
+            # resolves it against the SERVER's cwd -- under the systemd
+            # deployment that is this checkout, so deriving from a relative path
+            # would misattribute every caller's row to "session-intelligence",
+            # the exact bug #48/#49 fixed -- and a derived UNBOUND result is
+            # discarded rather than used, to avoid recreating the invisible-rows
+            # bug #48 fixed.
+            #
+            # This runs BEFORE the in-process-session guard below so that an
+            # explicit project_path wins over the ambient current session. That
+            # reorders nothing in practice: project_path was previously a
+            # TypeError on this method, so no existing caller can reach here.
+            if (
+                not (session_id or session_name or project_name)
+                and not allow_unbound
+                and project_path
+                and project_path != UNKNOWN_PROJECT_PATH
+                and Path(project_path).is_absolute()
+            ):
+                derived_name = derive_project_name(project_path)
+                if derived_name != UNBOUND:
+                    project_name = derived_name
 
             # If no identifier given but a current session was created by THIS
             # process, thread it as session_id so the resolver validates rather

@@ -22,6 +22,7 @@ from tests.persistence.contract_tests import (
     _agent_learning,
     _agent_notebook,
     _decision,
+    _mcp_session,
     _metrics,
     _note,
     _session,
@@ -117,6 +118,7 @@ async def test_migrate_all_entity_types(source, target, manager):
     await source.save_metrics(_metrics(session_id=sid))
     await source.save_note(_note(session_id=sid))
     await source.save_agent_execution(_agent_execution(session_id=sid))
+    await source.save_mcp_session(_mcp_session(mcp_session_id="mcp-migrate-all-001"))
 
     result = await manager.migrate_all()
 
@@ -126,13 +128,18 @@ async def test_migrate_all_entity_types(source, target, manager):
     assert rm["metrics"] >= 1
     assert rm["notes"] >= 1
     assert rm["agent_executions"] >= 1
-    assert result["total_records"] >= 5
+    assert rm["mcp_sessions"] >= 1
+    assert result["total_records"] >= 6
 
 
 async def test_migrate_idempotent(source, target, manager):
-    """Migrating twice does not duplicate sessions in the target."""
+    """Migrating twice does not duplicate sessions, decisions, or notes in
+    the target."""
     sid = "sess-migrate-idem-001"
     await source.save_session(_session(session_id=sid))
+    dec = _decision(session_id=sid, category="architecture")
+    await source.save_decision(dec)
+    await source.save_note(_note(session_id=sid))
 
     # First migration
     await manager.migrate_all()
@@ -144,6 +151,14 @@ async def test_migrate_idempotent(source, target, manager):
     matching = [s for s in sessions if s["id"] == sid]
     # INSERT OR REPLACE means exactly one row
     assert len(matching) == 1
+
+    decisions = await target.query_decisions_by_session(sid, limit=1000)
+    matching_decisions = [d for d in decisions if d["id"] == dec["id"]]
+    assert len(matching_decisions) == 1
+
+    notes = await target.query_notes(limit=1000)
+    matching_notes = [n for n in notes if n["session_id"] == sid]
+    assert len(matching_notes) == 1
 
 
 async def test_migrate_preserves_data_integrity(source, target, manager):
@@ -197,10 +212,10 @@ async def test_migrate_decisions_by_category(source, target, manager):
 
     result = await manager.migrate_all()
 
-    # Decisions may be counted multiple times due to category iteration in
-    # _migrate_decisions (once per category + once via session fallback).
-    # What matters is that all decisions are present in the target.
-    assert result["records_migrated"]["decisions"] >= len(categories)
+    # _migrate_decisions collects by id before saving, so a decision found by
+    # both the category loop and the uncategorized-session fallback is saved
+    # exactly once.
+    assert result["records_migrated"]["decisions"] == len(categories)
     target_decisions = await target.query_decisions_by_session(sid)
     target_ids = {d["id"] for d in target_decisions}
     for did in decision_ids:

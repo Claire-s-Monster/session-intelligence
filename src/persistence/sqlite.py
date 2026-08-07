@@ -598,6 +598,10 @@ class SQLiteBackend(BaseDatabaseBackend):
             (id, session_id, timestamp, category, description, rationale,
              context, impact_level, artifacts)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                description = excluded.description,
+                rationale = excluded.rationale,
+                context = excluded.context
         """,
             (
                 decision_data.get("decision_id") or decision_data.get("id"),
@@ -715,21 +719,46 @@ class SQLiteBackend(BaseDatabaseBackend):
     # Notes operations
 
     async def save_note(self, note_data: dict[str, Any]) -> None:
-        """Save a session note."""
+        """Save a session note.
+
+        Idempotent when note_data carries a non-None "id": the row is
+        upserted by id (SQLite AUTOINCREMENT bookkeeping in sqlite_sequence
+        is updated automatically on explicit-id inserts, so no sequence
+        resync is needed here, unlike PostgreSQL's SERIAL). Without an "id"
+        this is a plain insert, preserving prior behaviour for normal note
+        creation — two id-less notes with identical content still produce
+        two rows.
+        """
         conn = self._ensure_connected()
 
-        await conn.execute(
-            """
-            INSERT INTO notes (session_id, date, content, tags)
-            VALUES (?, ?, ?, ?)
-        """,
-            (
-                note_data["session_id"],
-                note_data.get("date", datetime.now().strftime("%Y-%m-%d")),
-                note_data["content"],
-                self._serialize_json(note_data.get("tags", [])),
-            ),
-        )
+        note_id = note_data.get("id")
+        if note_id is not None:
+            await conn.execute(
+                """
+                INSERT OR REPLACE INTO notes (id, session_id, date, content, tags)
+                VALUES (?, ?, ?, ?, ?)
+            """,
+                (
+                    note_id,
+                    note_data["session_id"],
+                    note_data.get("date", datetime.now().strftime("%Y-%m-%d")),
+                    note_data["content"],
+                    self._serialize_json(note_data.get("tags", [])),
+                ),
+            )
+        else:
+            await conn.execute(
+                """
+                INSERT INTO notes (session_id, date, content, tags)
+                VALUES (?, ?, ?, ?)
+            """,
+                (
+                    note_data["session_id"],
+                    note_data.get("date", datetime.now().strftime("%Y-%m-%d")),
+                    note_data["content"],
+                    self._serialize_json(note_data.get("tags", [])),
+                ),
+            )
         await conn.commit()
 
     async def query_notes_by_date(self, date: str, limit: int = 100) -> list[dict[str, Any]]:
@@ -746,6 +775,18 @@ class SQLiteBackend(BaseDatabaseBackend):
             LIMIT ?
         """,
             (date, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def query_notes(self, limit: int = 1000, offset: int = 0) -> list[dict[str, Any]]:
+        """Query notes across all sessions, ordered by id. Not joined to sessions,
+        so orphaned notes (missing session row) are still returned."""
+        conn = self._ensure_connected()
+
+        cursor = await conn.execute(
+            "SELECT * FROM notes ORDER BY id LIMIT ? OFFSET ?",
+            (limit, offset),
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -1118,6 +1159,17 @@ class SQLiteBackend(BaseDatabaseBackend):
             (engine_session_id, mcp_session_id),
         )
         await conn.commit()
+
+    async def query_mcp_sessions(self, limit: int = 1000, offset: int = 0) -> list[dict[str, Any]]:
+        """Query MCP session mappings, ordered by mcp_session_id (the primary key)."""
+        conn = self._ensure_connected()
+
+        cursor = await conn.execute(
+            "SELECT * FROM mcp_sessions ORDER BY mcp_session_id LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
     # Duplicate methods removed - see lines 692-732 for session summary operations
 

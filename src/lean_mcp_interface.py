@@ -202,6 +202,15 @@ class LeanMCPInterface:
                             "creates a new session if not found (and create_if_missing=True)."
                         ),
                     },
+                    "project_path": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the caller's project. When no session_id, "
+                            "session_name, or project_name is given, project_name is "
+                            "derived from this path. Relative paths are ignored (they "
+                            "would resolve against the server's cwd, not the caller's)."
+                        ),
+                    },
                     "allow_unbound": {
                         "type": "boolean",
                         "default": False,

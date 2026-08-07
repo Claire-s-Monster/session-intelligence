@@ -800,7 +800,18 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     # Notes operations
 
     async def save_note(self, note_data: dict[str, Any]) -> None:
-        """Save a session note."""
+        """Save a session note.
+
+        Idempotent when note_data carries a non-None "id": the row is
+        upserted by id via ON CONFLICT. Without an "id" this is a plain
+        insert, preserving prior behaviour for normal note creation — two
+        id-less notes with identical content still produce two rows.
+
+        NOTE: notes.id is SERIAL. Explicit-id inserts do not advance the
+        sequence, so callers that preserve ids across a bulk load (e.g. the
+        migrator) must call resync_notes_sequence() afterward or later
+        auto-assigned inserts can collide with an existing id.
+        """
         pool = self._ensure_connected()
 
         from datetime import date
@@ -809,16 +820,51 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         if isinstance(note_date, str):
             note_date = date.fromisoformat(note_date)
 
+        note_id = note_data.get("id")
+        async with pool.acquire() as conn:
+            if note_id is not None:
+                await conn.execute(
+                    """
+                    INSERT INTO notes (id, session_id, date, content, tags)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (id) DO UPDATE SET
+                        session_id = EXCLUDED.session_id,
+                        date = EXCLUDED.date,
+                        content = EXCLUDED.content,
+                        tags = EXCLUDED.tags
+                    """,
+                    note_id,
+                    note_data["session_id"],
+                    note_date,
+                    note_data["content"],
+                    json.dumps(note_data.get("tags", [])),
+                )
+            else:
+                await conn.execute(
+                    """
+                    INSERT INTO notes (session_id, date, content, tags)
+                    VALUES ($1, $2, $3, $4)
+                    """,
+                    note_data["session_id"],
+                    note_date,
+                    note_data["content"],
+                    json.dumps(note_data.get("tags", [])),
+                )
+
+    async def resync_notes_sequence(self) -> None:
+        """Resync the notes.id SERIAL sequence after explicit-id inserts.
+
+        Explicit-id inserts (e.g. from save_note during migration) bypass the
+        sequence, so subsequent auto-assigned inserts could otherwise collide
+        with a preserved id. Call this once after any bulk load that preserves
+        ids.
+        """
+        pool = self._ensure_connected()
+
         async with pool.acquire() as conn:
             await conn.execute(
-                """
-                INSERT INTO notes (session_id, date, content, tags)
-                VALUES ($1, $2, $3, $4)
-                """,
-                note_data["session_id"],
-                note_date,
-                note_data["content"],
-                json.dumps(note_data.get("tags", [])),
+                "SELECT setval(pg_get_serial_sequence('notes','id'), "
+                "COALESCE((SELECT MAX(id) FROM notes), 0) + 1, false)"
             )
 
     async def query_notes_by_date(self, date: str, limit: int = 100) -> list[dict[str, Any]]:
@@ -846,6 +892,25 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             for row in rows:
                 result = self._from_record(row)
                 # Normalize DATE column: PostgreSQL returns datetime.date, tests expect string
+                if "date" in result and not isinstance(result["date"], str):
+                    result["date"] = str(result["date"])
+                results.append(result)
+            return results
+
+    async def query_notes(self, limit: int = 1000, offset: int = 0) -> list[dict[str, Any]]:
+        """Query notes across all sessions, ordered by id. Not joined to sessions,
+        so orphaned notes (missing session row) are still returned."""
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM notes ORDER BY id LIMIT $1 OFFSET $2",
+                limit,
+                offset,
+            )
+            results = []
+            for row in rows:
+                result = self._from_record(row)
                 if "date" in result and not isinstance(result["date"], str):
                     result["date"] = str(result["date"])
                 results.append(result)
@@ -1456,6 +1521,18 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 engine_session_id,
                 mcp_session_id,
             )
+
+    async def query_mcp_sessions(self, limit: int = 1000, offset: int = 0) -> list[dict[str, Any]]:
+        """Query MCP session mappings, ordered by mcp_session_id (the primary key)."""
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM mcp_sessions ORDER BY mcp_session_id LIMIT $1 OFFSET $2",
+                limit,
+                offset,
+            )
+            return [self._from_record(row) for row in rows]
 
     # Maintenance operations
 

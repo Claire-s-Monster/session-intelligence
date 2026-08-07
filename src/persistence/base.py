@@ -191,6 +191,19 @@ class DatabaseBackend(Protocol):
         """Query notes by date across sessions."""
         ...
 
+    async def query_notes(self, limit: int = 1000, offset: int = 0) -> list[dict[str, Any]]:
+        """Query notes across all sessions, ordered by id.
+
+        Unlike query_notes_by_date this does NOT join sessions, so notes whose
+        session row is missing (orphans) are still returned. Paginate by
+        increasing offset until fewer than `limit` rows are returned.
+        """
+        ...
+
+    async def query_mcp_sessions(self, limit: int = 1000, offset: int = 0) -> list[dict[str, Any]]:
+        """Query MCP session mappings, ordered by a stable key. Paginated like query_notes."""
+        ...
+
     # Agent execution operations
     async def save_agent_execution(self, execution_data: dict[str, Any]) -> None:
         """Save agent execution record."""

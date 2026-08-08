@@ -763,6 +763,10 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                     "error": f"Tool '{target}' not found",
                     "available_tools": list(tool_registry.keys()),
                 }
+            elif (
+                validation_error := lean_interface.validate_tool_parameters(target, tool_params)
+            ) is not None:
+                result = validation_error
             else:
                 # Tools that read/write session state - need DB sync
                 session_modifying_tools = {

@@ -466,6 +466,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         limit: int = 50,
         project_path: str | None = None,
         status: str | None = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Query sessions with optional filters."""
         conn = self._ensure_connected()
@@ -480,8 +481,9 @@ class SQLiteBackend(BaseDatabaseBackend):
             query += " AND status = ?"
             params.append(status)
 
-        query += " ORDER BY started_at DESC LIMIT ?"
+        query += " ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?"
         params.append(limit)
+        params.append(offset)
 
         cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
@@ -618,7 +620,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         await conn.commit()
 
     async def query_decisions_by_category(
-        self, category: str, limit: int = 100
+        self, category: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
         """Query decisions by category across sessions."""
         conn = self._ensure_connected()
@@ -629,16 +631,16 @@ class SQLiteBackend(BaseDatabaseBackend):
             FROM decisions d
             JOIN sessions s ON d.session_id = s.id
             WHERE d.category = ?
-            ORDER BY d.timestamp DESC
-            LIMIT ?
+            ORDER BY d.timestamp DESC, d.id DESC
+            LIMIT ? OFFSET ?
         """,
-            (category, limit),
+            (category, limit, offset),
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
     async def query_decisions_by_session(
-        self, session_id: str, limit: int = 100
+        self, session_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
         """Query decisions for a specific session."""
         conn = self._ensure_connected()
@@ -647,10 +649,10 @@ class SQLiteBackend(BaseDatabaseBackend):
             """
             SELECT * FROM decisions
             WHERE session_id = ?
-            ORDER BY timestamp DESC
-            LIMIT ?
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ? OFFSET ?
         """,
-            (session_id, limit),
+            (session_id, limit, offset),
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -699,7 +701,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         return [dict(row) for row in rows]
 
     async def query_metrics_by_session(
-        self, session_id: str, limit: int = 100
+        self, session_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
         """Query metrics for a specific session."""
         conn = self._ensure_connected()
@@ -708,10 +710,10 @@ class SQLiteBackend(BaseDatabaseBackend):
             """
             SELECT * FROM metrics
             WHERE session_id = ?
-            ORDER BY timestamp DESC
-            LIMIT ?
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ? OFFSET ?
         """,
-            (session_id, limit),
+            (session_id, limit, offset),
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -980,6 +982,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         session_id: str | None = None,
         agent_name: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Query agent executions with optional filters."""
         conn = self._ensure_connected()
@@ -994,8 +997,9 @@ class SQLiteBackend(BaseDatabaseBackend):
             query += " AND agent_name = ?"
             params.append(agent_name)
 
-        query += " ORDER BY started_at DESC LIMIT ?"
+        query += " ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?"
         params.append(limit)
+        params.append(offset)
 
         cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()

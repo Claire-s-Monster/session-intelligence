@@ -231,9 +231,9 @@ async def test_save_decision_twice_same_id_updates_not_duplicates_sqlite(source)
 async def test_batch_size_does_not_cap_total_records_migrated(source, target, manager):
     """Regression guard: `batch_size` must never act as a hard cap on the
     total number of records migrated. `migrate_all()` with its DEFAULT
-    arguments (batch_size=100, scan_limit=10000) must migrate all 150
-    sessions and all 150 notes seeded here — well above batch_size=100 —
-    with nothing truncated at the much larger scan_limit."""
+    arguments (batch_size=100) must migrate all 150 sessions and all 150
+    notes seeded here — well above batch_size=100 — since there is no
+    longer any scan ceiling to truncate against."""
     total = 150
     for i in range(total):
         sid = f"sess-batch-cap-{i:03d}"

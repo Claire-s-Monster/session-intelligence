@@ -1020,7 +1020,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     async def query_session_summaries(
         self,
-        project_path: str | None = None,
+        project_name: str | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
@@ -1030,16 +1030,16 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         async with pool.acquire() as conn:
             if tags:
                 # Query by tags using JSONB containment
-                if project_path:
+                if project_name:
                     query = """
                         SELECT ss.*, s.project_path, s.project_name
                         FROM session_summaries ss
                         JOIN sessions s ON ss.session_id = s.id
-                        WHERE ss.tags @> $1::jsonb AND s.project_path = $2
+                        WHERE ss.tags @> $1::jsonb AND s.project_name = $2
                         ORDER BY ss.created_at DESC
                         LIMIT $3
                     """
-                    rows = await conn.fetch(query, json.dumps([tags[0]]), project_path, limit)
+                    rows = await conn.fetch(query, json.dumps([tags[0]]), project_name, limit)
                 else:
                     query = """
                         SELECT ss.*, s.project_path, s.project_name
@@ -1050,17 +1050,17 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                         LIMIT $2
                     """
                     rows = await conn.fetch(query, json.dumps([tags[0]]), limit)
-            elif project_path:
+            elif project_name:
                 # Query by project
                 query = """
                     SELECT ss.*, s.project_path, s.project_name
                     FROM session_summaries ss
                     JOIN sessions s ON ss.session_id = s.id
-                    WHERE s.project_path = $1
+                    WHERE s.project_name = $1
                     ORDER BY ss.created_at DESC
                     LIMIT $2
                 """
-                rows = await conn.fetch(query, project_path, limit)
+                rows = await conn.fetch(query, project_name, limit)
             else:
                 # Query all recent
                 query = """

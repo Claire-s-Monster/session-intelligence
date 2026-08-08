@@ -610,7 +610,20 @@ class LeanMCPInterface:
                 "properties": {
                     "project_path": {
                         "type": "string",
-                        "description": "Filter notebooks by project path",
+                        "description": (
+                            "Filter notebooks by project path. Accepted for "
+                            "convenience and resolved to a project_name "
+                            "internally; prefer project_name directly when "
+                            "known, since path equality is fragile (trailing "
+                            "slashes, symlinks, subdirectories)."
+                        ),
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": (
+                            "Filter notebooks by project name (preferred over "
+                            "project_path). Takes priority if both are given."
+                        ),
                     },
                     "tags": {
                         "type": "array",
@@ -627,6 +640,7 @@ class LeanMCPInterface:
             "examples": [
                 {"limit": 10},
                 {"project_path": "/home/user/my-project", "limit": 5},
+                {"project_name": "session-intelligence", "limit": 5},
                 {"tags": ["feature", "bugfix"]},
             ],
         }

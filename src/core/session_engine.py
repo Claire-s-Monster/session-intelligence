@@ -2583,6 +2583,7 @@ class SessionIntelligenceEngine:
     async def session_query_notebooks(
         self,
         project_path: str | None = None,
+        project_name: str | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
@@ -2590,12 +2591,24 @@ class SessionIntelligenceEngine:
         Query session notebooks/summaries with optional filters.
 
         Args:
-            project_path: Filter by project path
+            project_path: Project path filter, accepted for convenience and
+                resolved to a project_name (issue #62: the old implementation
+                compared project_path with raw SQL string equality against
+                s.project_path -- a trailing slash, an unresolved symlink, or
+                a session created from a subdirectory would silently return
+                zero rows instead of erroring). Ignored if project_name is
+                also given.
+            project_name: Filter by project name. This is what rows are
+                actually keyed on elsewhere in this module (see
+                session_recall) and is the preferred filter.
             tags: Filter by tags
             limit: Maximum results to return
 
         Returns:
-            List of session notebook summaries
+            List of session notebook summaries. If project_path is supplied
+            but cannot be bound to a usable project_name, returns an empty
+            list (with a logged warning) rather than silently falling back
+            to an unfiltered query across every project's notebooks.
         """
         if not self.database:
             debug_logger.warning(
@@ -2603,9 +2616,45 @@ class SessionIntelligenceEngine:
             )
             return []
 
+        effective_project_name = project_name
+
+        # No explicit project_name: try to derive one from project_path.
+        # Mirrors the guard in session_log_decision/session_log_learning
+        # (see ~line 1302 and ~line 2754): reject a relative project_path
+        # because derive_project_name() resolves it against the SERVER's
+        # cwd, not the caller's, and discard a derived UNBOUND result
+        # rather than using it, to avoid recreating the invisible-rows bug
+        # #48 fixed. Unlike those write paths, an unusable project_path
+        # here must NOT fall back to an unfiltered query -- that would
+        # silently return every project's notebooks for a call the caller
+        # explicitly scoped to one project.
+        if not effective_project_name and project_path:
+            if (
+                project_path != UNKNOWN_PROJECT_PATH
+                and Path(project_path).is_absolute()
+            ):
+                derived_name = derive_project_name(project_path)
+                if derived_name != UNBOUND:
+                    effective_project_name = derived_name
+                else:
+                    debug_logger.warning(
+                        f"session_query_notebooks: project_path "
+                        f"{project_path!r} could not be bound to a project "
+                        "name; returning no results instead of querying "
+                        "unscoped"
+                    )
+                    return []
+            else:
+                debug_logger.warning(
+                    f"session_query_notebooks: project_path {project_path!r} "
+                    "is not usable (relative path or unknown sentinel); "
+                    "returning no results instead of querying unscoped"
+                )
+                return []
+
         try:
             results = await self.database.query_session_summaries(
-                project_path=project_path,
+                project_name=effective_project_name,
                 tags=tags,
                 limit=limit,
             )

@@ -873,7 +873,7 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def query_session_summaries(
         self,
-        project_path: str | None = None,
+        project_name: str | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
@@ -891,22 +891,22 @@ class SQLiteBackend(BaseDatabaseBackend):
                 )
             """
             params: list[Any] = [tags[0]]  # Match first tag
-            if project_path:
-                query += " AND s.project_path = ?"
-                params.append(project_path)
+            if project_name:
+                query += " AND s.project_name = ?"
+                params.append(project_name)
             query += " ORDER BY ss.created_at DESC LIMIT ?"
             params.append(limit)
-        elif project_path:
+        elif project_name:
             # Query by project
             query = """
                 SELECT ss.*, s.project_path, s.project_name
                 FROM session_summaries ss
                 JOIN sessions s ON ss.session_id = s.id
-                WHERE s.project_path = ?
+                WHERE s.project_name = ?
                 ORDER BY ss.created_at DESC
                 LIMIT ?
             """
-            params = [project_path, limit]
+            params = [project_name, limit]
         else:
             # Query all recent
             query = """

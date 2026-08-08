@@ -25,7 +25,6 @@ from core.session_engine import SessionIntelligenceEngine
 from lean_mcp_interface import LeanMCPInterface
 from persistence.sqlite import SQLiteBackend
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -143,7 +142,7 @@ async def test_find_solution_accepts_project_path_when_dispatched(lean_interface
     if isinstance(inner, dict):
         inner_error = str(inner.get("error", ""))
     elif hasattr(inner, "error"):
-        inner_error = str(getattr(inner, "error") or "")
+        inner_error = str(inner.error or "")
     assert "unexpected keyword argument" not in inner_error
     assert "unknown" not in inner_error.lower()
 

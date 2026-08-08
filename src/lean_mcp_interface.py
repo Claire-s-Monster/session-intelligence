@@ -783,7 +783,13 @@ class LeanMCPInterface:
                     },
                     "project_path": {
                         "type": "string",
-                        "description": "Absolute path to the caller's project, used to scope project-specific solutions. Omitting it falls back to the server's own working directory, which is almost never the caller's project. Relative paths are ignored (they would resolve against the server's cwd, not the caller's).",
+                        "description": (
+                            "Absolute path to the caller's project, used to scope "
+                            "project-specific solutions. Omitting it falls back to the "
+                            "server's own working directory, which is almost never the "
+                            "caller's project. Relative paths are ignored (they would "
+                            "resolve against the server's cwd, not the caller's)."
+                        ),
                     },
                 },
                 "required": ["error_text"],
@@ -791,7 +797,10 @@ class LeanMCPInterface:
             "examples": [
                 {"error_text": "ModuleNotFoundError: No module named 'foo'"},
                 {"error_text": "TypeError: expected str, got int", "error_category": "runtime"},
-                {"error_text": "ModuleNotFoundError: No module named 'foo'", "project_path": "/home/user/projects/my-project"},
+                {
+                    "error_text": "ModuleNotFoundError: No module named 'foo'",
+                    "project_path": "/home/user/projects/my-project",
+                },
             ],
         }
 

@@ -528,6 +528,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         limit: int = 50,
         project_path: str | None = None,
         status: str | None = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Query sessions with optional filters."""
         pool = self._ensure_connected()
@@ -545,8 +546,11 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             params.append(status)
             param_idx += 1
 
-        query += f" ORDER BY started_at DESC LIMIT ${param_idx}"
+        query += f" ORDER BY started_at DESC, id DESC LIMIT ${param_idx}"
         params.append(limit)
+        param_idx += 1
+        query += f" OFFSET ${param_idx}"
+        params.append(offset)
 
         async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
@@ -690,7 +694,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     @db_retry
     async def query_decisions_by_category(
-        self, category: str, limit: int = 100
+        self, category: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
         """Query decisions by category across sessions."""
         pool = self._ensure_connected()
@@ -702,16 +706,17 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 FROM decisions d
                 JOIN sessions s ON d.session_id = s.id
                 WHERE d.category = $1
-                ORDER BY d.timestamp DESC
-                LIMIT $2
+                ORDER BY d.timestamp DESC, d.id DESC
+                LIMIT $2 OFFSET $3
                 """,
                 category,
                 limit,
+                offset,
             )
             return [self._from_record(row) for row in rows]
 
     async def query_decisions_by_session(
-        self, session_id: str, limit: int = 100
+        self, session_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
         """Query decisions for a specific session."""
         pool = self._ensure_connected()
@@ -721,11 +726,12 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 """
                 SELECT * FROM decisions
                 WHERE session_id = $1
-                ORDER BY timestamp DESC
-                LIMIT $2
+                ORDER BY timestamp DESC, id DESC
+                LIMIT $2 OFFSET $3
                 """,
                 session_id,
                 limit,
+                offset,
             )
             return [self._from_record(row) for row in rows]
 
@@ -779,7 +785,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             return [self._from_record(row) for row in rows]
 
     async def query_metrics_by_session(
-        self, session_id: str, limit: int = 100
+        self, session_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
         """Query metrics for a specific session."""
         pool = self._ensure_connected()
@@ -789,11 +795,12 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 """
                 SELECT * FROM metrics
                 WHERE session_id = $1
-                ORDER BY timestamp DESC
-                LIMIT $2
+                ORDER BY timestamp DESC, id DESC
+                LIMIT $2 OFFSET $3
                 """,
                 session_id,
                 limit,
+                offset,
             )
             return [self._from_record(row) for row in rows]
 
@@ -1319,6 +1326,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         session_id: str | None = None,
         agent_name: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Query agent executions with optional filters."""
         pool = self._ensure_connected()
@@ -1336,8 +1344,11 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             params.append(agent_name)
             param_idx += 1
 
-        query += f" ORDER BY started_at DESC LIMIT ${param_idx}"
+        query += f" ORDER BY started_at DESC, id DESC LIMIT ${param_idx}"
         params.append(limit)
+        param_idx += 1
+        query += f" OFFSET ${param_idx}"
+        params.append(offset)
 
         async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)

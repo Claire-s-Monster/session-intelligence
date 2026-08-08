@@ -138,8 +138,14 @@ class DatabaseBackend(Protocol):
         limit: int = 50,
         project_path: str | None = None,
         status: str | None = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """Query sessions with optional filters."""
+        """Query sessions with optional filters.
+
+        Ordered by started_at DESC with `id` as a tiebreaker, so paginating by
+        `offset` cannot skip or repeat rows that share a timestamp. Paginate by
+        increasing offset until fewer than `limit` rows are returned.
+        """
         ...
 
     async def get_active_session_for_project(self, project_path: str) -> dict[str, Any] | None:
@@ -156,15 +162,23 @@ class DatabaseBackend(Protocol):
         ...
 
     async def query_decisions_by_category(
-        self, category: str, limit: int = 100
+        self, category: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
-        """Query decisions by category across sessions."""
+        """Query decisions by category across sessions.
+
+        Ordered by timestamp DESC with `id` as a tiebreaker; paginated like
+        query_sessions.
+        """
         ...
 
     async def query_decisions_by_session(
-        self, session_id: str, limit: int = 100
+        self, session_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
-        """Query decisions for a specific session."""
+        """Query decisions for a specific session.
+
+        Ordered by timestamp DESC with `id` as a tiebreaker; paginated like
+        query_sessions.
+        """
         ...
 
     # Metrics operations
@@ -177,9 +191,13 @@ class DatabaseBackend(Protocol):
         ...
 
     async def query_metrics_by_session(
-        self, session_id: str, limit: int = 100
+        self, session_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
-        """Query metrics for a specific session."""
+        """Query metrics for a specific session.
+
+        Ordered by timestamp DESC with `id` as a tiebreaker; paginated like
+        query_sessions.
+        """
         ...
 
     # Notes operations
@@ -214,8 +232,13 @@ class DatabaseBackend(Protocol):
         session_id: str | None = None,
         agent_name: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """Query agent executions with optional filters."""
+        """Query agent executions with optional filters.
+
+        Ordered by started_at DESC with `id` as a tiebreaker; paginated like
+        query_sessions.
+        """
         ...
 
     async def get_agent_stats(self, time_window_hours: int = 168) -> dict[str, Any]:

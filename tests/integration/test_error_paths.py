@@ -2,8 +2,10 @@
 Integration tests for error handling across layers.
 
 Uses LeanMCPInterface + real SQLite backend (no live server).
-The lean wrappers (_wrap_tool, _wrap_async_tool) catch exceptions and
-return error dicts rather than re-raising — tests verify that behavior.
+The lean wrappers (_wrap_tool, _wrap_async_tool) log exceptions and
+re-raise them (issue #61); the transports' dispatch boundary is what
+converts a raised exception into a status="error" envelope — tests
+verify that behavior.
 
 asyncio_mode = "auto" — no @pytest.mark.asyncio decorators needed.
 """
@@ -66,17 +68,16 @@ async def _call(lean: LeanMCPInterface, tool_name: str, **params):
 # ===========================================================================
 # Wrapper error behaviour
 #
-# _wrap_tool / _wrap_async_tool catch exceptions and return {"error": ...}
-# dicts.  Tests here verify that contract rather than expecting re-raises.
+# _wrap_tool / _wrap_async_tool log exceptions and re-raise them (issue #61).
+# Tests here verify that contract: a missing required argument propagates as
+# a raised exception rather than being swallowed into an {"error": ...} dict.
 # ===========================================================================
 
 
-async def test_lifecycle_missing_operation_returns_error_dict(lean):
-    """session_manage_lifecycle with no params returns an error dict (wrapped)."""
-    result = await _call(lean, "session_manage_lifecycle")
-    # Wrapper catches TypeError and returns error dict
-    assert isinstance(result, dict)
-    assert "error" in result
+async def test_lifecycle_missing_operation_raises(lean):
+    """session_manage_lifecycle with no params raises (wrapper re-raises, issue #61)."""
+    with pytest.raises(TypeError):
+        await _call(lean, "session_manage_lifecycle")
 
 
 async def test_lifecycle_invalid_operation_returns_failure(lean):
@@ -91,11 +92,10 @@ async def test_lifecycle_invalid_operation_returns_failure(lean):
     assert has_error or has_message, f"Expected failure indicator in: {result_dict}"
 
 
-async def test_log_decision_missing_decision_returns_error_dict(lean):
-    """session_log_decision with no 'decision' returns an error dict (wrapped)."""
-    result = await _call(lean, "session_log_decision")
-    assert isinstance(result, dict)
-    assert "error" in result
+async def test_log_decision_missing_decision_raises(lean):
+    """session_log_decision with no 'decision' raises (wrapper re-raises, issue #61)."""
+    with pytest.raises(TypeError):
+        await _call(lean, "session_log_decision")
 
 
 async def test_log_decision_empty_string_is_accepted(lean):
@@ -118,18 +118,16 @@ async def test_log_decision_none_context_is_handled(lean):
 # ===========================================================================
 
 
-async def test_agent_register_missing_name_returns_error_dict(lean):
-    """agent_register without agent_name returns an error dict (wrapped)."""
-    result = await _call(lean, "agent_register", agent_type="domain")
-    assert isinstance(result, dict)
-    assert "error" in result
+async def test_agent_register_missing_name_raises(lean):
+    """agent_register without agent_name raises (wrapper re-raises, issue #61)."""
+    with pytest.raises(TypeError):
+        await _call(lean, "agent_register", agent_type="domain")
 
 
-async def test_agent_register_missing_type_returns_error_dict(lean):
-    """agent_register without agent_type returns an error dict (wrapped)."""
-    result = await _call(lean, "agent_register", agent_name="my-agent")
-    assert isinstance(result, dict)
-    assert "error" in result
+async def test_agent_register_missing_type_raises(lean):
+    """agent_register without agent_type raises (wrapper re-raises, issue #61)."""
+    with pytest.raises(TypeError):
+        await _call(lean, "agent_register", agent_name="my-agent")
 
 
 async def test_agent_register_empty_name_is_handled(lean):
@@ -169,18 +167,16 @@ async def test_agent_log_decision_unknown_agent_is_handled(lean):
 # ===========================================================================
 
 
-async def test_track_execution_missing_params_returns_error_dict(lean):
-    """session_track_execution with no params returns an error dict (wrapped)."""
-    result = await _call(lean, "session_track_execution")
-    assert isinstance(result, dict)
-    assert "error" in result
+async def test_track_execution_missing_params_raises(lean):
+    """session_track_execution with no params raises (wrapper re-raises, issue #61)."""
+    with pytest.raises(TypeError):
+        await _call(lean, "session_track_execution")
 
 
-async def test_track_execution_partial_params_returns_error_dict(lean):
-    """session_track_execution with only step_data returns an error dict (wrapped)."""
-    result = await _call(lean, "session_track_execution", step_data={"phase": "start"})
-    assert isinstance(result, dict)
-    assert "error" in result
+async def test_track_execution_partial_params_raises(lean):
+    """session_track_execution with only step_data raises (wrapper re-raises, issue #61)."""
+    with pytest.raises(TypeError):
+        await _call(lean, "session_track_execution", step_data={"phase": "start"})
 
 
 # ===========================================================================

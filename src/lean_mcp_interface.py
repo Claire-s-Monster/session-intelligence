@@ -1396,31 +1396,90 @@ class LeanMCPInterface:
 
         return result
 
+    def validate_tool_parameters(
+        self, tool_name: str, parameters: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """
+        Validate parameters against a tool's declared schema.
+
+        Returns an error envelope when the call must be refused, or None when it
+        is safe to dispatch. Both the stdio meta-tool and the HTTP transport call
+        this, so a mistyped parameter name is rejected identically over either
+        one instead of reaching the engine and raising a raw TypeError.
+
+        Callers are responsible for checking registry membership first; an
+        unregistered tool has no schema to validate against and returns None.
+        Schemas without declared properties are not validated either - there is
+        nothing to check the parameters against.
+        """
+        tool_info = self.tool_registry.get(tool_name)
+        if tool_info is None:
+            return None
+
+        schema = tool_info.get("schema") or {}
+        valid_params = set(schema.get("properties", {}))
+        if not valid_params:
+            return None
+
+        unknown = sorted(set(parameters) - valid_params)
+        missing = sorted(set(schema.get("required", [])) - set(parameters))
+        if not unknown and not missing:
+            return None
+
+        problems = []
+        if unknown:
+            problems.append(f"unexpected parameter(s): {unknown}")
+        if missing:
+            problems.append(f"missing required parameter(s): {missing}")
+        return {
+            "tool": tool_name,
+            "status": "error",
+            "error": (
+                f"Invalid parameters for '{tool_name}' - "
+                f"{'; '.join(problems)}. "
+                f"Valid parameters: {sorted(valid_params)}. "
+                f"Call get_tool_spec('{tool_name}') for the full schema."
+            ),
+        }
+
     def _wrap_tool(self, tool_func):
-        """Wrap tool function with token limiting and error handling."""
+        """
+        Wrap tool function with token limiting.
+
+        Exceptions are logged and re-raised rather than turned into an
+        {"error": ...} result. Both transports catch them at the dispatch
+        boundary and report status="error"; swallowing them here made a failed
+        call surface inside a status="success" envelope (issue #61).
+        """
 
         @wraps(tool_func)
         def wrapper(*args, **kwargs):
             try:
                 result = tool_func(*args, **kwargs)
                 return apply_token_limits(result, tool_func.__name__)
-            except Exception as e:
-                logger.error(f"Error in {tool_func.__name__}: {e}")
-                return {"error": str(e), "tool": tool_func.__name__}
+            except Exception:
+                logger.exception(f"Error in {tool_func.__name__}")
+                raise
 
         return wrapper
 
     def _wrap_async_tool(self, async_tool_func):
-        """Wrap async tool function with token limiting and error handling."""
+        """
+        Wrap async tool function with token limiting.
+
+        Exceptions are logged and re-raised for the same reason as _wrap_tool
+        (issue #61) - the dispatch boundary in each transport turns them into a
+        status="error" envelope.
+        """
 
         @wraps(async_tool_func)
         async def wrapper(*args, **kwargs):
             try:
                 result = await async_tool_func(*args, **kwargs)
                 return apply_token_limits(result, async_tool_func.__name__)
-            except Exception as e:
-                logger.error(f"Error in {async_tool_func.__name__}: {e}")
-                return {"error": str(e), "tool": async_tool_func.__name__}
+            except Exception:
+                logger.exception(f"Error in {async_tool_func.__name__}")
+                raise
 
         return wrapper
 
@@ -1768,31 +1827,11 @@ class LeanMCPInterface:
                     "error": f"parameters must be a mapping, got {type(parameters).__name__}",
                 }
 
-            # Validate parameters against the declared schema before dispatch, so a
-            # mistyped name surfaces as an actionable error instead of a raw TypeError
-            # leaking out of the engine. Schemas without declared properties are not
-            # validated (nothing to check against).
-            schema = tool_info.get("schema") or {}
-            valid_params = set(schema.get("properties", {}))
-            if valid_params:
-                unknown = sorted(set(parameters) - valid_params)
-                missing = sorted(set(schema.get("required", [])) - set(parameters))
-                if unknown or missing:
-                    problems = []
-                    if unknown:
-                        problems.append(f"unexpected parameter(s): {unknown}")
-                    if missing:
-                        problems.append(f"missing required parameter(s): {missing}")
-                    return {
-                        "tool": tool_name,
-                        "status": "error",
-                        "error": (
-                            f"Invalid parameters for '{tool_name}' - "
-                            f"{'; '.join(problems)}. "
-                            f"Valid parameters: {sorted(valid_params)}. "
-                            f"Call get_tool_spec('{tool_name}') for the full schema."
-                        ),
-                    }
+            # Validate against the declared schema before dispatch. Shared with the
+            # HTTP transport so both refuse an invalid call identically (issue #61).
+            validation_error = self.validate_tool_parameters(tool_name, parameters)
+            if validation_error is not None:
+                return validation_error
 
             try:
                 # Execute tool - await if async, call directly if sync

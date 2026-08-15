@@ -16,15 +16,8 @@ from fastmcp import FastMCP
 
 logger = logging.getLogger(__name__)
 
-# Setup file logging for debugging
-debug_log_file = Path("/tmp/session-intelligence-debug.log")
-debug_logger = logging.getLogger("session_intelligence_debug")
-debug_handler = logging.FileHandler(debug_log_file)
-debug_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-debug_logger.addHandler(debug_handler)
-debug_logger.setLevel(logging.INFO)
-
 # ruff: noqa: E402
+from core.debug_logging import configure_debug_logger
 from core.session_engine import SessionIntelligenceEngine
 from models.session_models import (
     AnalysisScope,
@@ -44,6 +37,11 @@ from models.session_models import (
     WorkflowType,
 )
 from utils.token_limiter import apply_token_limits
+
+# Debug logging is opt-in via SESSION_INTELLIGENCE_DEBUG (issue #68).
+debug_logger = configure_debug_logger(
+    "session_intelligence_debug", "%(asctime)s [%(levelname)s] %(message)s"
+)
 
 
 # Parse command line arguments

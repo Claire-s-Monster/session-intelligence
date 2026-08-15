@@ -7,7 +7,6 @@ capabilities.
 """
 
 import json
-import logging
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -16,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from core.agent_validator import AgentValidator
+from core.debug_logging import configure_debug_logger
 from core.project_naming import UNBOUND, derive_project_name
 from models.session_models import (
     Agent,
@@ -69,15 +69,10 @@ from models.session_models import (
     WorkflowType,
 )
 
-# Setup file logging for debugging
-debug_log_file = Path("/tmp/session-intelligence-debug.log")
-debug_logger = logging.getLogger("session_intelligence_engine_debug")
-debug_handler = logging.FileHandler(debug_log_file)
-debug_handler.setFormatter(
-    logging.Formatter("%(asctime)s [ENGINE-DEBUG] %(message)s")
+# Debug logging is opt-in via SESSION_INTELLIGENCE_DEBUG (issue #68).
+debug_logger = configure_debug_logger(
+    "session_intelligence_engine_debug", "%(asctime)s [ENGINE-DEBUG] %(message)s"
 )
-debug_logger.addHandler(debug_handler)
-debug_logger.setLevel(logging.INFO)
 
 # Sentinel for "the caller did not tell us where they were working".
 # Never fall back to the server's own cwd: this process runs from the

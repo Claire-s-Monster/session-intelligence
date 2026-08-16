@@ -54,6 +54,7 @@ from core.session_engine import SessionIntelligenceEngine
 from lean_mcp_interface import LeanMCPInterface
 from persistence import DatabaseConfig, create_database, sanitize_dsn
 from transport.mcp_session_manager import MCPSessionManager
+from transport.persist_tracker import PersistDigestTracker
 from transport.security import (
     LocalhostOnlyMiddleware,
     SecurityConfig,
@@ -165,6 +166,11 @@ class HTTPSessionIntelligenceServer:
         self.lean_interface: LeanMCPInterface | None = None
         self.mcp_session_manager: MCPSessionManager | None = None
         self.notification_manager: NotificationManager | None = None
+
+        # Change detection for _persist_sessions_to_database (issue #67): skips
+        # re-upserting cache entries whose payload has not changed since the
+        # last successful write.
+        self.persist_tracker = PersistDigestTracker()
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI) -> AsyncGenerator[None, None]:
@@ -552,31 +558,61 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
         return {"contents": []}
 
     async def _persist_sessions_to_database(self, request: Request) -> None:
-        """Persist all sessions from engine cache to database.
+        """Persist changed sessions from engine cache to database.
 
         Saves session-level data AND related records (decisions, agent_executions).
+
+        Only entities whose payload differs from the last successful write are
+        sent to the database (issue #67). Without this, every session-modifying
+        tool call re-upserted the entire cache, producing millions of no-op
+        UPDATEs on ``agent_executions`` and keeping autovacuum continuously busy.
         """
         database = request.app.state.database
         session_engine = request.app.state.session_engine
+        tracker = self.persist_tracker
+
+        written = 0
+        skipped = 0
 
         for session_id, session in list(session_engine.session_cache.items()):
             try:
                 session_data = session.model_dump()
-                await database.save_session(session_data)
+
+                # Children are persisted separately below and are not columns of
+                # the sessions row, so they must not influence the session digest.
+                session_row = {
+                    key: value
+                    for key, value in session_data.items()
+                    if key not in ("decisions", "agents_executed")
+                }
+                digest = tracker.digest_if_changed(session_id, "session", session_row)
+                if digest is None:
+                    skipped += 1
+                else:
+                    await database.save_session(session_data)
+                    tracker.commit(session_id, "session", digest)
+                    written += 1
 
                 # Also persist decisions
-                for decision in session.decisions:
+                for index, decision in enumerate(session.decisions):
                     try:
                         decision_data = (
                             decision.model_dump() if hasattr(decision, "model_dump") else decision
                         )
                         decision_data["session_id"] = session_id
+                        entity_key = f"decision:{decision_data.get('id') or index}"
+                        digest = tracker.digest_if_changed(session_id, entity_key, decision_data)
+                        if digest is None:
+                            skipped += 1
+                            continue
                         await database.save_decision(decision_data)
+                        tracker.commit(session_id, entity_key, digest)
+                        written += 1
                     except Exception as e:
                         logger.warning(f"Failed to persist decision: {e}")
 
                 # Also persist agent executions
-                for agent_exec in session.agents_executed:
+                for index, agent_exec in enumerate(session.agents_executed):
                     try:
                         exec_data = (
                             agent_exec.model_dump()
@@ -584,7 +620,15 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                             else agent_exec
                         )
                         exec_data["session_id"] = session_id
+                        exec_id = exec_data.get("id") or exec_data.get("execution_id") or index
+                        entity_key = f"execution:{exec_id}"
+                        digest = tracker.digest_if_changed(session_id, entity_key, exec_data)
+                        if digest is None:
+                            skipped += 1
+                            continue
                         await database.save_agent_execution(exec_data)
+                        tracker.commit(session_id, entity_key, digest)
+                        written += 1
                     except Exception as e:
                         logger.warning(f"Failed to persist agent execution: {e}")
 
@@ -593,6 +637,12 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                 )
             except Exception as e:
                 logger.error(f"Failed to persist session {session_id}: {e}")
+
+        # Digests only shadow the cache; drop entries for sessions that have left
+        # it so the tracker cannot grow without bound.
+        tracker.retain(session_engine.session_cache.keys())
+
+        logger.debug(f"Persist pass: {written} written, {skipped} unchanged")
 
     async def _ensure_sessions_loaded_from_database(self, request: Request) -> None:
         """Load active sessions from database into engine cache if cache is empty.

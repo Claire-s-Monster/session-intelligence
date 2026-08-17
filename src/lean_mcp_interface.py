@@ -81,6 +81,14 @@ class LeanMCPInterface:
                         "description": "Session mode",
                     },
                     "project_name": {"type": "string", "description": "Project context (optional)"},
+                    "project_path": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the caller's project, recorded on the "
+                            "created session. Relative paths are ignored (they would "
+                            "resolve against the server's cwd, not the caller's)."
+                        ),
+                    },
                     "metadata": {"description": "Additional session metadata"},
                     "auto_recovery": {
                         "type": "boolean",

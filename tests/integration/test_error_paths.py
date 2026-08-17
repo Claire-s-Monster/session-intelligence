@@ -101,7 +101,7 @@ async def test_log_decision_missing_decision_raises(lean):
 async def test_log_decision_empty_string_is_accepted(lean):
     """session_log_decision with empty string decision does not crash."""
     await _call(lean, "session_manage_lifecycle", operation="create", project_name="ep-test")
-    result = await _call(lean, "session_log_decision", decision="")
+    result = await _call(lean, "session_log_decision", decision="", project_name="ep-test")
     # Empty string is technically valid — engine returns some result
     assert result is not None
 
@@ -109,7 +109,7 @@ async def test_log_decision_empty_string_is_accepted(lean):
 async def test_log_decision_none_context_is_handled(lean):
     """session_log_decision with context=None does not crash."""
     await _call(lean, "session_manage_lifecycle", operation="create", project_name="ctx-test")
-    result = await _call(lean, "session_log_decision", decision="test decision", context=None)
+    result = await _call(lean, "session_log_decision", decision="test decision", context=None, project_name="ctx-test")
     assert result is not None
 
 

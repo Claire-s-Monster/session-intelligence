@@ -1,10 +1,14 @@
 """
 Unit tests for the pre-resolver guard in session_log_decision.
 
-Verifies that _current_session_set_in_process correctly gates the guard so
-that a stale disk-cached session ID does NOT silently hijack calls that
-provide no explicit identifier (leak mode 1) and does NOT override an
+Verifies that a stale disk-cached session ID does NOT silently hijack calls
+that provide no explicit identifier (leak mode 1) and does NOT override an
 explicit project_name/session_id (leak mode 2).
+
+Since issue #72 the in-process flag no longer licenses an unbound call
+either: _current_session_set_in_process only proves *this process* created a
+session, and the HTTP transport shares one engine across every project, so it
+never proved the session belonged to the caller's project.
 """
 
 import pytest
@@ -57,13 +61,25 @@ class TestPreResolverGuard:
         with pytest.raises(SessionContextRequiredError):
             await engine.session_log_decision(decision="some decision")
 
-    async def test_no_identifier_after_in_process_create_continues(self, engine, db):
+    async def test_no_identifier_after_in_process_create_now_raises(self, engine, db):
         """
-        Happy path: when THIS process explicitly created a session via
-        _create_session, both _current_session_id and _current_session_set_in_process
-        are set.  A no-identifier call should bind to that session and succeed.
+        Issue #72 reversed this case.  It used to be the "happy path": an
+        in-process _create_session set both _current_session_id and
+        _current_session_set_in_process, and a no-identifier call bound to
+        that session.
+
+        The premise was "this process created it, so it is mine" — true for a
+        single-project stdio server, false for the HTTP transport, which builds
+        ONE engine shared by every project (http_server.py lifespan()).  There
+        the flag turns True as soon as ANY project creates a session, so an
+        unbound call bound to whichever project most recently created one.
+        That is how session-intelligence decisions ended up filed under
+        package-incubator.
+
+        The contract now matches session_log_learning: supply a scope, or pass
+        allow_unbound=True.  Callers that want the old create-then-log flow
+        pass the session_id that _create_session returned.
         """
-        # Create a real session so FK persists correctly
         result = engine._create_session(
             mode="local",
             project_name="test-project",
@@ -73,13 +89,20 @@ class TestPreResolverGuard:
         assert result.status == "success"
         await db.save_session(result.session_data.model_dump(mode="python"))
 
-        # Both fields must be set by _create_session
+        # The ambient state the old guard keyed on is still set ...
         assert engine._current_session_id == result.session_id
         assert engine._current_session_set_in_process is True
 
-        # No identifier passed — guard should fire and use current session
+        # ... but it is no longer sufficient to bind a decision.
+        with pytest.raises(SessionContextRequiredError):
+            await engine.session_log_decision(
+                decision="a decision without explicit identifier"
+            )
+
+        # The documented replacement: pass the id the create returned.
         decision_result = await engine.session_log_decision(
-            decision="a decision without explicit identifier"
+            decision="a decision with the created session's id",
+            session_id=result.session_id,
         )
         assert decision_result.decision_id != "error"
         assert decision_result.session_id == result.session_id

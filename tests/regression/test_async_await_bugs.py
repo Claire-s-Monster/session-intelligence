@@ -33,6 +33,7 @@ class TestAsyncAwaitBugs:
         await engine.session_log_decision(
             decision="Test decision",
             context={"rationale": "Test rationale", "category": "test"},
+            session_id=session_id,
         )
 
         decisions = await engine.database.query_decisions_by_session(session_id)

@@ -278,6 +278,7 @@ class TestPersistWithRealSessionModel:
         await engine.session_log_decision(
             decision="Digest the payload instead of always upserting",
             context={"rationale": "issue #67", "category": "test"},
+            project_name="issue-67",
         )
         assert engine.session_cache
 

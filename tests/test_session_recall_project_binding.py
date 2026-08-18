@@ -103,7 +103,20 @@ async def test_log_without_create_raises_without_allow_unbound(db):
 
 
 @pytest.mark.asyncio
-async def test_create_then_log_uses_current_session(db):
+async def test_create_then_log_requires_explicit_scope(db):
+    """Issue #72 reversed this case.
+
+    Creating a session in-process used to be enough for a later unbound
+    session_log_decision to bind to it.  That premise held only for a
+    single-project engine; the HTTP transport shares ONE engine across every
+    project (http_server.py lifespan()), so the in-process flag never proved
+    the session belonged to the caller's project.
+
+    The decision must now carry an explicit scope -- and when it does, the row
+    still lands under that session.
+    """
+    from core.session_engine import SessionContextRequiredError
+
     pn = f"test-proj-{uuid.uuid4().hex[:8]}"
     engine = _make_engine(db)
     try:
@@ -116,7 +129,14 @@ async def test_create_then_log_uses_current_session(db):
 
         await db.save_session(create_result.session_data.model_dump(mode="python"))
 
-        result = await engine.session_log_decision(decision="create-then-log-probe")
+        # The ambient current session no longer licenses an unbound call.
+        with pytest.raises(SessionContextRequiredError):
+            await engine.session_log_decision(decision="create-then-log-probe")
+
+        # Passing the id that create returned is the documented replacement.
+        result = await engine.session_log_decision(
+            decision="create-then-log-probe", session_id=sid
+        )
         assert result.decision_id != "error"
 
         pool = db._ensure_connected()

@@ -213,6 +213,7 @@ class SessionIntelligenceEngine:
         *,
         allow_unbound: bool = False,
         create_if_missing: bool = True,
+        project_path: str | None = None,
     ) -> "ResolvedSessionContext":
         """Resolve a session ID from a flexible identifier set.
 
@@ -226,10 +227,25 @@ class SessionIntelligenceEngine:
         or via _get_or_create_current_session_id (kept for back-compat in code
         paths that don't go through the resolver).
 
+        Args:
+            project_path: Absolute path recorded on any session this call
+                creates; ignored when relative.
+
         Returns:
             ResolvedSessionContext with session_id, project_name, project_path
             populated from the resolved session row.
         """
+        # Only an absolute path is trustworthy: derive_project_name() and the
+        # session row alike resolve a relative path against the SERVER's cwd,
+        # not the caller's (see the #48/#49 rationale in session_log_decision).
+        safe_project_path = (
+            project_path
+            if project_path
+            and project_path != UNKNOWN_PROJECT_PATH
+            and Path(project_path).is_absolute()
+            else None
+        )
+
         # 1. session_id: trust caller, validate
         if session_id is not None:
             if not self.database:
@@ -277,7 +293,7 @@ class SessionIntelligenceEngine:
             result = self._create_session(
                 mode="explicit",
                 project_name=project_name or "_unbound_",
-                metadata={"session_name": session_name},
+                metadata={"session_name": session_name, "project_path": safe_project_path},
                 session_name=session_name,
             )
             cached = self.session_cache.get(result.session_id)
@@ -307,7 +323,7 @@ class SessionIntelligenceEngine:
             result = self._create_session(
                 mode="explicit",
                 project_name=project_name,
-                metadata={},
+                metadata={"project_path": safe_project_path},
             )
             cached = self.session_cache.get(result.session_id)
             return ResolvedSessionContext(
@@ -479,6 +495,7 @@ class SessionIntelligenceEngine:
         operation: str,
         mode: str = "local",
         project_name: str | None = None,
+        project_path: str | None = None,
         metadata: dict[str, Any] | None = None,
         auto_recovery: bool = True,
     ) -> SessionResult:
@@ -494,7 +511,7 @@ class SessionIntelligenceEngine:
         """
         try:
             return await self._manage_lifecycle_impl(
-                operation, mode, project_name, metadata, auto_recovery
+                operation, mode, project_name, project_path, metadata, auto_recovery
             )
         except Exception as e:
             return SessionResult(
@@ -509,14 +526,21 @@ class SessionIntelligenceEngine:
         operation: str,
         mode: str,
         project_name: str | None,
+        project_path: str | None,
         metadata: dict[str, Any] | None,
         auto_recovery: bool,
     ) -> SessionResult:
         """Session lifecycle management."""
 
         if operation == "create":
+            create_metadata = dict(metadata or {})
+            if not create_metadata.get("project_path") and project_path:
+                # Relative paths would resolve against the server's cwd, not the
+                # caller's, so only an absolute path is recorded (issue #72).
+                if Path(project_path).is_absolute():
+                    create_metadata["project_path"] = project_path
             result = self._create_session(
-                mode, project_name, metadata or {}, session_name=None
+                mode, project_name, create_metadata, session_name=None
             )
             # Persist session to DB so FK references work
             if result.status == "success" and self.database:
@@ -1290,10 +1314,10 @@ class SessionIntelligenceEngine:
             # discarded rather than used, to avoid recreating the invisible-rows
             # bug #48 fixed.
             #
-            # This runs BEFORE the in-process-session guard below so that an
-            # explicit project_path wins over the ambient current session. That
-            # reorders nothing in practice: project_path was previously a
-            # TypeError on this method, so no existing caller can reach here.
+            # This runs BEFORE the scope check below, so a caller who supplies
+            # only project_path still resolves instead of being rejected. The
+            # in-process-session guard this used to precede was removed in
+            # issue #72; see the comment on that check.
             if (
                 not (session_id or session_name or project_name)
                 and not allow_unbound
@@ -1305,23 +1329,23 @@ class SessionIntelligenceEngine:
                 if derived_name != UNBOUND:
                     project_name = derived_name
 
-            # If no identifier given but a current session was created by THIS
-            # process, thread it as session_id so the resolver validates rather
-            # than falling through to the unbound path.  The guard is gated on
-            # _current_session_set_in_process so that a stale session ID loaded
-            # from disk at startup does NOT silently hijack the call — that
-            # would defeat the SessionContextRequiredError guarantee.
+            # An in-process current session used to be substituted here when the
+            # caller supplied no identifier. That guard assumed one engine per
+            # project; the HTTP transport builds a SINGLE engine shared by every
+            # project (http_server.py lifespan()), so
+            # _current_session_set_in_process turns True as soon as ANY project
+            # creates a session in this process. An unbound decision then bound
+            # silently to whichever project most recently created one — issue
+            # #72, where session-intelligence decisions landed under
+            # package-incubator. Demand a scope instead, exactly as
+            # session_log_learning already does.
+            if not (session_id or session_name or project_name) and not allow_unbound:
+                raise SessionContextRequiredError(
+                    "session_log_decision requires at least one of: "
+                    "session_id, session_name, project_name. "
+                    "(Pass allow_unbound=True to opt into the legacy '_unbound_' fallback.)"
+                )
             effective_session_id = session_id
-            if (
-                effective_session_id is None
-                and session_name is None
-                and project_name is None
-                and not allow_unbound
-                and self._current_session_id
-                and self._current_session_id in self.session_cache
-                and self._current_session_set_in_process
-            ):
-                effective_session_id = self._current_session_id
 
             # Resolve session via the flexible resolver
             resolved = await self._resolve_session_context(
@@ -1329,6 +1353,7 @@ class SessionIntelligenceEngine:
                 session_name=session_name,
                 project_name=project_name,
                 allow_unbound=allow_unbound,
+                project_path=project_path,
             )
             resolved_id = resolved.session_id
             # Persist newly-created session to DB if needed
@@ -2812,6 +2837,7 @@ class SessionIntelligenceEngine:
                 session_name=session_name,
                 project_name=project_name,
                 allow_unbound=allow_unbound,
+                project_path=project_path,
             )
             resolved_session_id = resolved_ctx.session_id
             # Persist newly-created session to DB if needed

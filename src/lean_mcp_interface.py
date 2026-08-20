@@ -250,7 +250,10 @@ class LeanMCPInterface:
             "implementation": self._wrap_async_tool(
                 self.session_engine.session_track_file_operation
             ),
-            "description": "Track file create/edit/delete operations for session notebook",
+            "description": (
+                "Track file create/edit/delete operations for session notebook "
+                "(requires a session/project scope)"
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -272,6 +275,34 @@ class LeanMCPInterface:
                     },
                     "summary": {"type": "string", "description": "Brief description of changes"},
                     "tool_name": {"type": "string", "description": "Tool that made the change"},
+                    "session_id": {
+                        "type": "string",
+                        "description": "Explicit session to attribute the operation to",
+                    },
+                    "session_name": {
+                        "type": "string",
+                        "description": "Session name to resolve against",
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": "Project context to bind the operation to",
+                    },
+                    "project_path": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the caller's project; a project_name is "
+                            "derived from it. Relative paths are ignored (they would "
+                            "resolve against the server's cwd, not the caller's)."
+                        ),
+                    },
+                    "allow_unbound": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Opt into the legacy '_unbound_' fallback instead of "
+                            "raising when no scope is supplied (deprecated)."
+                        ),
+                    },
                 },
                 "required": ["operation", "file_path"],
             },

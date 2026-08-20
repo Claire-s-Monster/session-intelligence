@@ -1432,14 +1432,76 @@ class SessionIntelligenceEngine:
         operation: str,
         file_path: str,
         session_id: str | None = None,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        project_path: str | None = None,
         lines_added: int = 0,
         lines_removed: int = 0,
         summary: str | None = None,
         tool_name: str | None = None,
+        allow_unbound: bool = False,
     ) -> dict[str, Any]:
-        """Track a file operation for the session notebook."""
-        if not session_id and self.session_cache:
-            session_id = list(self.session_cache.keys())[-1]
+        """Track a file operation for the session notebook.
+
+        Pass at least one of session_id, session_name, project_name, or
+        project_path.
+        Use allow_unbound=True to opt into the legacy unbound fallback
+        (deprecated).
+        """
+        # No explicit session identifier: try to derive a project_name from a
+        # caller-supplied project_path before falling back to anything ambient.
+        # Same two guards as session_log_decision and session_log_learning: a
+        # relative project_path is rejected because derive_project_name()
+        # resolves it against the SERVER's cwd -- under the systemd deployment
+        # that is this checkout, so a relative path would misattribute every
+        # caller's row to "session-intelligence" (bug #48/#49) -- and a derived
+        # UNBOUND result is discarded rather than used.
+        if (
+            not (session_id or session_name or project_name)
+            and not allow_unbound
+            and project_path
+            and project_path != UNKNOWN_PROJECT_PATH
+            and Path(project_path).is_absolute()
+        ):
+            derived_name = derive_project_name(project_path)
+            if derived_name != UNBOUND:
+                project_name = derived_name
+
+        # This used to be `session_id = list(self.session_cache.keys())[-1]`:
+        # whatever sat last in dict insertion order won, with no project check
+        # at all. That is weaker even than the guard #72 removed, which at
+        # least required that SOME session had been created in-process. The
+        # HTTP transport builds a SINGLE engine shared by every project
+        # (http_server.py lifespan()), so session_cache is cross-project state
+        # and its last key belongs to whichever project most recently created a
+        # session -- not the caller. Demand a scope instead, exactly as
+        # session_log_decision and session_log_learning now do. Issue #74.
+        if not (session_id or session_name or project_name) and not allow_unbound:
+            raise SessionContextRequiredError(
+                "session_track_file_operation requires at least one of: "
+                "session_id, session_name, project_name. "
+                "(Pass allow_unbound=True to opt into the legacy '_unbound_' fallback.)"
+            )
+
+        # Resolve session via the flexible resolver, so all three tools share
+        # one resolution path instead of reaching into session_cache directly.
+        resolved = await self._resolve_session_context(
+            session_id=session_id,
+            session_name=session_name,
+            project_name=project_name,
+            allow_unbound=allow_unbound,
+            project_path=project_path,
+        )
+        resolved_id = resolved.session_id
+        # Persist newly-created session to DB if needed
+        if resolved_id and resolved_id != session_id:
+            cached = self.session_cache.get(resolved_id)
+            if cached and self.database:
+                try:
+                    await self.database.save_session(cached.model_dump(mode="python"))
+                except Exception:
+                    pass  # Best-effort
+        session_id = resolved_id
 
         if not session_id:
             return {"status": "error", "message": "No active session"}

@@ -283,7 +283,12 @@ class TestExecuteSessionTrackFileOperation:
         execute = _get_meta_tool(lean_interface, "execute_tool")
         result = await execute(
             "session_track_file_operation",
-            {"operation": "create", "file_path": "src/new_module.py", "lines_added": 10},
+            {
+                    "operation": "create",
+                    "file_path": "src/new_module.py",
+                    "lines_added": 10,
+                    "project_name": "test-project",
+                },
         )
         assert result["status"] == "success"
 

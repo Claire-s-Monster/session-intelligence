@@ -4,7 +4,7 @@ Unified session management and analytics MCP server for the Claude Code framewor
 
 ## Overview
 
-This MCP server consolidates **42+ scattered claudecode session management functions** into **10 unified MCP functions**, providing comprehensive session lifecycle management, execution tracking, decision logging, pattern analysis, and intelligence operations.
+This MCP server consolidates **42+ scattered claudecode session management functions** into **9 unified MCP functions**, providing comprehensive session lifecycle management, execution tracking, decision logging, pattern analysis, and intelligence operations.
 
 ## Features
 
@@ -62,24 +62,18 @@ Real-time session health monitoring with auto-recovery capabilities.
 - **Features**: Auto-recovery, diagnostics, alert thresholds
 - **Monitoring**: Health scores, issue detection, recovery actions
 
-### 7. `session_orchestrate_workflow`
-Advanced workflow orchestration with state management and optimization.
-- **Types**: tdd, atomic, quality, prime, custom
-- **Features**: State machines, parallel execution, optimization algorithms
-- **Management**: Phase tracking, progress monitoring, next steps
-
-### 8. `session_analyze_commands`
+### 7. `session_analyze_commands`
 Analyze hook-based command logs for patterns and inefficiencies.
 - **Analysis**: Command patterns, timing analysis, success rates
 - **Detection**: Inefficient patterns, error analysis, optimization opportunities
 - **Suggestions**: Alternative commands, performance improvements
 
-### 9. `session_track_missing_functions`
+### 8. `session_track_missing_functions`
 Track and analyze missing functions for ecosystem improvement.
 - **Features**: Priority analysis, implementation suggestions, impact assessment
 - **Tracking**: Missing function detection, usage patterns, ecosystem gaps
 
-### 10. `session_get_dashboard`
+### 9. `session_get_dashboard`
 Comprehensive session intelligence dashboard with real-time insights.
 - **Types**: overview, performance, agents, decisions, health
 - **Features**: Real-time updates, visualizations, export formats

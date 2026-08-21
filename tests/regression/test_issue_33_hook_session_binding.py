@@ -58,7 +58,7 @@ async def test_hook_session_id_auto_binds_on_first_track_execution(engine):
     """A native Claude Code session UUID that was never created via
     `session_manage_lifecycle create` must auto-bind on first use instead
     of failing with status='error-session-not-found'."""
-    result = engine.session_track_execution(
+    result = await engine.session_track_execution(
         session_id=NATIVE_SESSION_ID,
         agent_name="focused-code-modifier",
         step_data={"operation": "start", "description": "SubagentStart hook"},
@@ -86,7 +86,7 @@ async def test_hook_session_id_reused_on_second_track_execution(engine):
     """Two calls with the same native session id (simulating SubagentStart
     then SubagentStop) must reuse the exact same cached Session rather than
     creating a duplicate or erroring on the second call."""
-    first_result = engine.session_track_execution(
+    first_result = await engine.session_track_execution(
         session_id=NATIVE_SESSION_ID,
         agent_name="focused-code-modifier",
         step_data={"operation": "start", "description": "SubagentStart hook"},
@@ -95,7 +95,7 @@ async def test_hook_session_id_reused_on_second_track_execution(engine):
     assert NATIVE_SESSION_ID in engine.session_cache
     first_session = engine.session_cache[NATIVE_SESSION_ID]
 
-    second_result = engine.session_track_execution(
+    second_result = await engine.session_track_execution(
         session_id=NATIVE_SESSION_ID,
         agent_name="focused-code-modifier",
         step_data={"operation": "stop", "description": "SubagentStop hook"},

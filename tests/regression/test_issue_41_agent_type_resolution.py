@@ -70,7 +70,7 @@ async def test_agent_stop_empty_agent_type_backfilled_from_cache(engine):
     Stop-phase call for the SAME agent_name reporting agent_type="" (the
     harness quirk), must not persist the empty string. The cached real
     value from the Start call must backfill the existing AgentExecution."""
-    start_result = engine.session_track_execution(
+    start_result = await engine.session_track_execution(
         session_id=None,
         agent_name=AGENT_NAME,
         step_data={
@@ -79,6 +79,7 @@ async def test_agent_stop_empty_agent_type_backfilled_from_cache(engine):
             "operation": "start",
             "description": "SubagentStart hook",
         },
+        allow_unbound=True,
     )
     assert start_result.status == "success"
     session_id = start_result.session_id
@@ -89,7 +90,7 @@ async def test_agent_stop_empty_agent_type_backfilled_from_cache(engine):
     )
     assert agent_execution.agent_type == "focused-code-modifier"
 
-    stop_result = engine.session_track_execution(
+    stop_result = await engine.session_track_execution(
         session_id=session_id,
         agent_name=AGENT_NAME,
         step_data={
@@ -116,7 +117,7 @@ async def test_no_prior_cache_falls_back_to_unknown(engine):
     step_data reports an empty/missing agent_type, the result must still
     fall back to "unknown" - no silent substitution of a wrong value,
     and no regression of existing pre-#41 behavior."""
-    result = engine.session_track_execution(
+    result = await engine.session_track_execution(
         session_id=None,
         agent_name="brand-new-agent-hexid",
         step_data={
@@ -124,6 +125,7 @@ async def test_no_prior_cache_falls_back_to_unknown(engine):
             "operation": "start",
             "description": "SubagentStart hook",
         },
+        allow_unbound=True,
     )
     assert result.status == "success"
     session_id = result.session_id
@@ -143,7 +145,7 @@ async def test_later_real_agent_type_updates_stale_cached_value(engine):
     invocation) with a genuinely different real agent_type on its own
     Start-equivalent call, the cache must update to the newer real
     value - last-real-value-wins, not stuck on the first-seen value."""
-    first_start = engine.session_track_execution(
+    first_start = await engine.session_track_execution(
         session_id=None,
         agent_name=AGENT_NAME,
         step_data={
@@ -152,11 +154,12 @@ async def test_later_real_agent_type_updates_stale_cached_value(engine):
             "operation": "start",
             "description": "first invocation",
         },
+        allow_unbound=True,
     )
     session_id = first_start.session_id
     session = engine.session_cache[session_id]
 
-    first_stop = engine.session_track_execution(
+    first_stop = await engine.session_track_execution(
         session_id=session_id,
         agent_name=AGENT_NAME,
         step_data={"phase": "agent_stop", "agent_type": "", "success": True},
@@ -166,7 +169,7 @@ async def test_later_real_agent_type_updates_stale_cached_value(engine):
     # A later, unrelated invocation of the same agent_name (e.g. the
     # subagent was re-dispatched under a different role) reports a
     # genuinely different real agent_type.
-    second_start = engine.session_track_execution(
+    second_start = await engine.session_track_execution(
         session_id=session_id,
         agent_name=AGENT_NAME,
         step_data={
@@ -186,7 +189,7 @@ async def test_later_real_agent_type_updates_stale_cached_value(engine):
     )
     assert second_execution.agent_type == "focused-quality-resolver"
 
-    second_stop = engine.session_track_execution(
+    second_stop = await engine.session_track_execution(
         session_id=session_id,
         agent_name=AGENT_NAME,
         step_data={"phase": "agent_stop", "agent_type": "", "success": True},

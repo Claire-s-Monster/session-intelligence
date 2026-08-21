@@ -79,7 +79,7 @@ def safe_response(response_data: Any, operation: str) -> dict[str, Any]:
 
 
 @app.tool()
-def session_manage_lifecycle(
+async def session_manage_lifecycle(
     operation: str,
     mode: str = "local",
     project_name: str | None = None,
@@ -128,7 +128,7 @@ def session_manage_lifecycle(
             else:
                 parsed_metadata = {"metadata": str(metadata)}
 
-        result = session_engine.session_manage_lifecycle(
+        result = await session_engine.session_manage_lifecycle(
             operation=operation,
             mode=mode,
             project_name=project_name,
@@ -152,7 +152,7 @@ def session_manage_lifecycle(
 
 
 @app.tool()
-def session_track_execution(
+async def session_track_execution(
     agent_name: str,
     step_data: dict[str, Any],
     session_id: str | None = None,
@@ -197,7 +197,7 @@ def session_track_execution(
             f"{session_engine.claude_sessions_path}"
         )
 
-        result = session_engine.session_track_execution(
+        result = await session_engine.session_track_execution(
             session_id=session_id,
             agent_name=agent_name,
             step_data=step_data,
@@ -280,7 +280,7 @@ def session_coordinate_agents(
 
 
 @app.tool()
-def session_log_decision(
+async def session_log_decision(
     decision: str,
     session_id: str | None = None,
     context: dict[str, Any] | None = None,
@@ -304,7 +304,7 @@ def session_log_decision(
         DecisionResult with decision ID, impact analysis, linked decisions
     """
     try:
-        result = session_engine.session_log_decision(
+        result = await session_engine.session_log_decision(
             session_id=session_id,
             decision=decision,
             context=context,
@@ -371,7 +371,7 @@ def session_analyze_patterns(
 
 
 @app.tool()
-def session_monitor_health(
+async def session_monitor_health(
     session_id: str | None = None,
     health_checks: list[str] = None,
     auto_recover: bool = True,
@@ -408,7 +408,7 @@ def session_monitor_health(
         if health_checks is None:
             health_checks = ["continuity", "files", "state", "agents"]
 
-        result = session_engine.session_monitor_health(
+        result = await session_engine.session_monitor_health(
             session_id=session_id,
             health_checks=health_checks,
             auto_recover=auto_recover,

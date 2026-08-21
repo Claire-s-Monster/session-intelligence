@@ -384,34 +384,12 @@ class LeanMCPInterface:
             ],
         }
 
-        registry["session_orchestrate_workflow"] = {
-            "implementation": self._wrap_tool(self.session_engine.session_orchestrate_workflow),
-            "description": "Advanced workflow orchestration with optimization",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "workflow_type": {
-                        "type": "string",
-                        "enum": ["tdd", "atomic", "quality", "prime", "custom"],
-                        "description": "Workflow type",
-                    },
-                    "session_id": {"type": "string", "description": "Session context"},
-                    "workflow_config": {"type": "object", "description": "Workflow configuration"},
-                    "parallel_execution": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": "Enable parallel execution",
-                    },
-                    "optimize_execution": {
-                        "type": "boolean",
-                        "default": True,
-                        "description": "Optimize execution order",
-                    },
-                },
-                "required": ["workflow_type"],
-            },
-            "examples": [{"workflow_type": "tdd", "parallel_execution": True}],
-        }
+        # session_orchestrate_workflow is intentionally NOT registered here.
+        # session_engine.session_orchestrate_workflow() hardcodes
+        # state_machine={} inside WorkflowState(...), and StateMachine
+        # requires current_state: str with no default, so every call
+        # raises a pydantic ValidationError. Unregistered per #64 pending
+        # a real implementation.
 
         registry["session_analyze_commands"] = {
             "implementation": self._wrap_tool(self.session_engine.session_analyze_commands),

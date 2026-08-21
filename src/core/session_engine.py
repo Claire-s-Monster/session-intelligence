@@ -1653,6 +1653,12 @@ class SessionIntelligenceEngine:
 
     # ===== PLACEHOLDER IMPLEMENTATIONS FOR OTHER FUNCTIONS =====
 
+    # NOTE: Unregistered from the tool registry (src/lean_mcp_interface.py)
+    # per #64 — this hardcodes state_machine={} below, and WorkflowState
+    # .state_machine requires a StateMachine with a required current_state
+    # field, so every call raises a pydantic ValidationError. Left in place
+    # as dead code pending a real implementation; do not re-register
+    # without fixing this.
     def session_orchestrate_workflow(self, **kwargs) -> WorkflowResult:
         """Workflow orchestration - placeholder implementation."""
         return WorkflowResult(

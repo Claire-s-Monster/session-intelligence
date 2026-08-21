@@ -33,8 +33,6 @@ from models.session_models import (
     PatternAnalysisResult,
     SessionHealthResult,
     SessionResult,
-    WorkflowResult,
-    WorkflowType,
 )
 from utils.token_limiter import apply_token_limits
 
@@ -387,48 +385,12 @@ def session_monitor_health(
         )
 
 
-@app.tool()
-def session_orchestrate_workflow(
-    workflow_type: str,
-    session_id: str | None = None,
-    workflow_config: dict[str, Any] | None = None,
-    parallel_execution: bool = False,
-    optimize_execution: bool = True,
-) -> dict[str, Any]:
-    """
-    Advanced workflow orchestration with state management and optimization.
-
-    Consolidates: claudecode_workflow_init, claudecode_workflow_status,
-                 claudecode_workflow_complete, claudecode_workflow_orchestrate_prime
-
-    Args:
-        workflow_type: Workflow type ("tdd", "atomic", "quality", "prime", "custom")
-        session_id: Session context (optional)
-        workflow_config: Workflow configuration (optional)
-        parallel_execution: Enable parallel execution (default: False)
-        optimize_execution: Optimize execution order (default: True)
-
-    Returns:
-        WorkflowResult with execution plan, state, progress, optimizations
-    """
-    try:
-        wf_type = WorkflowType(workflow_type)
-
-        result = session_engine.session_orchestrate_workflow(
-            workflow_type=wf_type,
-            session_id=session_id,
-            workflow_config=workflow_config,
-            parallel_execution=parallel_execution,
-            optimize_execution=optimize_execution,
-        )
-        return safe_response(result, "session_manage_lifecycle")
-    except Exception as e:
-        return WorkflowResult(
-            workflow_id="error",
-            session_id=session_id or "unknown",
-            execution_plan={"error": str(e)},
-            state=None,
-        )
+# session_orchestrate_workflow is intentionally NOT registered here.
+# session_engine.session_orchestrate_workflow() hardcodes
+# state_machine={} inside WorkflowState(...), and StateMachine
+# requires current_state: str with no default, so every call
+# raises a pydantic ValidationError. Unregistered per #64 pending
+# a real implementation.
 
 
 @app.tool()

@@ -309,21 +309,32 @@ class TestExecuteSessionMonitorHealth:
         assert result["status"] == "success"
 
 
-class TestExecuteSessionOrchestrateWorkflow:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="session_orchestrate_workflow is a placeholder that builds an invalid "
-               "WorkflowState; registered but non-functional. Tracked separately - see "
-               "issue #64 in the PR body.",
-    )
-    async def test_execute_session_orchestrate_workflow(self, lean_interface):
-        """session_orchestrate_workflow succeeds with a valid workflow_type."""
+class TestSessionOrchestrateWorkflowUnregistered:
+    """session_orchestrate_workflow is intentionally unregistered (#64).
+
+    The underlying engine method hardcodes state_machine={} inside
+    WorkflowState(...), and WorkflowState.state_machine is a required
+    StateMachine (whose current_state: str has no default), so every
+    call would raise a pydantic ValidationError. Rather than expose a
+    tool that can never succeed, it was removed from the registry.
+    """
+
+    async def test_not_advertised_by_discover_tools(self, lean_interface):
+        discover = _get_meta_tool(lean_interface, "discover_tools")
+        result = discover("")
+        tool_names = {tool["name"] for tool in result["available_tools"]}
+        assert "session_orchestrate_workflow" not in tool_names
+
+    async def test_execute_returns_tool_not_found(self, lean_interface):
         execute = _get_meta_tool(lean_interface, "execute_tool")
         result = await execute(
             "session_orchestrate_workflow",
             {"workflow_type": "tdd"},
         )
-        assert result["status"] == "success"
+        assert result == {
+            "error": "Tool 'session_orchestrate_workflow' not found",
+            "available_tools": list(lean_interface.tool_registry.keys()),
+        }
 
 
 class TestExecuteSessionAnalyzeCommands:

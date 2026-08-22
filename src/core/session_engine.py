@@ -870,6 +870,37 @@ class SessionIntelligenceEngine:
         total_time = (session.completed - session.started).total_seconds() * 1000
         session.performance_metrics.total_execution_time_ms = int(total_time)
 
+        # Issue #70: reconcile executions that never reported a stop event.
+        # #40 only transitions an AgentExecution out of RUNNING when the
+        # SubagentStop hook fires (phase == "agent_stop"). If that event never
+        # arrives -- agent killed, hook fails/times out, session ends
+        # mid-flight -- the row stays RUNNING forever, permanently inflating
+        # the success_rate denominator (see get_agent_stats). ABANDONED is
+        # distinct from ERROR: "never reported" is not "failed". This must
+        # happen BEFORE the session is persisted below, and each reconciled
+        # execution must also be persisted individually since agent_executions
+        # is a separate table from sessions.
+        reconciled_at = session.completed
+        for agent_exec in session.agents_executed:
+            if agent_exec.status != ExecutionStatus.RUNNING:
+                continue
+            agent_exec.status = ExecutionStatus.ABANDONED
+            agent_exec.completed = reconciled_at
+            for step in agent_exec.execution_steps:
+                if step.status == ExecutionStatus.RUNNING:
+                    step.status = ExecutionStatus.ABANDONED
+                    step.completed = reconciled_at
+            if self.database:
+                try:
+                    exec_data = agent_exec.model_dump(mode="python")
+                    exec_data["session_id"] = session_id
+                    await self.database.save_agent_execution(exec_data)
+                except Exception as e:
+                    debug_logger.error(
+                        f"Error persisting reconciled (abandoned) execution "
+                        f"{agent_exec.execution_id}: {e}"
+                    )
+
         # Persist completed status to DB (issue #25 Bug 1). Without this,
         # the row stays status='active' forever and stale sessions keep
         # matching find_recent_session_by_project lookups.

@@ -30,6 +30,7 @@ from .base import (
     DEFAULT_POSTGRES_DSN,
     BaseDatabaseBackend,
     db_retry,
+    get_execution_max_age_hours,
     get_session_max_age_hours,
     sanitize_dsn,
 )
@@ -184,7 +185,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         COUNT(CASE WHEN status = 'error' THEN 1 END) as failed,
         AVG(EXTRACT(EPOCH FROM (completed_at - started_at))) as avg_duration_seconds
     FROM agent_executions
-    WHERE completed_at IS NOT NULL
+    -- Issue #70: 'abandoned' executions never reported a stop event and are
+    -- unknown, not failed -- excluded from the denominator entirely so they
+    -- cannot silently understate the success rate.
+    WHERE completed_at IS NOT NULL AND status != 'abandoned'
     GROUP BY agent_name;
 
     CREATE OR REPLACE VIEW decision_summary AS
@@ -610,6 +614,32 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 UPDATE sessions
                 SET status = 'abandoned'
                 WHERE status = 'active' AND started_at < $1
+                """,
+                cutoff,
+            )
+            try:
+                return int(result.split()[-1])
+            except (IndexError, ValueError):
+                return 0
+
+    @db_retry
+    async def reap_stale_executions(self, older_than_hours: int | None = None) -> int:
+        """Flip stale 'running' agent_executions to 'abandoned'. Returns rows affected.
+
+        Issue #70: run once at server startup, alongside reap_abandoned_sessions,
+        so an execution whose stop event never arrives doesn't stay 'running'
+        forever and inflate the success_rate denominator (see get_agent_stats).
+        """
+        pool = self._ensure_connected()
+        hours = older_than_hours if older_than_hours is not None else get_execution_max_age_hours()
+        cutoff = datetime.now(UTC) - timedelta(hours=hours)
+
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE agent_executions
+                SET status = 'abandoned', completed_at = COALESCE(completed_at, NOW())
+                WHERE status = 'running' AND started_at < $1
                 """,
                 cutoff,
             )
@@ -1436,6 +1466,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 SELECT agent_type, agent_name, status, performance, started_at, completed_at
                 FROM agent_executions
                 WHERE started_at >= NOW() - ($1 * INTERVAL '1 hour')
+                    AND status != 'abandoned'
                 ORDER BY started_at DESC
                 """,
                 time_window_hours,

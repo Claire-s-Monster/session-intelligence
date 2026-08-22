@@ -197,6 +197,18 @@ class HTTPSessionIntelligenceServer:
         if reaped_count:
             logger.info(f"Reaped {reaped_count} abandoned session(s) (status: active -> abandoned)")
 
+        # Issue #70: sweep stale 'running' agent_executions to 'abandoned', same
+        # rationale as reap_abandoned_sessions above -- catches executions whose
+        # stop event never arrived (crash, restart, killed agent) and that
+        # reconcile-on-finalize (session_engine._finalize_session) could not
+        # reach because their session was never explicitly finalized either.
+        reaped_executions_count = await self.database.reap_stale_executions()
+        if reaped_executions_count:
+            logger.info(
+                f"Reaped {reaped_executions_count} stale agent execution(s) "
+                "(status: running -> abandoned)"
+            )
+
         # Session continuity: Check for active session for this project
         active_session = await self.database.get_active_session_for_project(self.repository_path)
         if active_session:

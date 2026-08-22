@@ -32,6 +32,7 @@ class ExecutionStatus(StrEnum):
     SUCCESS = "success"
     ERROR = "error"
     SKIPPED = "skipped"
+    ABANDONED = "abandoned"  # Issue #70: never reported agent_stop; distinct from ERROR
 
 
 class ImpactLevel(StrEnum):

@@ -51,6 +51,29 @@ def get_session_max_age_hours() -> int:
         return DEFAULT_SESSION_MAX_AGE_HOURS
 
 
+# Issue #70: staleness threshold (hours) for 'running' agent_executions. The
+# SubagentStop hook ("agent_stop" phase) is the only signal that transitions
+# an execution out of RUNNING (see session_engine.py). If that event never
+# arrives -- agent killed, session ends mid-flight, hook fails/times out,
+# server restart between start and stop -- the row stays 'running' forever,
+# permanently inflating the success_rate denominator (see get_agent_stats).
+# Mirrors DEFAULT_SESSION_MAX_AGE_HOURS / get_session_max_age_hours() exactly
+# so the two staleness sweeps cannot drift apart in behavior. Overridable via
+# SESSION_INTELLIGENCE_EXECUTION_MAX_AGE_HOURS.
+DEFAULT_EXECUTION_MAX_AGE_HOURS = 24
+
+
+def get_execution_max_age_hours() -> int:
+    """Return the staleness threshold (hours) for 'running' agent_executions."""
+    raw = os.environ.get("SESSION_INTELLIGENCE_EXECUTION_MAX_AGE_HOURS")
+    if raw is None:
+        return DEFAULT_EXECUTION_MAX_AGE_HOURS
+    try:
+        return int(raw)
+    except ValueError:
+        return DEFAULT_EXECUTION_MAX_AGE_HOURS
+
+
 def get_default_data_dir() -> Path:
     """Get the default data directory, creating it if needed."""
     DEFAULT_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -189,6 +212,17 @@ class DatabaseBackend(Protocol):
         Distinct from 'completed': an abandoned session never received an
         explicit finalize call, so the status stays honest about that.
         Defaults to get_session_max_age_hours() when older_than_hours is None.
+        """
+        ...
+
+    async def reap_stale_executions(self, older_than_hours: int | None = None) -> int:
+        """Flip stale 'running' agent_executions to 'abandoned'. Returns rows affected.
+
+        Issue #70: reconcile-on-finalize (see session_engine._finalize_session)
+        catches executions whose session was explicitly finalized; this sweep
+        catches the rest (server restart, crash, etc.) so no execution stays
+        'running' forever. Defaults to get_execution_max_age_hours() when
+        older_than_hours is None.
         """
         ...
 

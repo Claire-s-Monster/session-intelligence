@@ -19,7 +19,12 @@ from typing import Any
 
 import aiosqlite
 
-from .base import DEFAULT_SQLITE_PATH, BaseDatabaseBackend, get_session_max_age_hours
+from .base import (
+    DEFAULT_SQLITE_PATH,
+    BaseDatabaseBackend,
+    get_execution_max_age_hours,
+    get_session_max_age_hours,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -534,6 +539,28 @@ class SQLiteBackend(BaseDatabaseBackend):
             WHERE status = 'active' AND started_at < ?
             """,
             (cutoff,),
+        )
+        await conn.commit()
+        return cursor.rowcount
+
+    async def reap_stale_executions(self, older_than_hours: int | None = None) -> int:
+        """Flip stale 'running' agent_executions to 'abandoned'. Returns rows affected.
+
+        Issue #70: see postgresql.py counterpart for rationale. Run once at
+        server startup, alongside reap_abandoned_sessions.
+        """
+        conn = self._ensure_connected()
+        hours = older_than_hours if older_than_hours is not None else get_execution_max_age_hours()
+        cutoff = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+        now = datetime.now(UTC).isoformat()
+
+        cursor = await conn.execute(
+            """
+            UPDATE agent_executions
+            SET status = 'abandoned', completed_at = COALESCE(completed_at, ?)
+            WHERE status = 'running' AND started_at < ?
+            """,
+            (now, cutoff),
         )
         await conn.commit()
         return cursor.rowcount
@@ -1074,7 +1101,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             """
             SELECT agent_type, agent_name, status, performance, started_at, completed_at
             FROM agent_executions
-            WHERE started_at >= ?
+            WHERE started_at >= ? AND status != 'abandoned'
             ORDER BY started_at DESC
             """,
             (cutoff,),

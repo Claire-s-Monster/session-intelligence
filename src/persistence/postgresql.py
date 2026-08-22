@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 try:
@@ -25,7 +26,13 @@ try:
 except ImportError:
     asyncpg = None  # type: ignore
 
-from .base import DEFAULT_POSTGRES_DSN, BaseDatabaseBackend, db_retry, sanitize_dsn
+from .base import (
+    DEFAULT_POSTGRES_DSN,
+    BaseDatabaseBackend,
+    db_retry,
+    get_session_max_age_hours,
+    sanitize_dsn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -558,22 +565,58 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     @db_retry
     async def get_active_session_for_project(self, project_path: str) -> dict[str, Any] | None:
-        """Get the most recent active session for a project path."""
+        """Get the most recent active session for a project path.
+
+        Issue #69: excludes sessions older than get_session_max_age_hours() so a
+        session abandoned without an explicit finalize is not resurrected as the
+        current session for new work. See get_session_max_age_hours() for the
+        started_at-only staleness caveat.
+        """
         pool = self._ensure_connected()
+        cutoff = datetime.now(UTC) - timedelta(hours=get_session_max_age_hours())
 
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT * FROM sessions
-                WHERE project_path = $1 AND status = 'active'
+                WHERE project_path = $1 AND status = 'active' AND started_at >= $2
                 ORDER BY started_at DESC
                 LIMIT 1
                 """,
                 project_path,
+                cutoff,
             )
             if row:
                 return self._normalize_session_data(self._from_record(row))
             return None
+
+    @db_retry
+    async def reap_abandoned_sessions(self, older_than_hours: int | None = None) -> int:
+        """Flip stale 'active' sessions to 'abandoned'. Returns rows affected.
+
+        Issue #69: run once at server startup so no process resurrects a
+        months-old 'active' session via get_active_session_for_project /
+        find_recent_session_by_project. Uses 'abandoned', not 'completed', so
+        the data stays honest about never having been finalized. See
+        get_session_max_age_hours() for the started_at-only staleness caveat.
+        """
+        pool = self._ensure_connected()
+        hours = older_than_hours if older_than_hours is not None else get_session_max_age_hours()
+        cutoff = datetime.now(UTC) - timedelta(hours=hours)
+
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE sessions
+                SET status = 'abandoned'
+                WHERE status = 'active' AND started_at < $1
+                """,
+                cutoff,
+            )
+            try:
+                return int(result.split()[-1])
+            except (IndexError, ValueError):
+                return 0
 
     @db_retry
     async def delete_session(self, session_id: str) -> bool:
@@ -638,20 +681,39 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
         Returns the most-recent match (ORDER BY started_at DESC LIMIT 1), or None
         if no matching session exists.
+
+        Issue #69: when status == 'active', excludes sessions older than
+        get_session_max_age_hours() -- same staleness guard as
+        get_active_session_for_project, applied here too so this lookup can't
+        reintroduce the abandoned-session-resurrection bug by a second path.
         """
         pool = self._ensure_connected()
 
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT * FROM sessions
-                WHERE project_name = $1 AND status = $2
-                ORDER BY started_at DESC
-                LIMIT 1
-                """,
-                project_name,
-                status,
-            )
+            if status == "active":
+                cutoff = datetime.now(UTC) - timedelta(hours=get_session_max_age_hours())
+                row = await conn.fetchrow(
+                    """
+                    SELECT * FROM sessions
+                    WHERE project_name = $1 AND status = $2 AND started_at >= $3
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    project_name,
+                    status,
+                    cutoff,
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    SELECT * FROM sessions
+                    WHERE project_name = $1 AND status = $2
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    project_name,
+                    status,
+                )
             if row:
                 return self._normalize_session_data(self._from_record(row))
             return None

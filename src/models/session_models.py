@@ -21,6 +21,7 @@ class SessionStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     RECOVERED = "recovered"
+    ABANDONED = "abandoned"  # Issue #69: reaped for staleness, never explicitly finalized
 
 
 class ExecutionStatus(StrEnum):

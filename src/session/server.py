@@ -79,12 +79,16 @@ def safe_response(response_data: Any, operation: str) -> dict[str, Any]:
 
 
 @app.tool()
-def session_manage_lifecycle(
+async def session_manage_lifecycle(
     operation: str,
     mode: str = "local",
     project_name: str | None = None,
+    project_path: str | None = None,
     metadata: Any | None = None,
     auto_recovery: bool = True,
+    session_id: str | None = None,
+    session_name: str | None = None,
+    allow_unbound: bool = False,
 ) -> dict[str, Any]:
     """
     Comprehensive session lifecycle management with intelligent tracking.
@@ -97,8 +101,14 @@ def session_manage_lifecycle(
         operation: Lifecycle operation ("create", "resume", "finalize", "validate")
         mode: Session mode ("local", "remote", "hybrid", "auto")
         project_name: Project context (optional)
+        project_path: Absolute path to the caller's project (optional)
         metadata: Additional session metadata as dict or JSON string (optional)
         auto_recovery: Enable automatic recovery (default: True)
+        session_id: Explicit session for resume/finalize/validate (optional)
+        session_name: Session name to resolve against (optional)
+        allow_unbound: For resume/finalize/validate, opt into the legacy
+            ambient-session fallback instead of raising when no scope is
+            supplied (deprecated)
 
     Returns:
         SessionResult with session ID, status, metadata, recovery options
@@ -118,12 +128,16 @@ def session_manage_lifecycle(
             else:
                 parsed_metadata = {"metadata": str(metadata)}
 
-        result = session_engine.session_manage_lifecycle(
+        result = await session_engine.session_manage_lifecycle(
             operation=operation,
             mode=mode,
             project_name=project_name,
+            project_path=project_path,
             metadata=parsed_metadata,
             auto_recovery=auto_recovery,
+            session_id=session_id,
+            session_name=session_name,
+            allow_unbound=allow_unbound,
         )
         response = result
         return apply_token_limits(response, "session_manage_lifecycle")
@@ -138,12 +152,16 @@ def session_manage_lifecycle(
 
 
 @app.tool()
-def session_track_execution(
+async def session_track_execution(
     agent_name: str,
     step_data: dict[str, Any],
     session_id: str | None = None,
     track_patterns: bool = True,
     suggest_optimizations: bool = True,
+    session_name: str | None = None,
+    project_name: str | None = None,
+    project_path: str | None = None,
+    allow_unbound: bool = False,
 ) -> dict[str, Any]:
     """
     Advanced execution tracking with pattern detection and optimization.
@@ -158,6 +176,13 @@ def session_track_execution(
         session_id: Session ID or current session (optional)
         track_patterns: Enable pattern detection (default: True)
         suggest_optimizations: Generate optimization suggestions (default: True)
+        session_name: Session name to resolve against when session_id is omitted
+        project_name: Project context to bind to when session_id is omitted
+        project_path: Absolute path to derive project_name from when session_id
+            is omitted
+        allow_unbound: Opt into the legacy ambient-session fallback instead of
+            raising when session_id is omitted and no other scope is supplied
+            (deprecated)
 
     Returns:
         ExecutionTrackingResult with step ID, patterns detected, optimizations
@@ -172,12 +197,16 @@ def session_track_execution(
             f"{session_engine.claude_sessions_path}"
         )
 
-        result = session_engine.session_track_execution(
+        result = await session_engine.session_track_execution(
             session_id=session_id,
             agent_name=agent_name,
             step_data=step_data,
             track_patterns=track_patterns,
             suggest_optimizations=suggest_optimizations,
+            session_name=session_name,
+            project_name=project_name,
+            project_path=project_path,
+            allow_unbound=allow_unbound,
         )
 
         debug_logger.info(f"[EXEC-TRACK] Execution tracking result: {result}")
@@ -251,7 +280,7 @@ def session_coordinate_agents(
 
 
 @app.tool()
-def session_log_decision(
+async def session_log_decision(
     decision: str,
     session_id: str | None = None,
     context: dict[str, Any] | None = None,
@@ -275,7 +304,7 @@ def session_log_decision(
         DecisionResult with decision ID, impact analysis, linked decisions
     """
     try:
-        result = session_engine.session_log_decision(
+        result = await session_engine.session_log_decision(
             session_id=session_id,
             decision=decision,
             context=context,
@@ -342,12 +371,16 @@ def session_analyze_patterns(
 
 
 @app.tool()
-def session_monitor_health(
+async def session_monitor_health(
     session_id: str | None = None,
     health_checks: list[str] = None,
     auto_recover: bool = True,
     alert_thresholds: dict[str, float] | None = None,
     include_diagnostics: bool = True,
+    session_name: str | None = None,
+    project_name: str | None = None,
+    project_path: str | None = None,
+    allow_unbound: bool = False,
 ) -> dict[str, Any]:
     """
     Real-time session health monitoring with auto-recovery capabilities.
@@ -361,6 +394,12 @@ def session_monitor_health(
         auto_recover: Enable automatic recovery (default: True)
         alert_thresholds: Custom alert thresholds (optional)
         include_diagnostics: Include detailed diagnostics (default: True)
+        session_name: Session name to resolve against when session_id is None
+        project_name: Project context to monitor when session_id is None
+        project_path: Absolute path to derive project_name from when session_id is None
+        allow_unbound: Opt into the legacy ambient-session fallback instead of
+            raising when session_id is None and no other scope is supplied
+            (deprecated)
 
     Returns:
         SessionHealthResult with health score, issues, recovery actions, diagnostics
@@ -369,12 +408,16 @@ def session_monitor_health(
         if health_checks is None:
             health_checks = ["continuity", "files", "state", "agents"]
 
-        result = session_engine.session_monitor_health(
+        result = await session_engine.session_monitor_health(
             session_id=session_id,
             health_checks=health_checks,
             auto_recover=auto_recover,
             alert_thresholds=alert_thresholds,
             include_diagnostics=include_diagnostics,
+            session_name=session_name,
+            project_name=project_name,
+            project_path=project_path,
+            allow_unbound=allow_unbound,
         )
         return safe_response(result, "session_manage_lifecycle")
     except Exception as e:

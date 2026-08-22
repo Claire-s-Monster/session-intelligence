@@ -230,9 +230,18 @@ class TestExecuteSessionManageLifecycle:
             assert inner.get("session_id") or inner.get("result", {}).get("session_id")
 
     async def test_execute_session_manage_lifecycle_validate(self, lean_interface):
-        """execute_tool session_manage_lifecycle validate runs without error."""
+        """execute_tool session_manage_lifecycle validate runs without error.
+
+        Issue #77: validate now requires an explicit scope (session_id here)
+        rather than falling back to ambient session_cache state.
+        """
         execute = _get_meta_tool(lean_interface, "execute_tool")
-        result = await execute("session_manage_lifecycle", {"operation": "validate"})
+        create_result = await execute("session_manage_lifecycle", {"operation": "create"})
+        session_id = _extract_session_id(create_result)
+        result = await execute(
+            "session_manage_lifecycle",
+            {"operation": "validate", "session_id": session_id},
+        )
         assert result["status"] == "success"
 
 
@@ -303,10 +312,28 @@ class TestExecuteSessionAnalyzePatterns:
 
 class TestExecuteSessionMonitorHealth:
     async def test_execute_session_monitor_health(self, lean_interface):
-        """session_monitor_health succeeds with session_id=None (current session)."""
+        """session_monitor_health succeeds with an explicit session_id.
+
+        Issue #77: session_id=None now requires session_name/project_name
+        (or allow_unbound=True) instead of silently resolving via ambient
+        session_cache state.
+        """
         execute = _get_meta_tool(lean_interface, "execute_tool")
-        result = await execute("session_monitor_health", {"session_id": None})
+        create_result = await execute("session_manage_lifecycle", {"operation": "create"})
+        session_id = _extract_session_id(create_result)
+        result = await execute("session_monitor_health", {"session_id": session_id})
         assert result["status"] == "success"
+
+    async def test_execute_session_monitor_health_null_session_id_requires_scope(
+        self, lean_interface
+    ):
+        """session_id=None with no session_name/project_name/allow_unbound
+        returns a status='error' envelope (SessionContextRequiredError),
+        not a silent fallback to ambient state."""
+        execute = _get_meta_tool(lean_interface, "execute_tool")
+        await execute("session_manage_lifecycle", {"operation": "create"})
+        result = await execute("session_monitor_health", {"session_id": None})
+        assert result["status"] == "error"
 
 
 class TestSessionOrchestrateWorkflowUnregistered:
@@ -613,10 +640,8 @@ class TestToolWrapperIntegrity:
         import inspect
 
         sync_tools = {
-            "session_track_execution",
             "session_coordinate_agents",
             "session_analyze_patterns",
-            "session_monitor_health",
             "session_orchestrate_workflow",
             "session_analyze_commands",
             "session_track_missing_functions",

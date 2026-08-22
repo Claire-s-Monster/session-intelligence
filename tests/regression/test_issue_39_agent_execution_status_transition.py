@@ -59,10 +59,11 @@ async def test_agent_stop_success_transitions_to_success_status(engine):
     """A SubagentStart-like call followed by an agent_stop call with
     success=True must transition the AgentExecution out of RUNNING into
     SUCCESS, not leave it stuck at RUNNING."""
-    start_result = engine.session_track_execution(
+    start_result = await engine.session_track_execution(
         session_id=None,
         agent_name=AGENT_NAME,
         step_data={"operation": "start", "description": "SubagentStart hook"},
+        allow_unbound=True,
     )
     assert start_result.status == "success"
     session_id = start_result.session_id
@@ -73,7 +74,7 @@ async def test_agent_stop_success_transitions_to_success_status(engine):
     )
     assert agent_execution.status == ExecutionStatus.RUNNING
 
-    stop_result = engine.session_track_execution(
+    stop_result = await engine.session_track_execution(
         session_id=session_id,
         agent_name=AGENT_NAME,
         step_data={
@@ -103,14 +104,15 @@ async def test_agent_stop_success_transitions_to_success_status(engine):
 async def test_agent_stop_failure_transitions_to_error_status(engine):
     """An agent_stop call with success=False must transition the
     AgentExecution into ERROR, not leave it stuck at RUNNING."""
-    start_result = engine.session_track_execution(
+    start_result = await engine.session_track_execution(
         session_id=None,
         agent_name=AGENT_NAME,
         step_data={"operation": "start", "description": "SubagentStart hook"},
+        allow_unbound=True,
     )
     session_id = start_result.session_id
 
-    stop_result = engine.session_track_execution(
+    stop_result = await engine.session_track_execution(
         session_id=session_id,
         agent_name=AGENT_NAME,
         step_data={
@@ -140,7 +142,7 @@ async def test_agent_stop_failure_transitions_to_error_status(engine):
 async def test_non_agent_stop_phase_keeps_running_status(engine):
     """Phases other than agent_stop (e.g. agent_start) must continue to
     create/append RUNNING steps, unaffected by the agent_stop fix."""
-    start_result = engine.session_track_execution(
+    start_result = await engine.session_track_execution(
         session_id=None,
         agent_name=AGENT_NAME,
         step_data={
@@ -148,6 +150,7 @@ async def test_non_agent_stop_phase_keeps_running_status(engine):
             "operation": "start",
             "description": "SubagentStart hook",
         },
+        allow_unbound=True,
     )
     assert start_result.status == "success"
     session_id = start_result.session_id

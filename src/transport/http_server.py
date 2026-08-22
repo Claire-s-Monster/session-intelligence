@@ -828,6 +828,10 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                     "session_find_solution",
                     "session_update_solution_outcome",
                     "session_track_file_operation",
+                    # session_monitor_health now resolves session_name/project_name
+                    # scope through the database (issue #77), so it needs the same
+                    # pre-call DB sync as the other scope-resolving tools.
+                    "session_monitor_health",
                 }
 
                 try:

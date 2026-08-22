@@ -95,17 +95,41 @@ class LeanMCPInterface:
                         "default": True,
                         "description": "Enable automatic recovery",
                     },
+                    "session_id": {
+                        "type": "string",
+                        "description": (
+                            "Explicit session to resume/finalize/validate. "
+                            "Required (with session_name/project_name as alternatives) "
+                            "for operations other than 'create'."
+                        ),
+                    },
+                    "session_name": {
+                        "type": "string",
+                        "description": (
+                            "Session name to resolve against for resume/finalize/validate."
+                        ),
+                    },
+                    "allow_unbound": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "For resume/finalize/validate: opt into the legacy "
+                            "'_unbound_' ambient-session fallback instead of raising "
+                            "when no scope is supplied (deprecated)."
+                        ),
+                    },
                 },
                 "required": ["operation"],
             },
             "examples": [
                 {"operation": "create", "project_name": "my-project"},
-                {"operation": "resume", "mode": "hybrid"},
+                {"operation": "resume", "mode": "hybrid", "project_name": "my-project"},
+                {"operation": "finalize", "project_name": "my-project"},
             ],
         }
 
         registry["session_track_execution"] = {
-            "implementation": self._wrap_tool(self.session_engine.session_track_execution),
+            "implementation": self._wrap_async_tool(self.session_engine.session_track_execution),
             "description": "Track agent execution with pattern detection",
             "schema": {
                 "type": "object",
@@ -122,6 +146,36 @@ class LeanMCPInterface:
                         "type": "boolean",
                         "default": True,
                         "description": "Generate optimization suggestions",
+                    },
+                    "session_name": {
+                        "type": "string",
+                        "description": (
+                            "Session name to resolve against when session_id is omitted."
+                        ),
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": (
+                            "Project context to bind the execution step to when "
+                            "session_id is omitted."
+                        ),
+                    },
+                    "project_path": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the caller's project; a project_name is "
+                            "derived from it when session_id is omitted. Relative paths "
+                            "are ignored."
+                        ),
+                    },
+                    "allow_unbound": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Opt into the legacy '_unbound_' ambient-session fallback "
+                            "instead of raising when session_id is omitted and no other "
+                            "scope is supplied (deprecated)."
+                        ),
                     },
                 },
                 "required": ["agent_name", "step_data"],
@@ -347,14 +401,20 @@ class LeanMCPInterface:
         }
 
         registry["session_monitor_health"] = {
-            "implementation": self._wrap_tool(self.session_engine.session_monitor_health),
-            "description": "Real-time session health monitoring with auto-recovery",
+            "implementation": self._wrap_async_tool(self.session_engine.session_monitor_health),
+            "description": (
+                "Real-time session health monitoring with auto-recovery "
+                "(requires a session/project scope when session_id is null)"
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
                     "session_id": {
                         "type": ["string", "null"],
-                        "description": "Session to monitor (use null for current session)",
+                        "description": (
+                            "Session to monitor. If null, session_name or "
+                            "project_name (or allow_unbound=True) is required."
+                        ),
                     },
                     "health_checks": {
                         "type": "array",
@@ -374,6 +434,31 @@ class LeanMCPInterface:
                         "type": "boolean",
                         "default": True,
                         "description": "Include detailed diagnostics",
+                    },
+                    "session_name": {
+                        "type": "string",
+                        "description": "Session name to resolve against when session_id is null.",
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": "Project context to monitor when session_id is null.",
+                    },
+                    "project_path": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the caller's project; a project_name is "
+                            "derived from it when session_id is null. Relative paths "
+                            "are ignored."
+                        ),
+                    },
+                    "allow_unbound": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Opt into the legacy '_unbound_' ambient-session fallback "
+                            "instead of raising when session_id is null and no other "
+                            "scope is supplied (deprecated)."
+                        ),
                     },
                 },
                 "required": ["session_id"],

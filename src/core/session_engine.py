@@ -498,6 +498,9 @@ class SessionIntelligenceEngine:
         project_path: str | None = None,
         metadata: dict[str, Any] | None = None,
         auto_recovery: bool = True,
+        session_id: str | None = None,
+        session_name: str | None = None,
+        allow_unbound: bool = False,
     ) -> SessionResult:
         """
         Comprehensive session lifecycle management with intelligent tracking.
@@ -508,11 +511,27 @@ class SessionIntelligenceEngine:
             claudecode_finalize_session_summary,
             claudecode_save_session_state,
             claudecode_capture_enhanced_state
+
+        The resume/finalize/validate operations require at least one of
+        session_id, session_name, or project_name (derived from project_path
+        as a last resort). Pass allow_unbound=True to opt into the legacy
+        ambient-session fallback (deprecated). The create operation is
+        unaffected -- project_name/project_path remain optional there.
         """
         try:
             return await self._manage_lifecycle_impl(
-                operation, mode, project_name, project_path, metadata, auto_recovery
+                operation,
+                mode,
+                project_name,
+                project_path,
+                metadata,
+                auto_recovery,
+                session_id=session_id,
+                session_name=session_name,
+                allow_unbound=allow_unbound,
             )
+        except SessionContextRequiredError:
+            raise
         except Exception as e:
             return SessionResult(
                 session_id="error",
@@ -529,8 +548,19 @@ class SessionIntelligenceEngine:
         project_path: str | None,
         metadata: dict[str, Any] | None,
         auto_recovery: bool,
+        session_id: str | None = None,
+        session_name: str | None = None,
+        allow_unbound: bool = False,
     ) -> SessionResult:
-        """Session lifecycle management."""
+        """Session lifecycle management.
+
+        Forwards session_id/session_name/project_name/project_path/
+        allow_unbound into the resume/finalize/validate branches -- issue
+        #77: these used to be dropped here, so a caller-supplied scope
+        (e.g. the Stop hook's project_name) was silently discarded and
+        finalize/resume/validate fell back to ambient session_cache state
+        shared across every project on the HTTP transport.
+        """
 
         if operation == "create":
             create_metadata = dict(metadata or {})
@@ -554,11 +584,30 @@ class SessionIntelligenceEngine:
                     )
             return result
         elif operation == "resume":
-            return self._resume_session(auto_recovery)
+            return await self._resume_session(
+                auto_recovery,
+                session_id=session_id,
+                session_name=session_name,
+                project_name=project_name,
+                project_path=project_path,
+                allow_unbound=allow_unbound,
+            )
         elif operation == "finalize":
-            return await self._finalize_session()
+            return await self._finalize_session(
+                session_id=session_id,
+                session_name=session_name,
+                project_name=project_name,
+                project_path=project_path,
+                allow_unbound=allow_unbound,
+            )
         elif operation == "validate":
-            return self._validate_session()
+            return await self._validate_session(
+                session_id=session_id,
+                session_name=session_name,
+                project_name=project_name,
+                project_path=project_path,
+                allow_unbound=allow_unbound,
+            )
         else:
             return SessionResult(
                 session_id="error",
@@ -640,17 +689,63 @@ class SessionIntelligenceEngine:
             next_steps=["Initialize agent tracking", "Set up workflow state"],
         )
 
-    def _resume_session(self, auto_recovery: bool) -> SessionResult:
-        """Resume an existing session with recovery if needed."""
-        # First check in-memory cache
-        if self.session_cache:
-            session_id = list(self.session_cache.keys())[-1]
-            self._current_session_id = session_id
-            return SessionResult(
+    async def _resume_session(
+        self,
+        auto_recovery: bool,
+        session_id: str | None = None,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        project_path: str | None = None,
+        allow_unbound: bool = False,
+    ) -> SessionResult:
+        """Resume an existing session with recovery if needed.
+
+        Requires at least one of session_id, session_name, or project_name
+        (or an absolute project_path a project_name can be derived from), or
+        allow_unbound=True. Issue #77: this used to pick
+        `list(self.session_cache.keys())[-1]` -- whichever project last
+        created a session in the shared HTTP-transport engine -- with no
+        scope check at all.
+        """
+        if (
+            not (session_id or session_name or project_name)
+            and not allow_unbound
+            and project_path
+            and project_path != UNKNOWN_PROJECT_PATH
+            and Path(project_path).is_absolute()
+        ):
+            derived_name = derive_project_name(project_path)
+            if derived_name != UNBOUND:
+                project_name = derived_name
+
+        if not (session_id or session_name or project_name) and not allow_unbound:
+            raise SessionContextRequiredError(
+                "session_manage_lifecycle(resume) requires at least one of: "
+                "session_id, session_name, project_name. "
+                "(Pass allow_unbound=True to opt into the legacy '_unbound_' fallback.)"
+            )
+
+        try:
+            resolved = await self._resolve_session_context(
                 session_id=session_id,
+                session_name=session_name,
+                project_name=project_name,
+                allow_unbound=allow_unbound,
+                create_if_missing=False,
+                project_path=project_path,
+            )
+        except ValueError:
+            resolved = None
+
+        # Scoped cache lookup (replaces the ambient last-cache-key pick)
+        if resolved is not None and resolved.session_id in self.session_cache:
+            resumed_id = resolved.session_id
+            self._current_session_id = resumed_id
+            return SessionResult(
+                session_id=resumed_id,
                 operation="resume",
                 status="success",
-                message=f"Resumed session {session_id} from cache",
+                message=f"Resumed session {resumed_id} from cache",
                 recovery_options=(
                     ["Validate continuity", "Check health"]
                     if auto_recovery
@@ -703,7 +798,14 @@ class SessionIntelligenceEngine:
             message="No existing sessions found",
         )
 
-    async def _finalize_session(self) -> SessionResult:
+    async def _finalize_session(
+        self,
+        session_id: str | None = None,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        project_path: str | None = None,
+        allow_unbound: bool = False,
+    ) -> SessionResult:
         """Finalize current session with comprehensive summary.
 
         Persists status='completed' to the database so that subsequent
@@ -711,9 +813,44 @@ class SessionIntelligenceEngine:
         returning this session, and removes the session from the
         in-memory cache so disk reloads don't resurrect stale state
         (see issue #25).
+
+        Requires at least one of session_id, session_name, or project_name
+        (or an absolute project_path a project_name can be derived from), or
+        allow_unbound=True. Issue #77: this used to resolve the target
+        session via `_get_or_create_current_session_id()`, which is ambient
+        process-wide state -- on the HTTP transport's single shared engine,
+        that could finalize a DIFFERENT project's session than the caller's.
         """
-        # Get current session ID
-        session_id = self._get_or_create_current_session_id()
+        if (
+            not (session_id or session_name or project_name)
+            and not allow_unbound
+            and project_path
+            and project_path != UNKNOWN_PROJECT_PATH
+            and Path(project_path).is_absolute()
+        ):
+            derived_name = derive_project_name(project_path)
+            if derived_name != UNBOUND:
+                project_name = derived_name
+
+        if not (session_id or session_name or project_name) and not allow_unbound:
+            raise SessionContextRequiredError(
+                "session_manage_lifecycle(finalize) requires at least one of: "
+                "session_id, session_name, project_name. "
+                "(Pass allow_unbound=True to opt into the legacy '_unbound_' fallback.)"
+            )
+
+        try:
+            resolved = await self._resolve_session_context(
+                session_id=session_id,
+                session_name=session_name,
+                project_name=project_name,
+                allow_unbound=allow_unbound,
+                create_if_missing=False,
+                project_path=project_path,
+            )
+            session_id = resolved.session_id
+        except ValueError:
+            session_id = None
 
         if not session_id or session_id not in self.session_cache:
             return SessionResult(
@@ -782,9 +919,52 @@ class SessionIntelligenceEngine:
             session_data=session,
         )
 
-    def _validate_session(self) -> SessionResult:
-        """Validate session continuity and health."""
-        if not self.session_cache:
+    async def _validate_session(
+        self,
+        session_id: str | None = None,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        project_path: str | None = None,
+        allow_unbound: bool = False,
+    ) -> SessionResult:
+        """Validate session continuity and health.
+
+        Requires at least one of session_id, session_name, or project_name
+        (or an absolute project_path a project_name can be derived from), or
+        allow_unbound=True. Issue #77: this used to pick
+        `list(self.session_cache.keys())[-1]` with no scope check.
+        """
+        if (
+            not (session_id or session_name or project_name)
+            and not allow_unbound
+            and project_path
+            and project_path != UNKNOWN_PROJECT_PATH
+            and Path(project_path).is_absolute()
+        ):
+            derived_name = derive_project_name(project_path)
+            if derived_name != UNBOUND:
+                project_name = derived_name
+
+        if not (session_id or session_name or project_name) and not allow_unbound:
+            raise SessionContextRequiredError(
+                "session_manage_lifecycle(validate) requires at least one of: "
+                "session_id, session_name, project_name. "
+                "(Pass allow_unbound=True to opt into the legacy '_unbound_' fallback.)"
+            )
+
+        try:
+            resolved = await self._resolve_session_context(
+                session_id=session_id,
+                session_name=session_name,
+                project_name=project_name,
+                allow_unbound=allow_unbound,
+                create_if_missing=False,
+                project_path=project_path,
+            )
+        except ValueError:
+            resolved = None
+
+        if resolved is None or resolved.session_id not in self.session_cache:
             return SessionResult(
                 session_id="none",
                 operation="validate",
@@ -792,7 +972,7 @@ class SessionIntelligenceEngine:
                 message="No active session to validate",
             )
 
-        session_id = list(self.session_cache.keys())[-1]
+        session_id = resolved.session_id
         session = self.session_cache[session_id]
 
         # Perform validation checks
@@ -829,13 +1009,17 @@ class SessionIntelligenceEngine:
 
     # ===== EXECUTION TRACKING =====
 
-    def session_track_execution(
+    async def session_track_execution(
         self,
         session_id: str | None,
         agent_name: str,
         step_data: dict[str, Any],
         track_patterns: bool = True,
         suggest_optimizations: bool = True,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        project_path: str | None = None,
+        allow_unbound: bool = False,
     ) -> ExecutionTrackingResult:
         """
         Advanced execution tracking with pattern detection and optimization.
@@ -845,12 +1029,22 @@ class SessionIntelligenceEngine:
             claudecode_log_execution_step,
             claudecode_write_agent_execution_log,
             claudecode_update_agent_status
+
+        When session_id is omitted, at least one of session_name or
+        project_name (or an absolute project_path) is required, unless
+        allow_unbound=True opts into the legacy ambient-session fallback.
+        A caller-supplied session_id that isn't yet cached (e.g. a hook's
+        native Claude Code session UUID) is still auto-bound regardless of
+        scope -- that path is unaffected by this guard.
         """
         try:
-            return self._track_execution_sync(
+            return await self._track_execution_sync(
                 session_id, agent_name, step_data, track_patterns,
-                suggest_optimizations
+                suggest_optimizations, session_name, project_name,
+                project_path, allow_unbound,
             )
+        except SessionContextRequiredError:
+            raise
         except Exception:
             return ExecutionTrackingResult(
                 step_id="error",
@@ -861,15 +1055,21 @@ class SessionIntelligenceEngine:
                 optimizations=[],
             )
 
-    def _track_execution_sync(
+    async def _track_execution_sync(
         self,
         session_id: str | None,
         agent_name: str,
         step_data: dict[str, Any],
         track_patterns: bool,
         suggest_optimizations: bool,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        project_path: str | None = None,
+        allow_unbound: bool = False,
     ) -> ExecutionTrackingResult:
-        """Synchronous execution tracking."""
+        """Execution tracking (retains the `_sync` name for continuity with
+        existing call sites/tests; issue #77 made it async so it can resolve
+        scope through `_resolve_session_context()`)."""
 
         debug_logger.info("_track_execution_sync called")
         debug_logger.info(f"session_id: {session_id}")
@@ -880,10 +1080,37 @@ class SessionIntelligenceEngine:
             f"session_cache keys: {list(self.session_cache.keys())}"
         )
 
-        # Get current session ID (auto-detect from file if not provided)
+        # No explicit session_id: resolve scope instead of falling back to
+        # ambient `_current_session_id` state, which is shared across every
+        # project on the HTTP transport's single engine (issue #77).
         if not session_id:
-            session_id = self._get_or_create_current_session_id()
-            debug_logger.info(f"Auto-detected session_id: {session_id}")
+            if (
+                not (session_name or project_name)
+                and not allow_unbound
+                and project_path
+                and project_path != UNKNOWN_PROJECT_PATH
+                and Path(project_path).is_absolute()
+            ):
+                derived_name = derive_project_name(project_path)
+                if derived_name != UNBOUND:
+                    project_name = derived_name
+
+            if not (session_name or project_name) and not allow_unbound:
+                raise SessionContextRequiredError(
+                    "session_track_execution requires at least one of: "
+                    "session_id, session_name, project_name. "
+                    "(Pass allow_unbound=True to opt into the legacy '_unbound_' fallback.)"
+                )
+
+            resolved = await self._resolve_session_context(
+                session_id=None,
+                session_name=session_name,
+                project_name=project_name,
+                allow_unbound=allow_unbound,
+                project_path=project_path,
+            )
+            session_id = resolved.session_id
+            debug_logger.info(f"Resolved session_id: {session_id}")
 
         if not session_id:
             debug_logger.error(
@@ -1529,13 +1756,17 @@ class SessionIntelligenceEngine:
 
     # ===== HEALTH MONITORING =====
 
-    def session_monitor_health(
+    async def session_monitor_health(
         self,
         session_id: str | None,
         health_checks: list[str] = None,
         auto_recover: bool = True,
         alert_thresholds: dict[str, float] | None = None,
         include_diagnostics: bool = True,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        project_path: str | None = None,
+        allow_unbound: bool = False,
     ) -> SessionHealthResult:
         """
         Real-time session health monitoring with auto-recovery capabilities.
@@ -1544,15 +1775,22 @@ class SessionIntelligenceEngine:
             claudecode_validate_session_files,
             claudecode_session_continuity_check,
             claudecode_meta_session_health
+
+        When session_id is None/omitted, at least one of session_name or
+        project_name (or an absolute project_path) is required, unless
+        allow_unbound=True opts into the legacy ambient-session fallback.
         """
         if health_checks is None:
             health_checks = ["continuity", "files", "state", "agents"]
 
         try:
-            return self._monitor_health_sync(
+            return await self._monitor_health_sync(
                 session_id, health_checks, auto_recover,
-                alert_thresholds, include_diagnostics
+                alert_thresholds, include_diagnostics,
+                session_name, project_name, project_path, allow_unbound,
             )
+        except SessionContextRequiredError:
+            raise
         except Exception as e:
             return SessionHealthResult(
                 session_id=session_id or "unknown",
@@ -1560,19 +1798,55 @@ class SessionIntelligenceEngine:
                 issues=[f"Health monitoring error: {str(e)}"],
             )
 
-    def _monitor_health_sync(
+    async def _monitor_health_sync(
         self,
         session_id: str | None,
         health_checks: list[str],
         auto_recover: bool,
         alert_thresholds: dict[str, float] | None,
         include_diagnostics: bool,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        project_path: str | None = None,
+        allow_unbound: bool = False,
     ) -> SessionHealthResult:
-        """Synchronous health monitoring."""
+        """Health monitoring (retains the `_sync` name for continuity with
+        existing call sites/tests; issue #77 made it async so it can resolve
+        scope through `_resolve_session_context()`)."""
 
-        # Get current session
-        if not session_id and self.session_cache:
-            session_id = list(self.session_cache.keys())[-1]
+        # Get current session, scoped -- replaces the ambient
+        # `list(self.session_cache.keys())[-1]` pick (issue #77).
+        if not session_id:
+            if (
+                not (session_name or project_name)
+                and not allow_unbound
+                and project_path
+                and project_path != UNKNOWN_PROJECT_PATH
+                and Path(project_path).is_absolute()
+            ):
+                derived_name = derive_project_name(project_path)
+                if derived_name != UNBOUND:
+                    project_name = derived_name
+
+            if not (session_name or project_name) and not allow_unbound:
+                raise SessionContextRequiredError(
+                    "session_monitor_health requires at least one of: "
+                    "session_id, session_name, project_name. "
+                    "(Pass allow_unbound=True to opt into the legacy '_unbound_' fallback.)"
+                )
+
+            try:
+                resolved = await self._resolve_session_context(
+                    session_id=None,
+                    session_name=session_name,
+                    project_name=project_name,
+                    allow_unbound=allow_unbound,
+                    create_if_missing=False,
+                    project_path=project_path,
+                )
+                session_id = resolved.session_id
+            except ValueError:
+                session_id = None
 
         if not session_id or session_id not in self.session_cache:
             return SessionHealthResult(
@@ -2032,11 +2306,22 @@ class SessionIntelligenceEngine:
     ) -> NotebookResult:
         """Notebook creation with proper async database access."""
 
-        # Get session (current or specified)
+        # Both callers (session_create_notebook / session_create_notebook_async)
+        # already resolve session_id via _resolve_session_context() before
+        # reaching this helper, so this is defensive: there is no
+        # session_name/project_name/project_path here to derive a scope
+        # from, so a missing session_id can only be rejected, not resolved
+        # ambiently. Issue #77: replaces the latent
+        # `_get_or_create_current_session_id()` ambient fallback that used
+        # to sit here.
         if not session_id:
-            session_id = self._get_or_create_current_session_id()
+            raise SessionContextRequiredError(
+                "_create_notebook_impl requires a resolved session_id; "
+                "callers must resolve session_id via _resolve_session_context "
+                "before calling (no ambient session fallback is available here)."
+            )
 
-        if not session_id or session_id not in self.session_cache:
+        if session_id not in self.session_cache:
             return NotebookResult(
                 session_id=session_id or "unknown",
                 status="error",

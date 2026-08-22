@@ -63,7 +63,7 @@ def fake_remote_git(monkeypatch: pytest.MonkeyPatch):
 # ---------------------------------------------------------------------------
 
 
-def test_hook_bound_execution_tracking_does_not_produce_unbound_session(
+async def test_hook_bound_execution_tracking_does_not_produce_unbound_session(
     session_engine, tmp_path: Path, fake_remote_git
 ) -> None:
     """Drives the real regressed path: session_track_execution() called with
@@ -74,7 +74,7 @@ def test_hook_bound_execution_tracking_does_not_produce_unbound_session(
     working_dir = tmp_path / "hook-workdir"
     working_dir.mkdir()
 
-    result = session_engine.session_track_execution(
+    result = await session_engine.session_track_execution(
         session_id="claude-native-session-abc123",
         agent_name="test-agent",
         step_data={"working_directory": str(working_dir)},
@@ -105,7 +105,7 @@ def test_hook_bound_execution_tracking_does_not_produce_unbound_session(
 # ---------------------------------------------------------------------------
 
 
-def test_auto_current_session_id_still_uses_unbound_sentinel(
+async def test_auto_current_session_id_still_uses_unbound_sentinel(
     session_engine, tmp_path: Path, fake_remote_git, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No session_id supplied and no existing current session -> engine
@@ -114,15 +114,21 @@ def test_auto_current_session_id_still_uses_unbound_sentinel(
     if this path were wired to use it, it must still stamp '_unbound_':
     this path only has the server process's own cwd, not a caller-supplied
     working directory, and allow_unbound=True callers rely on this sentinel
-    being stable."""
+    being stable.
+
+    allow_unbound=True is passed explicitly (issue #77): session_id=None
+    with no session_name/project_name now requires it, otherwise
+    SessionContextRequiredError is raised instead of silently reaching this
+    ambient fallback."""
     working_dir = tmp_path / "auto-workdir"
     working_dir.mkdir()
     monkeypatch.chdir(working_dir)
 
-    result = session_engine.session_track_execution(
+    result = await session_engine.session_track_execution(
         session_id=None,
         agent_name="test-agent",
         step_data={},
+        allow_unbound=True,
     )
 
     assert result.status == "success", f"unexpected status: {result.status}"

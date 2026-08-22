@@ -13,13 +13,13 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
-from .base import DEFAULT_SQLITE_PATH, BaseDatabaseBackend
+from .base import DEFAULT_SQLITE_PATH, BaseDatabaseBackend, get_session_max_age_hours
 
 logger = logging.getLogger(__name__)
 
@@ -490,22 +490,53 @@ class SQLiteBackend(BaseDatabaseBackend):
         return [self._normalize_session_data(dict(row)) for row in rows]
 
     async def get_active_session_for_project(self, project_path: str) -> dict[str, Any] | None:
-        """Get the most recent active session for a project path."""
+        """Get the most recent active session for a project path.
+
+        Issue #69: excludes sessions older than get_session_max_age_hours() so a
+        session abandoned without an explicit finalize is not resurrected as the
+        current session for new work. See get_session_max_age_hours() for the
+        started_at-only staleness caveat.
+        """
         conn = self._ensure_connected()
+        cutoff = (datetime.now(UTC) - timedelta(hours=get_session_max_age_hours())).isoformat()
 
         cursor = await conn.execute(
             """
             SELECT * FROM sessions
-            WHERE project_path = ? AND status = 'active'
+            WHERE project_path = ? AND status = 'active' AND started_at >= ?
             ORDER BY started_at DESC
             LIMIT 1
             """,
-            (project_path,),
+            (project_path, cutoff),
         )
         row = await cursor.fetchone()
         if row:
             return self._normalize_session_data(dict(row))
         return None
+
+    async def reap_abandoned_sessions(self, older_than_hours: int | None = None) -> int:
+        """Flip stale 'active' sessions to 'abandoned'. Returns rows affected.
+
+        Issue #69: run once at server startup so no process resurrects a
+        months-old 'active' session via get_active_session_for_project /
+        find_recent_session_by_project. Uses 'abandoned', not 'completed', so
+        the data stays honest about never having been finalized. See
+        get_session_max_age_hours() for the started_at-only staleness caveat.
+        """
+        conn = self._ensure_connected()
+        hours = older_than_hours if older_than_hours is not None else get_session_max_age_hours()
+        cutoff = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+
+        cursor = await conn.execute(
+            """
+            UPDATE sessions
+            SET status = 'abandoned'
+            WHERE status = 'active' AND started_at < ?
+            """,
+            (cutoff,),
+        )
+        await conn.commit()
+        return cursor.rowcount
 
     async def delete_session(self, session_id: str) -> bool:
         """Delete a session by ID."""
@@ -570,18 +601,37 @@ class SQLiteBackend(BaseDatabaseBackend):
 
         Returns the most-recent match (ORDER BY started_at DESC LIMIT 1), or None
         if no matching session exists.
+
+        Issue #69: when status == 'active', excludes sessions older than
+        get_session_max_age_hours() -- same staleness guard as
+        get_active_session_for_project, applied here too so this lookup can't
+        reintroduce the abandoned-session-resurrection bug by a second path.
         """
         conn = self._ensure_connected()
 
-        cursor = await conn.execute(
-            """
-            SELECT * FROM sessions
-            WHERE project_name = ? AND status = ?
-            ORDER BY started_at DESC
-            LIMIT 1
-            """,
-            (project_name, status),
-        )
+        if status == "active":
+            cutoff = (
+                datetime.now(UTC) - timedelta(hours=get_session_max_age_hours())
+            ).isoformat()
+            cursor = await conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE project_name = ? AND status = ? AND started_at >= ?
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (project_name, status, cutoff),
+            )
+        else:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE project_name = ? AND status = ?
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (project_name, status),
+            )
 
         row = await cursor.fetchone()
         if row:

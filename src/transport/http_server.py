@@ -189,6 +189,14 @@ class HTTPSessionIntelligenceServer:
             database=self.database,  # Pass database for persistence
         )
 
+        # Issue #69: sweep stale 'active' sessions to 'abandoned' once per process
+        # start, BEFORE checking for a resumable session below. Without this,
+        # get_active_session_for_project's staleness guard only hides old rows
+        # from reads -- they never leave status='active' in the DB.
+        reaped_count = await self.database.reap_abandoned_sessions()
+        if reaped_count:
+            logger.info(f"Reaped {reaped_count} abandoned session(s) (status: active -> abandoned)")
+
         # Session continuity: Check for active session for this project
         active_session = await self.database.get_active_session_for_project(self.repository_path)
         if active_session:

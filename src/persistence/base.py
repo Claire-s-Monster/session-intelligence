@@ -13,6 +13,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -22,6 +23,32 @@ DEFAULT_DATA_DIR = Path.home() / ".claude" / "session-intelligence"
 DEFAULT_POSTGRES_DSN = "postgresql://localhost/session_intelligence"
 # SQLite path for testing (SQLite is test-only, not for production)
 DEFAULT_SQLITE_PATH = DEFAULT_DATA_DIR / "sessions.db"
+
+# Issue #69: staleness threshold (hours) for 'active' sessions. A session
+# that never received an explicit finalize call stays 'active' forever
+# unless something reaps it. This single constant backs both the read guard
+# (get_active_session_for_project / find_recent_session_by_project) and the
+# startup sweep (reap_abandoned_sessions) in both backends, so they can never
+# drift apart. Overridable via SESSION_INTELLIGENCE_SESSION_MAX_AGE_HOURS.
+DEFAULT_SESSION_MAX_AGE_HOURS = 24
+
+
+def get_session_max_age_hours() -> int:
+    """Return the staleness threshold (hours) for 'active' sessions.
+
+    NOTE (deferred, issue #69): `started_at` is currently the only
+    staleness signal available. A genuinely long-lived session that stays
+    open past this threshold is indistinguishable from an abandoned one and
+    will be incorrectly excluded/reaped. A `last_seen_at` heartbeat column
+    would fix this but requires a schema migration.
+    """
+    raw = os.environ.get("SESSION_INTELLIGENCE_SESSION_MAX_AGE_HOURS")
+    if raw is None:
+        return DEFAULT_SESSION_MAX_AGE_HOURS
+    try:
+        return int(raw)
+    except ValueError:
+        return DEFAULT_SESSION_MAX_AGE_HOURS
 
 
 def get_default_data_dir() -> Path:
@@ -154,6 +181,15 @@ class DatabaseBackend(Protocol):
 
     async def delete_session(self, session_id: str) -> bool:
         """Delete a session by ID. Returns True if deleted."""
+        ...
+
+    async def reap_abandoned_sessions(self, older_than_hours: int | None = None) -> int:
+        """Flip stale 'active' sessions to 'abandoned'. Returns rows affected.
+
+        Distinct from 'completed': an abandoned session never received an
+        explicit finalize call, so the status stays honest about that.
+        Defaults to get_session_max_age_hours() when older_than_hours is None.
+        """
         ...
 
     # Decision operations

@@ -4,6 +4,8 @@
 
 This document provides a comprehensive framework for implementing "Lean MCP Servers" - a revolutionary approach to MCP server development that reduces context consumption by **95%+** while maintaining **100%** functionality through the meta-tool pattern.
 
+> **Migration status (2026-08-22):** The traditional (non-lean) MCP interface `src/session/server.py` has been REMOVED (issue #83). This repository now exposes the lean interface only — `src/lean_server.py` (stdio) and `src/http_lean_server.py` (HTTP, what the systemd unit runs on port 4002). The dual-interface guidance below is retained as general framework advice, not as a description of this repo.
+
 ## 🚨 **CRITICAL PROBLEM SOLVED**
 
 **Traditional MCP Server Issue:**

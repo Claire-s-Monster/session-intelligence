@@ -86,10 +86,10 @@ Comprehensive session intelligence dashboard with real-time insights.
 pixi install
 
 # Run the MCP server (auto-detects project root)
-pixi run mcp-server
+pixi run lean-server
 
 # Run with specific repository path
-pixi run python -m session.server --repository /path/to/repository
+pixi run lean-server --repository /path/to/repository
 ```
 
 ## Development
@@ -167,7 +167,7 @@ Add to your Claude Code MCP configuration:
       "run",
       "--manifest-path",
       "/path/to/session-intelligence/development",
-      "mcp-server",
+      "lean-server",
       "--repository",
       "/path/to/your/project"
     ]

@@ -53,6 +53,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         id TEXT PRIMARY KEY,
         started_at TIMESTAMPTZ NOT NULL,
         ended_at TIMESTAMPTZ,
+        last_seen_at TIMESTAMPTZ,
         project_path TEXT NOT NULL,
         project_name TEXT,
         session_name TEXT,
@@ -140,6 +141,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         agent_type TEXT,
         started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         completed_at TIMESTAMPTZ,
+        last_seen_at TIMESTAMPTZ,
         status TEXT DEFAULT 'running',
         execution_steps JSONB DEFAULT '[]',
         performance JSONB DEFAULT '{}',
@@ -409,6 +411,25 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 "ON project_learnings(project_name) WHERE project_name IS NOT NULL"
             )
 
+            # Issue #82: idempotent migration for existing databases: add
+            # last_seen_at heartbeat column to sessions and agent_executions.
+            # Immediately backfilled from the start-time column so existing
+            # rows do not become more reap-able than they are today.
+            await conn.execute(
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ"
+            )
+            await conn.execute(
+                "UPDATE sessions SET last_seen_at = started_at WHERE last_seen_at IS NULL"
+            )
+            await conn.execute(
+                "ALTER TABLE agent_executions "
+                "ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ"
+            )
+            await conn.execute(
+                "UPDATE agent_executions SET last_seen_at = started_at "
+                "WHERE last_seen_at IS NULL"
+            )
+
         self._is_connected = True
         logger.info(f"PostgreSQL database initialized: {sanitize_dsn(self.dsn)}")
 
@@ -488,15 +509,20 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         if isinstance(ended_at, str):
             ended_at = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
 
+        last_seen_at = session_data.get("last_seen_at") or started_at
+        if isinstance(last_seen_at, str):
+            last_seen_at = datetime.fromisoformat(last_seen_at.replace("Z", "+00:00"))
+
         async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO sessions
-                (id, started_at, ended_at, project_path, project_name, session_name,
-                 mode, status, metadata, performance_metrics, health_status)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                (id, started_at, ended_at, last_seen_at, project_path, project_name,
+                 session_name, mode, status, metadata, performance_metrics, health_status)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 ON CONFLICT (id) DO UPDATE SET
                     ended_at = EXCLUDED.ended_at,
+                    last_seen_at = EXCLUDED.last_seen_at,
                     status = EXCLUDED.status,
                     session_name = EXCLUDED.session_name,
                     metadata = EXCLUDED.metadata,
@@ -506,6 +532,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 session_data["id"],
                 started_at,
                 ended_at,
+                last_seen_at,
                 session_data.get("project_path", ""),
                 session_data.get("project_name"),
                 session_data.get("session_name"),
@@ -573,8 +600,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
         Issue #69: excludes sessions older than get_session_max_age_hours() so a
         session abandoned without an explicit finalize is not resurrected as the
-        current session for new work. See get_session_max_age_hours() for the
-        started_at-only staleness caveat.
+        current session for new work. Issue #82: staleness is judged by
+        COALESCE(last_seen_at, started_at) so a heartbeat-updated session is not
+        excluded just because it started long ago.
         """
         pool = self._ensure_connected()
         cutoff = datetime.now(UTC) - timedelta(hours=get_session_max_age_hours())
@@ -583,7 +611,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             row = await conn.fetchrow(
                 """
                 SELECT * FROM sessions
-                WHERE project_path = $1 AND status = 'active' AND started_at >= $2
+                WHERE project_path = $1 AND status = 'active'
+                  AND COALESCE(last_seen_at, started_at) >= $2
                 ORDER BY started_at DESC
                 LIMIT 1
                 """,
@@ -601,8 +630,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         Issue #69: run once at server startup so no process resurrects a
         months-old 'active' session via get_active_session_for_project /
         find_recent_session_by_project. Uses 'abandoned', not 'completed', so
-        the data stays honest about never having been finalized. See
-        get_session_max_age_hours() for the started_at-only staleness caveat.
+        the data stays honest about never having been finalized. Issue #82:
+        staleness is judged by COALESCE(last_seen_at, started_at), matching
+        the read guard, so a heartbeat-updated session is not reaped early.
         """
         pool = self._ensure_connected()
         hours = older_than_hours if older_than_hours is not None else get_session_max_age_hours()
@@ -613,7 +643,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 """
                 UPDATE sessions
                 SET status = 'abandoned'
-                WHERE status = 'active' AND started_at < $1
+                WHERE status = 'active' AND COALESCE(last_seen_at, started_at) < $1
                 """,
                 cutoff,
             )
@@ -629,6 +659,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         Issue #70: run once at server startup, alongside reap_abandoned_sessions,
         so an execution whose stop event never arrives doesn't stay 'running'
         forever and inflate the success_rate denominator (see get_agent_stats).
+        Issue #82: staleness is judged by COALESCE(last_seen_at, started_at).
         """
         pool = self._ensure_connected()
         hours = older_than_hours if older_than_hours is not None else get_execution_max_age_hours()
@@ -639,7 +670,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 """
                 UPDATE agent_executions
                 SET status = 'abandoned', completed_at = COALESCE(completed_at, NOW())
-                WHERE status = 'running' AND started_at < $1
+                WHERE status = 'running' AND COALESCE(last_seen_at, started_at) < $1
                 """,
                 cutoff,
             )
@@ -716,6 +747,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         get_session_max_age_hours() -- same staleness guard as
         get_active_session_for_project, applied here too so this lookup can't
         reintroduce the abandoned-session-resurrection bug by a second path.
+        Issue #82: staleness is judged by COALESCE(last_seen_at, started_at).
         """
         pool = self._ensure_connected()
 
@@ -725,7 +757,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 row = await conn.fetchrow(
                     """
                     SELECT * FROM sessions
-                    WHERE project_name = $1 AND status = $2 AND started_at >= $3
+                    WHERE project_name = $1 AND status = $2
+                      AND COALESCE(last_seen_at, started_at) >= $3
                     ORDER BY started_at DESC
                     LIMIT 1
                     """,
@@ -1387,15 +1420,20 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         if isinstance(completed_at, str):
             completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
 
+        last_seen_at = execution_data.get("last_seen_at") or started_at
+        if isinstance(last_seen_at, str):
+            last_seen_at = datetime.fromisoformat(last_seen_at.replace("Z", "+00:00"))
+
         async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO agent_executions
                 (id, session_id, agent_name, agent_type, started_at, completed_at,
-                 status, execution_steps, performance, errors)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 last_seen_at, status, execution_steps, performance, errors)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 ON CONFLICT (id) DO UPDATE SET
                     completed_at = EXCLUDED.completed_at,
+                    last_seen_at = EXCLUDED.last_seen_at,
                     status = EXCLUDED.status,
                     execution_steps = EXCLUDED.execution_steps,
                     performance = EXCLUDED.performance,
@@ -1407,6 +1445,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 execution_data.get("agent_type"),
                 started_at,
                 completed_at,
+                last_seen_at,
                 str(execution_data.get("status", "running")),
                 json.dumps(execution_data.get("execution_steps", []), default=str),
                 json.dumps(execution_data.get("performance", {}), default=str),

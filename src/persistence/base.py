@@ -36,11 +36,11 @@ DEFAULT_SESSION_MAX_AGE_HOURS = 24
 def get_session_max_age_hours() -> int:
     """Return the staleness threshold (hours) for 'active' sessions.
 
-    NOTE (deferred, issue #69): `started_at` is currently the only
-    staleness signal available. A genuinely long-lived session that stays
-    open past this threshold is indistinguishable from an abandoned one and
-    will be incorrectly excluded/reaped. A `last_seen_at` heartbeat column
-    would fix this but requires a schema migration.
+    Issue #82: guards and sweeps compare against COALESCE(last_seen_at,
+    started_at), so a session that has been heartbeat-updated is judged by
+    its most recent activity rather than only its creation time. Rows
+    predating the last_seen_at migration fall back to started_at via the
+    same COALESCE, so behavior is unaffected until they receive a heartbeat.
     """
     raw = os.environ.get("SESSION_INTELLIGENCE_SESSION_MAX_AGE_HOURS")
     if raw is None:
@@ -398,6 +398,7 @@ class BaseDatabaseBackend:
             "id": row.get("id"),
             "started": row.get("started_at") or row.get("started"),
             "completed": row.get("ended_at") or row.get("completed"),
+            "last_seen_at": row.get("last_seen_at"),
             "project_path": row.get("project_path", ""),
             "project_name": row.get("project_name"),
             "mode": row.get("mode", "local"),

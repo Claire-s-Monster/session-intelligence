@@ -256,6 +256,7 @@ class AgentExecution(BaseModel):
     execution_id: str
     started: datetime
     completed: datetime | None = None
+    last_seen_at: datetime | None = None
     status: ExecutionStatus = ExecutionStatus.RUNNING
     execution_steps: list[ExecutionStep] = Field(default_factory=list)
     context: AgentContext
@@ -453,6 +454,7 @@ class Session(BaseModel):
     id: str
     started: datetime
     completed: datetime | None = None
+    last_seen_at: datetime | None = None
     mode: str = "local"  # local, remote, hybrid
     project_name: str
     project_path: str

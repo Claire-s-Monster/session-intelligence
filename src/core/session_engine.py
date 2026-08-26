@@ -1199,6 +1199,14 @@ class SessionIntelligenceEngine:
             f"Session agents_executed count: {len(session.agents_executed)}"
         )
 
+        # Issue #82: an execution step is session activity; bump the
+        # heartbeat on the in-memory session object. No extra DB write is
+        # added here -- the HTTP transport persists session_track_execution's
+        # session_cache entry (and its agents_executed) via the existing
+        # post-call sweep (_persist_sessions_to_database), so this mutation
+        # is picked up without a second save_session call.
+        session.last_seen_at = datetime.now(UTC)
+
         # Create execution step
         step_id = (
             f"{agent_name}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -1284,6 +1292,12 @@ class SessionIntelligenceEngine:
                 performance=AgentPerformance(),
             )
             session.agents_executed.append(agent_execution)
+
+        # Issue #82: bump the execution's own heartbeat too, whether it was
+        # just created above or is an existing RUNNING execution receiving
+        # another step. Same no-extra-write rationale as the session bump
+        # above -- the post-call sweep persists agents_executed changes.
+        agent_execution.last_seen_at = datetime.now(UTC)
 
         if is_agent_stop:
             agent_execution.status = terminal_status
@@ -1619,6 +1633,10 @@ class SessionIntelligenceEngine:
                 cached = self.session_cache.get(resolved_id)
                 if cached and self.database:
                     try:
+                        # Issue #82: bump before persisting, not after, so
+                        # this save carries the fresh heartbeat instead of
+                        # whatever last_seen_at the object already had.
+                        cached.last_seen_at = datetime.now(UTC)
                         await self.database.save_session(
                             cached.model_dump(mode="python")
                         )
@@ -1756,6 +1774,8 @@ class SessionIntelligenceEngine:
             cached = self.session_cache.get(resolved_id)
             if cached and self.database:
                 try:
+                    # Issue #82: bump before persisting (see session_log_decision).
+                    cached.last_seen_at = datetime.now(UTC)
                     await self.database.save_session(cached.model_dump(mode="python"))
                 except Exception:
                     pass  # Best-effort
@@ -3229,6 +3249,8 @@ class SessionIntelligenceEngine:
                 cached = self.session_cache.get(resolved_session_id)
                 if cached and self.database:
                     try:
+                        # Issue #82: bump before persisting (see session_log_decision).
+                        cached.last_seen_at = datetime.now(UTC)
                         await self.database.save_session(
                             cached.model_dump(mode="python")
                         )

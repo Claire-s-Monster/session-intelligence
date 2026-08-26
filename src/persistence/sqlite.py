@@ -44,6 +44,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         id TEXT PRIMARY KEY,
         started_at TEXT NOT NULL,
         ended_at TEXT,
+        last_seen_at TEXT,
         project_path TEXT NOT NULL,
         project_name TEXT,
         session_name TEXT,
@@ -133,6 +134,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         agent_type TEXT,
         started_at TEXT NOT NULL,
         completed_at TEXT,
+        last_seen_at TEXT,
         status TEXT DEFAULT 'running',
         execution_steps TEXT,
         performance TEXT,
@@ -395,6 +397,38 @@ class SQLiteBackend(BaseDatabaseBackend):
         except Exception as e:
             logger.debug(f"project_learnings project_name index creation: {e}")
 
+        # Issue #82: idempotent migration for existing databases: add
+        # last_seen_at heartbeat column to sessions and agent_executions.
+        # Immediately backfilled from the start-time column so existing rows
+        # do not become more reap-able than they are today.
+        try:
+            await self._connection.execute(
+                "ALTER TABLE sessions ADD COLUMN last_seen_at TEXT"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+        await self._connection.execute(
+            "UPDATE sessions SET last_seen_at = started_at WHERE last_seen_at IS NULL"
+        )
+        await self._connection.commit()
+
+        try:
+            await self._connection.execute(
+                "ALTER TABLE agent_executions ADD COLUMN last_seen_at TEXT"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+        await self._connection.execute(
+            "UPDATE agent_executions SET last_seen_at = started_at WHERE last_seen_at IS NULL"
+        )
+        await self._connection.commit()
+
         self._is_connected = True
         logger.info(f"SQLite database initialized: {self.db_path}")
 
@@ -431,17 +465,20 @@ class SQLiteBackend(BaseDatabaseBackend):
         """Save or update a session."""
         conn = self._ensure_connected()
 
+        started_at = session_data.get("started") or session_data.get("started_at")
+
         await conn.execute(
             """
             INSERT OR REPLACE INTO sessions
-            (id, started_at, ended_at, project_path, project_name, session_name,
-             mode, status, metadata, performance_metrics, health_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, started_at, ended_at, last_seen_at, project_path, project_name,
+             session_name, mode, status, metadata, performance_metrics, health_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 session_data["id"],
-                session_data.get("started") or session_data.get("started_at"),
+                started_at,
                 session_data.get("completed") or session_data.get("ended_at"),
+                session_data.get("last_seen_at") or started_at,
                 session_data.get("project_path", ""),
                 session_data.get("project_name"),
                 session_data.get("session_name"),
@@ -499,8 +536,9 @@ class SQLiteBackend(BaseDatabaseBackend):
 
         Issue #69: excludes sessions older than get_session_max_age_hours() so a
         session abandoned without an explicit finalize is not resurrected as the
-        current session for new work. See get_session_max_age_hours() for the
-        started_at-only staleness caveat.
+        current session for new work. Issue #82: staleness is judged by
+        COALESCE(last_seen_at, started_at) so a heartbeat-updated session is not
+        excluded just because it started long ago.
         """
         conn = self._ensure_connected()
         cutoff = (datetime.now(UTC) - timedelta(hours=get_session_max_age_hours())).isoformat()
@@ -508,7 +546,8 @@ class SQLiteBackend(BaseDatabaseBackend):
         cursor = await conn.execute(
             """
             SELECT * FROM sessions
-            WHERE project_path = ? AND status = 'active' AND started_at >= ?
+            WHERE project_path = ? AND status = 'active'
+              AND COALESCE(last_seen_at, started_at) >= ?
             ORDER BY started_at DESC
             LIMIT 1
             """,
@@ -525,8 +564,9 @@ class SQLiteBackend(BaseDatabaseBackend):
         Issue #69: run once at server startup so no process resurrects a
         months-old 'active' session via get_active_session_for_project /
         find_recent_session_by_project. Uses 'abandoned', not 'completed', so
-        the data stays honest about never having been finalized. See
-        get_session_max_age_hours() for the started_at-only staleness caveat.
+        the data stays honest about never having been finalized. Issue #82:
+        staleness is judged by COALESCE(last_seen_at, started_at), matching
+        the read guard, so a heartbeat-updated session is not reaped early.
         """
         conn = self._ensure_connected()
         hours = older_than_hours if older_than_hours is not None else get_session_max_age_hours()
@@ -536,7 +576,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             """
             UPDATE sessions
             SET status = 'abandoned'
-            WHERE status = 'active' AND started_at < ?
+            WHERE status = 'active' AND COALESCE(last_seen_at, started_at) < ?
             """,
             (cutoff,),
         )
@@ -547,7 +587,8 @@ class SQLiteBackend(BaseDatabaseBackend):
         """Flip stale 'running' agent_executions to 'abandoned'. Returns rows affected.
 
         Issue #70: see postgresql.py counterpart for rationale. Run once at
-        server startup, alongside reap_abandoned_sessions.
+        server startup, alongside reap_abandoned_sessions. Issue #82:
+        staleness is judged by COALESCE(last_seen_at, started_at).
         """
         conn = self._ensure_connected()
         hours = older_than_hours if older_than_hours is not None else get_execution_max_age_hours()
@@ -558,7 +599,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             """
             UPDATE agent_executions
             SET status = 'abandoned', completed_at = COALESCE(completed_at, ?)
-            WHERE status = 'running' AND started_at < ?
+            WHERE status = 'running' AND COALESCE(last_seen_at, started_at) < ?
             """,
             (now, cutoff),
         )
@@ -633,6 +674,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         get_session_max_age_hours() -- same staleness guard as
         get_active_session_for_project, applied here too so this lookup can't
         reintroduce the abandoned-session-resurrection bug by a second path.
+        Issue #82: staleness is judged by COALESCE(last_seen_at, started_at).
         """
         conn = self._ensure_connected()
 
@@ -643,7 +685,8 @@ class SQLiteBackend(BaseDatabaseBackend):
             cursor = await conn.execute(
                 """
                 SELECT * FROM sessions
-                WHERE project_name = ? AND status = ? AND started_at >= ?
+                WHERE project_name = ? AND status = ?
+                  AND COALESCE(last_seen_at, started_at) >= ?
                 ORDER BY started_at DESC
                 LIMIT 1
                 """,
@@ -1031,13 +1074,14 @@ class SQLiteBackend(BaseDatabaseBackend):
             or self._get_timestamp()
         )
         completed_at = execution_data.get("completed_at") or execution_data.get("completed")
+        last_seen_at = execution_data.get("last_seen_at") or started_at
 
         await conn.execute(
             """
             INSERT OR REPLACE INTO agent_executions
             (id, session_id, agent_name, agent_type, started_at, completed_at,
-             status, execution_steps, performance, errors)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             last_seen_at, status, execution_steps, performance, errors)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 execution_id,
@@ -1046,6 +1090,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 execution_data.get("agent_type"),
                 started_at,
                 completed_at,
+                last_seen_at,
                 str(execution_data.get("status", "running")),
                 self._serialize_json(execution_data.get("execution_steps", [])),
                 self._serialize_json(execution_data.get("performance", {})),

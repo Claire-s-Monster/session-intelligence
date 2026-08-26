@@ -714,6 +714,12 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                     if session_data.get("completed") and isinstance(session_data["completed"], str)
                     else session_data.get("completed")
                 ),
+                last_seen_at=(
+                    datetime.fromisoformat(session_data["last_seen_at"])
+                    if session_data.get("last_seen_at")
+                    and isinstance(session_data["last_seen_at"], str)
+                    else session_data.get("last_seen_at")
+                ),
                 mode=session_data.get("mode", "local"),
                 project_name=session_data.get("project_name", ""),
                 project_path=session_data.get("project_path", project_path),

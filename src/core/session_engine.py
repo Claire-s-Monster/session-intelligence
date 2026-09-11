@@ -7,6 +7,7 @@ capabilities.
 """
 
 import json
+import re
 import secrets
 import uuid
 from dataclasses import dataclass
@@ -109,6 +110,26 @@ def safe_parse_datetime(value: Any) -> datetime | None:
 
 class SessionContextRequiredError(ValueError):
     """Raised when a session_* write tool is called without any session identifier."""
+
+
+class InvalidEntryContentError(ValueError):
+    """Raised when logged content is a captured tool result rather than knowledge."""
+
+
+_TOOL_RESULT_ENVELOPE_RE = re.compile(r"^\s*Tool\s+'[^']*'\s+(failed|error)\b", re.IGNORECASE)
+
+
+def _reject_tool_result_envelope(tool_name: str, field_name: str, content: str) -> None:
+    """Reject content that is a captured tool result rather than durable knowledge."""
+    if not isinstance(content, str):
+        return
+    if _TOOL_RESULT_ENVELOPE_RE.match(content):
+        raise InvalidEntryContentError(
+            f"{tool_name} rejected: {field_name} looks like a captured tool result "
+            "(e.g. \"Tool 'X' failed: ...\"), not durable knowledge. Log what the "
+            "failure taught you instead -- the fix, the root cause, or the pattern "
+            "to avoid -- not the raw error output."
+        )
 
 
 @dataclass(frozen=True)
@@ -1566,6 +1587,7 @@ class SessionIntelligenceEngine:
         project_path.
         Use allow_unbound=True to opt into the legacy unbound fallback (deprecated).
         """
+        _reject_tool_result_envelope("session_log_decision", "decision", decision)
         try:
             # Coerce context to dict if caller passed a string
             if isinstance(context, str):
@@ -3198,6 +3220,9 @@ class SessionIntelligenceEngine:
         Returns:
             LearningResult with saved learning
         """
+        _reject_tool_result_envelope(
+            "session_log_learning", "learning_content", learning_content
+        )
         import uuid
 
         learning_id = f"learn_{uuid.uuid4().hex[:12]}"

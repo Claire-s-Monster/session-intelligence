@@ -335,6 +335,7 @@ class Decision(BaseModel):
     related_decisions: list[str] = Field(default_factory=list)
     artifacts: list[str] = Field(default_factory=list)
     outcomes: list[DecisionOutcome] = Field(default_factory=list)
+    supersedes: str | None = None
 
 
 # ===== ANALYTICS AND INTELLIGENCE MODELS =====
@@ -514,6 +515,7 @@ class DecisionResult(BaseModel):
     impact_analysis: dict[str, Any] = Field(default_factory=dict)
     linked_decisions: list[str] = Field(default_factory=list)
     predicted_outcomes: list[str] = Field(default_factory=list)
+    supersedes: str | None = None
 
 
 class PatternAnalysisResult(BaseModel):
@@ -691,6 +693,7 @@ class ProjectLearning(BaseModel):
     last_used: str | None = None
     promoted_to_universal: bool = False
     created_at: str
+    supersedes: str | None = None
 
 
 class LearningResult(BaseModel):

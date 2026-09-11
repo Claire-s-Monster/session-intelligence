@@ -81,7 +81,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         rationale TEXT,
         context JSONB DEFAULT '{}',
         impact_level TEXT DEFAULT 'medium',
-        artifacts JSONB DEFAULT '[]'
+        artifacts JSONB DEFAULT '[]',
+        supersedes TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_decisions_session ON decisions(session_id);
@@ -228,7 +229,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         failure_count INTEGER DEFAULT 0,
         last_used TIMESTAMPTZ,
         promoted_to_universal BOOLEAN DEFAULT FALSE,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        supersedes TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_learnings_project ON project_learnings(project_path);
@@ -409,6 +411,15 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_project_name "
                 "ON project_learnings(project_name) WHERE project_name IS NOT NULL"
+            )
+            # Issue #87: idempotent migration for existing databases: add
+            # the supersedes pointer used to retire corrected entries.
+            await conn.execute(
+                "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS supersedes TEXT"
+            )
+            await conn.execute(
+                "ALTER TABLE project_learnings "
+                "ADD COLUMN IF NOT EXISTS supersedes TEXT"
             )
 
             # Issue #82: idempotent migration for existing databases: add
@@ -799,12 +810,13 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 """
                 INSERT INTO decisions
                 (id, session_id, timestamp, category, description, rationale,
-                 context, impact_level, artifacts)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                 context, impact_level, artifacts, supersedes)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 ON CONFLICT (id) DO UPDATE SET
                     description = EXCLUDED.description,
                     rationale = EXCLUDED.rationale,
-                    context = EXCLUDED.context
+                    context = EXCLUDED.context,
+                    supersedes = EXCLUDED.supersedes
                 """,
                 decision_data.get("decision_id") or decision_data.get("id"),
                 decision_data["session_id"],
@@ -815,6 +827,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 json.dumps(decision_data.get("context", {})),
                 decision_data.get("impact_level", "medium"),
                 json.dumps(decision_data.get("artifacts", [])),
+                decision_data.get("supersedes"),
             )
 
     @db_retry
@@ -1314,6 +1327,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     FROM decisions d
                     JOIN sessions s ON d.session_id = s.id
                     WHERE s.project_name = $1 AND d.timestamp > $2
+                      AND d.id NOT IN (
+                          SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
+                      )
                     ORDER BY d.timestamp DESC
                     LIMIT $3
                     """,
@@ -1338,13 +1354,19 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                            project_name, source_session_id, success_count,
                            failure_count, created_at, last_used
                     FROM project_learnings
-                    WHERE project_name = $1
-                       OR (project_name IS NULL AND project_path = (
-                           SELECT project_path FROM sessions
-                           WHERE project_name = $1
-                             AND project_path IS NOT NULL
-                           LIMIT 1
-                       ))
+                    WHERE (
+                        project_name = $1
+                        OR (project_name IS NULL AND project_path = (
+                            SELECT project_path FROM sessions
+                            WHERE project_name = $1
+                              AND project_path IS NOT NULL
+                            LIMIT 1
+                        ))
+                    )
+                      AND id NOT IN (
+                          SELECT supersedes FROM project_learnings
+                          WHERE supersedes IS NOT NULL
+                      )
                     ORDER BY success_count DESC, last_used DESC
                     LIMIT $2
                     """,
@@ -1790,6 +1812,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         trigger_context: str | None = None,
         source_session_id: str | None = None,
         project_name: str | None = None,
+        supersedes: str | None = None,
     ) -> dict[str, Any]:
         """Save a project-specific learning."""
         pool = self._ensure_connected()
@@ -1800,12 +1823,13 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 INSERT INTO project_learnings (
                     id, project_path, project_name, category, trigger_context,
                     learning_content, source_session_id, success_count, failure_count,
-                    last_used, promoted_to_universal, created_at
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 0, NOW(), FALSE, NOW())
+                    last_used, promoted_to_universal, created_at, supersedes
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 0, NOW(), FALSE, NOW(), $8)
                 ON CONFLICT(id) DO UPDATE SET
                     learning_content = EXCLUDED.learning_content,
                     trigger_context = EXCLUDED.trigger_context,
                     project_name = EXCLUDED.project_name,
+                    supersedes = EXCLUDED.supersedes,
                     last_used = NOW()
                 """,
                 learning_id,
@@ -1815,6 +1839,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 trigger_context,
                 learning_content,
                 source_session_id,
+                supersedes,
             )
         return {"id": learning_id, "status": "saved"}
 

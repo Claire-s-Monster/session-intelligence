@@ -1584,6 +1584,7 @@ class SessionIntelligenceEngine:
         project_name: str | None = None,
         session_name: str | None = None,
         project_path: str | None = None,
+        supersedes: str | None = None,
         allow_unbound: bool = False,
     ) -> DecisionResult:
         """
@@ -1692,6 +1693,7 @@ class SessionIntelligenceEngine:
                     context=decision_context,
                     impact_level=ImpactLevel.MEDIUM,
                     artifacts=link_artifacts or [],
+                    supersedes=supersedes,
                 )
 
                 session.decisions.append(decision_obj)
@@ -1706,6 +1708,13 @@ class SessionIntelligenceEngine:
                     "context": json.dumps(context or {}),
                     "impact_level": "medium",
                     "artifacts": json.dumps(link_artifacts or []),
+                    # Issue #87: supersedes is intentionally NOT validated
+                    # against existing IDs. A rejection here would surface as
+                    # {"status": "error"} wrapped in an HTTP 200 (in-band
+                    # error), so a false rejection is silent data loss -- see
+                    # issue #96. A dangling pointer is accepted and simply
+                    # never retires anything.
+                    "supersedes": supersedes,
                 }
                 await self.database.save_decision(decision_data)
 
@@ -1724,6 +1733,7 @@ class SessionIntelligenceEngine:
                 impact_analysis=impact_analysis_result,
                 linked_decisions=[],
                 predicted_outcomes=["Continue with planned execution"],
+                supersedes=supersedes,
             )
         except SessionContextRequiredError:
             raise
@@ -3204,6 +3214,7 @@ class SessionIntelligenceEngine:
         session_id: str | None = None,
         session_name: str | None = None,
         project_name: str | None = None,
+        supersedes: str | None = None,
         allow_unbound: bool = False,
     ) -> LearningResult:
         """
@@ -3321,6 +3332,13 @@ class SessionIntelligenceEngine:
             f"Logging learning: {category} for {effective_project}"
         )
 
+        # Issue #87: supersedes is intentionally NOT validated against
+        # existing IDs (and there is no cycle guard: IDs are generated fresh
+        # at insert, so pointers always point backward in time, making
+        # cycles structurally impossible). A rejection here would surface as
+        # {"status": "error"} wrapped in an HTTP 200 (in-band error), so a
+        # false rejection is silent data loss -- see issue #96. A dangling
+        # pointer is accepted and simply never retires anything.
         learning = ProjectLearning(
             id=learning_id,
             project_path=effective_project,
@@ -3329,6 +3347,7 @@ class SessionIntelligenceEngine:
             learning_content=learning_content,
             source_session_id=source_session,
             created_at=datetime.now().isoformat(),
+            supersedes=supersedes,
         )
 
         # Persist to database
@@ -3356,6 +3375,7 @@ class SessionIntelligenceEngine:
                     learning_content=learning_content,
                     trigger_context=trigger_context,
                     source_session_id=sid,
+                    supersedes=supersedes,
                 )
                 status = "saved"
                 message = f"Learning saved to database for {category}."

@@ -71,6 +71,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         context TEXT,
         impact_level TEXT DEFAULT 'medium',
         artifacts TEXT,
+        supersedes TEXT,
         FOREIGN KEY (session_id) REFERENCES sessions(id)
     );
 
@@ -183,6 +184,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         last_used TEXT,
         promoted_to_universal BOOLEAN DEFAULT FALSE,
         created_at TEXT NOT NULL,
+        supersedes TEXT,
         FOREIGN KEY (source_session_id) REFERENCES sessions(id)
     );
 
@@ -381,6 +383,26 @@ class SQLiteBackend(BaseDatabaseBackend):
         try:
             await self._connection.execute(
                 "ALTER TABLE project_learnings ADD COLUMN project_name TEXT"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+        # Issue #87: idempotent migration for existing databases: add the
+        # supersedes pointer used to retire corrected entries.
+        try:
+            await self._connection.execute(
+                "ALTER TABLE decisions ADD COLUMN supersedes TEXT"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+        try:
+            await self._connection.execute(
+                "ALTER TABLE project_learnings ADD COLUMN supersedes TEXT"
             )
             await self._connection.commit()
         except Exception as e:
@@ -718,12 +740,13 @@ class SQLiteBackend(BaseDatabaseBackend):
             """
             INSERT INTO decisions
             (id, session_id, timestamp, category, description, rationale,
-             context, impact_level, artifacts)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             context, impact_level, artifacts, supersedes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 description = excluded.description,
                 rationale = excluded.rationale,
-                context = excluded.context
+                context = excluded.context,
+                supersedes = excluded.supersedes
         """,
             (
                 decision_data.get("decision_id") or decision_data.get("id"),
@@ -735,6 +758,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 self._serialize_json(decision_data.get("context", {})),
                 decision_data.get("impact_level", "medium"),
                 self._serialize_json(decision_data.get("artifacts", [])),
+                decision_data.get("supersedes"),
             ),
         )
         await conn.commit()
@@ -1827,6 +1851,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         trigger_context: str | None = None,
         source_session_id: str | None = None,
         project_name: str | None = None,
+        supersedes: str | None = None,
     ) -> dict[str, Any]:
         """Save a project-specific learning."""
         conn = self._ensure_connected()
@@ -1837,12 +1862,13 @@ class SQLiteBackend(BaseDatabaseBackend):
             INSERT INTO project_learnings (
                 id, project_path, project_name, category, trigger_context,
                 learning_content, source_session_id, success_count, failure_count,
-                last_used, promoted_to_universal, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, FALSE, ?)
+                last_used, promoted_to_universal, created_at, supersedes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, FALSE, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 learning_content = excluded.learning_content,
                 trigger_context = excluded.trigger_context,
                 project_name = excluded.project_name,
+                supersedes = excluded.supersedes,
                 last_used = excluded.last_used
         """,
             (
@@ -1855,6 +1881,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 source_session_id,
                 now,
                 now,
+                supersedes,
             ),
         )
         await conn.commit()
@@ -2118,6 +2145,9 @@ class SQLiteBackend(BaseDatabaseBackend):
                 FROM decisions d
                 JOIN sessions s ON d.session_id = s.id
                 WHERE s.project_name = ? AND d.timestamp > ?
+                  AND d.id NOT IN (
+                      SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
+                  )
                 ORDER BY d.timestamp DESC
                 LIMIT ?
                 """,
@@ -2141,13 +2171,19 @@ class SQLiteBackend(BaseDatabaseBackend):
                        project_name, source_session_id, success_count,
                        failure_count, created_at, last_used
                 FROM project_learnings
-                WHERE project_name = ?
-                   OR (project_name IS NULL AND project_path = (
-                       SELECT project_path FROM sessions
-                       WHERE project_name = ?
-                         AND project_path IS NOT NULL
-                       LIMIT 1
-                   ))
+                WHERE (
+                    project_name = ?
+                    OR (project_name IS NULL AND project_path = (
+                        SELECT project_path FROM sessions
+                        WHERE project_name = ?
+                          AND project_path IS NOT NULL
+                        LIMIT 1
+                    ))
+                )
+                  AND id NOT IN (
+                      SELECT supersedes FROM project_learnings
+                      WHERE supersedes IS NOT NULL
+                  )
                 ORDER BY success_count DESC, last_used DESC
                 LIMIT ?
                 """,

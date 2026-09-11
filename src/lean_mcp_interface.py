@@ -231,7 +231,9 @@ class LeanMCPInterface:
                 "session_search(query=Y) FIRST to find existing decisions covering the "
                 "same ground; extend or supersede rather than re-log. "
                 "**DISCIPLINE**: pass project_name explicitly — never let it fall back "
-                "to _unbound_."
+                "to _unbound_. "
+                "**CORRECTING**: pass supersedes=<prior entry id> to retire a wrong "
+                "entry instead of logging a contradictory duplicate."
             ),
             "schema": {
                 "type": "object",
@@ -280,6 +282,14 @@ class LeanMCPInterface:
                             "If True, opt into the legacy '_unbound_' fallback when no "
                             "session identifier is provided. Deprecated — pass project_name "
                             "or session_name explicitly instead."
+                        ),
+                    },
+                    "supersedes": {
+                        "type": "string",
+                        "description": (
+                            "ID of a prior entry this one corrects. The superseded entry "
+                            "stops being surfaced by session_recall. Retires a wrong entry "
+                            "without deleting it."
                         ),
                     },
                 },
@@ -810,7 +820,9 @@ class LeanMCPInterface:
                 "prefer updating or extending it over creating a duplicate. "
                 "**DISCIPLINE**: pass at least one of session_id, session_name, or "
                 "project_name. Use allow_unbound=true to opt into the legacy unbound "
-                "fallback (deprecated)."
+                "fallback (deprecated). "
+                "**CORRECTING**: pass supersedes=<prior entry id> to retire a wrong "
+                "entry instead of logging a contradictory duplicate."
             ),
             "schema": {
                 "type": "object",
@@ -856,6 +868,14 @@ class LeanMCPInterface:
                         "description": (
                             "If True, opt into the legacy '_unbound_' fallback when no "
                             "session identifier is provided. Deprecated."
+                        ),
+                    },
+                    "supersedes": {
+                        "type": "string",
+                        "description": (
+                            "ID of a prior entry this one corrects. The superseded entry "
+                            "stops being surfaced by session_recall. Retires a wrong entry "
+                            "without deleting it."
                         ),
                     },
                 },

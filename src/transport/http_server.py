@@ -46,6 +46,7 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -53,6 +54,7 @@ from core.session_engine import SessionIntelligenceEngine
 from lean_mcp_interface import LeanMCPInterface
 from persistence import DatabaseConfig, create_database, sanitize_dsn
 from transport.mcp_session_manager import MCPSessionManager
+from transport.persist_tracker import PersistDigestTracker
 from transport.security import (
     LocalhostOnlyMiddleware,
     SecurityConfig,
@@ -124,7 +126,7 @@ class NotificationManager:
             "data": data,
             "timestamp": datetime.now().isoformat(),
         }
-        for queue in self._subscribers.values():
+        for queue in list(self._subscribers.values()):
             await queue.put(notification)
 
     def get_subscriber_count(self) -> int:
@@ -165,6 +167,11 @@ class HTTPSessionIntelligenceServer:
         self.mcp_session_manager: MCPSessionManager | None = None
         self.notification_manager: NotificationManager | None = None
 
+        # Change detection for _persist_sessions_to_database (issue #67): skips
+        # re-upserting cache entries whose payload has not changed since the
+        # last successful write.
+        self.persist_tracker = PersistDigestTracker()
+
     @asynccontextmanager
     async def lifespan(self, app: FastAPI) -> AsyncGenerator[None, None]:
         """Application lifespan manager."""
@@ -181,6 +188,26 @@ class HTTPSessionIntelligenceServer:
             use_filesystem=False,  # HTTP transport uses database, not local filesystem
             database=self.database,  # Pass database for persistence
         )
+
+        # Issue #69: sweep stale 'active' sessions to 'abandoned' once per process
+        # start, BEFORE checking for a resumable session below. Without this,
+        # get_active_session_for_project's staleness guard only hides old rows
+        # from reads -- they never leave status='active' in the DB.
+        reaped_count = await self.database.reap_abandoned_sessions()
+        if reaped_count:
+            logger.info(f"Reaped {reaped_count} abandoned session(s) (status: active -> abandoned)")
+
+        # Issue #70: sweep stale 'running' agent_executions to 'abandoned', same
+        # rationale as reap_abandoned_sessions above -- catches executions whose
+        # stop event never arrived (crash, restart, killed agent) and that
+        # reconcile-on-finalize (session_engine._finalize_session) could not
+        # reach because their session was never explicitly finalized either.
+        reaped_executions_count = await self.database.reap_stale_executions()
+        if reaped_executions_count:
+            logger.info(
+                f"Reaped {reaped_executions_count} stale agent execution(s) "
+                "(status: running -> abandoned)"
+            )
 
         # Session continuity: Check for active session for this project
         active_session = await self.database.get_active_session_for_project(self.repository_path)
@@ -551,31 +578,61 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
         return {"contents": []}
 
     async def _persist_sessions_to_database(self, request: Request) -> None:
-        """Persist all sessions from engine cache to database.
+        """Persist changed sessions from engine cache to database.
 
         Saves session-level data AND related records (decisions, agent_executions).
+
+        Only entities whose payload differs from the last successful write are
+        sent to the database (issue #67). Without this, every session-modifying
+        tool call re-upserted the entire cache, producing millions of no-op
+        UPDATEs on ``agent_executions`` and keeping autovacuum continuously busy.
         """
         database = request.app.state.database
         session_engine = request.app.state.session_engine
+        tracker = self.persist_tracker
 
-        for session_id, session in session_engine.session_cache.items():
+        written = 0
+        skipped = 0
+
+        for session_id, session in list(session_engine.session_cache.items()):
             try:
                 session_data = session.model_dump()
-                await database.save_session(session_data)
+
+                # Children are persisted separately below and are not columns of
+                # the sessions row, so they must not influence the session digest.
+                session_row = {
+                    key: value
+                    for key, value in session_data.items()
+                    if key not in ("decisions", "agents_executed")
+                }
+                digest = tracker.digest_if_changed(session_id, "session", session_row)
+                if digest is None:
+                    skipped += 1
+                else:
+                    await database.save_session(session_data)
+                    tracker.commit(session_id, "session", digest)
+                    written += 1
 
                 # Also persist decisions
-                for decision in session.decisions:
+                for index, decision in enumerate(session.decisions):
                     try:
                         decision_data = (
                             decision.model_dump() if hasattr(decision, "model_dump") else decision
                         )
                         decision_data["session_id"] = session_id
+                        entity_key = f"decision:{decision_data.get('id') or index}"
+                        digest = tracker.digest_if_changed(session_id, entity_key, decision_data)
+                        if digest is None:
+                            skipped += 1
+                            continue
                         await database.save_decision(decision_data)
+                        tracker.commit(session_id, entity_key, digest)
+                        written += 1
                     except Exception as e:
                         logger.warning(f"Failed to persist decision: {e}")
 
                 # Also persist agent executions
-                for agent_exec in session.agents_executed:
+                for index, agent_exec in enumerate(session.agents_executed):
                     try:
                         exec_data = (
                             agent_exec.model_dump()
@@ -583,7 +640,15 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                             else agent_exec
                         )
                         exec_data["session_id"] = session_id
+                        exec_id = exec_data.get("id") or exec_data.get("execution_id") or index
+                        entity_key = f"execution:{exec_id}"
+                        digest = tracker.digest_if_changed(session_id, entity_key, exec_data)
+                        if digest is None:
+                            skipped += 1
+                            continue
                         await database.save_agent_execution(exec_data)
+                        tracker.commit(session_id, entity_key, digest)
+                        written += 1
                     except Exception as e:
                         logger.warning(f"Failed to persist agent execution: {e}")
 
@@ -592,6 +657,12 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                 )
             except Exception as e:
                 logger.error(f"Failed to persist session {session_id}: {e}")
+
+        # Digests only shadow the cache; drop entries for sessions that have left
+        # it so the tracker cannot grow without bound.
+        tracker.retain(session_engine.session_cache.keys())
+
+        logger.debug(f"Persist pass: {written} written, {skipped} unchanged")
 
     async def _ensure_sessions_loaded_from_database(self, request: Request) -> None:
         """Load active sessions from database into engine cache if cache is empty.
@@ -642,6 +713,12 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                     datetime.fromisoformat(session_data["completed"])
                     if session_data.get("completed") and isinstance(session_data["completed"], str)
                     else session_data.get("completed")
+                ),
+                last_seen_at=(
+                    datetime.fromisoformat(session_data["last_seen_at"])
+                    if session_data.get("last_seen_at")
+                    and isinstance(session_data["last_seen_at"], str)
+                    else session_data.get("last_seen_at")
                 ),
                 mode=session_data.get("mode", "local"),
                 project_name=session_data.get("project_name", ""),
@@ -762,6 +839,10 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                     "error": f"Tool '{target}' not found",
                     "available_tools": list(tool_registry.keys()),
                 }
+            elif (
+                validation_error := lean_interface.validate_tool_parameters(target, tool_params)
+            ) is not None:
+                result = validation_error
             else:
                 # Tools that read/write session state - need DB sync
                 session_modifying_tools = {
@@ -773,6 +854,10 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                     "session_find_solution",
                     "session_update_solution_outcome",
                     "session_track_file_operation",
+                    # session_monitor_health now resolves session_name/project_name
+                    # scope through the database (issue #77), so it needs the same
+                    # pre-call DB sync as the other scope-resolving tools.
+                    "session_monitor_health",
                 }
 
                 try:
@@ -952,7 +1037,7 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
         """Add REST API endpoints for tool-like queries."""
 
         @app.post("/tools/agent_query_learnings")
-        async def agent_query_learnings(request: Request) -> dict[str, Any]:
+        async def agent_query_learnings(request: Request) -> JSONResponse:
             """Query learnings for a specific agent with text search and filtering."""
             body = await request.json()
             agent_name = body.get("agent_name")
@@ -987,26 +1072,31 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             learnings = learnings[:limit]
 
             # Format response
-            return {
-                "status": "success",
-                "learnings": [
+            return JSONResponse(
+                status_code=200,
+                content=jsonable_encoder(
                     {
-                        "id": ln.id,
-                        "category": ln.learning_type,
-                        "learning_content": ln.content,
-                        "trigger_context": ln.source_context,
-                        "success_count": int(ln.times_applied * ln.success_rate),
-                        "failure_count": int(ln.times_applied * (1 - ln.success_rate)),
-                        "success_rate": ln.success_rate,
-                        "last_used": ln.updated_at,
+                        "status": "success",
+                        "learnings": [
+                            {
+                                "id": ln.id,
+                                "category": ln.learning_type,
+                                "learning_content": ln.content,
+                                "trigger_context": ln.source_context,
+                                "success_count": int(ln.times_applied * ln.success_rate),
+                                "failure_count": int(ln.times_applied * (1 - ln.success_rate)),
+                                "success_rate": ln.success_rate,
+                                "last_used": ln.updated_at,
+                            }
+                            for ln in learnings
+                        ],
+                        "total_matches": len(learnings),
                     }
-                    for ln in learnings
-                ],
-                "total_matches": len(learnings),
-            }
+                ),
+            )
 
         @app.post("/tools/session_find_solution")
-        async def session_find_solution(request: Request) -> dict[str, Any]:
+        async def session_find_solution(request: Request) -> JSONResponse:
             """Cross-agent solution search, scoped to project or universal."""
             body = await request.json()
             error_context = body.get("error_context", "")
@@ -1051,10 +1141,13 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             solutions.sort(key=lambda x: x["success_count"], reverse=True)
             solutions = solutions[:limit]
 
-            return {"status": "success", "solutions": solutions}
+            return JSONResponse(
+                status_code=200,
+                content=jsonable_encoder({"status": "success", "solutions": solutions}),
+            )
 
         @app.post("/tools/session_log_learning")
-        async def session_log_learning(request: Request) -> dict[str, Any]:
+        async def session_log_learning(request: Request) -> JSONResponse:
             """Log a learning directly to database without MCP session requirement.
 
             Accepts:
@@ -1067,6 +1160,14 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                 status: success/error
                 learning_id: Generated UUID for the learning
                 message: Confirmation message
+
+            Status codes:
+                200 on save, 400 on malformed/incomplete body, 500 when the
+                write fails. This endpoint previously returned 200 for every
+                outcome (errors were serialized as plain dicts), which caused
+                callers -- notably the hooks in ~/.claude/hooks/ -- to treat
+                rejected writes as successes and silently lose data. Any new
+                failure path added here MUST carry a non-2xx status.
             """
             body = await request.json()
             category = body.get("category")
@@ -1076,11 +1177,23 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
 
             # Validate required fields
             if not category:
-                return {"status": "error", "message": "category is required"}
+                return JSONResponse(
+                    status_code=400,
+                    content={"status": "error", "message": "category is required"},
+                )
             if not learning_content:
-                return {"status": "error", "message": "learning_content is required"}
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "status": "error",
+                        "message": "learning_content is required",
+                    },
+                )
             if not project_path:
-                return {"status": "error", "message": "project_path is required"}
+                return JSONResponse(
+                    status_code=400,
+                    content={"status": "error", "message": "project_path is required"},
+                )
 
             database = request.app.state.database
 
@@ -1097,17 +1210,23 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                     source_session_id=None,  # No MCP session required
                 )
 
-                return {
-                    "status": "success",
-                    "learning_id": learning_id,
-                    "message": f"Learning saved to project {project_path}",
-                }
+                return JSONResponse(
+                    status_code=200,
+                    content={
+                        "status": "success",
+                        "learning_id": learning_id,
+                        "message": f"Learning saved to project {project_path}",
+                    },
+                )
             except Exception as e:
                 logger.exception(f"Failed to save learning: {e}")
-                return {"status": "error", "message": str(e)}
+                return JSONResponse(
+                    status_code=500,
+                    content={"status": "error", "message": str(e)},
+                )
 
         @app.post("/tools/query_project_learnings")
-        async def query_project_learnings(request: Request) -> dict[str, Any]:
+        async def query_project_learnings(request: Request) -> JSONResponse:
             """Query project learnings from database.
 
             Accepts:
@@ -1127,7 +1246,10 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             limit = body.get("limit", 20)
 
             if not project_path:
-                return {"status": "error", "message": "project_path is required"}
+                return JSONResponse(
+                    status_code=400,
+                    content={"status": "error", "message": "project_path is required"},
+                )
 
             database = request.app.state.database
 
@@ -1148,14 +1270,22 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                         or query_lower in (ln.get("trigger_context") or "").lower()
                     ]
 
-                return {
-                    "status": "success",
-                    "learnings": learnings,
-                    "count": len(learnings),
-                }
+                return JSONResponse(
+                    status_code=200,
+                    content=jsonable_encoder(
+                        {
+                            "status": "success",
+                            "learnings": learnings,
+                            "count": len(learnings),
+                        }
+                    ),
+                )
             except Exception as e:
                 logger.exception(f"Failed to query learnings: {e}")
-                return {"status": "error", "message": str(e)}
+                return JSONResponse(
+                    status_code=500,
+                    content={"status": "error", "message": str(e)},
+                )
 
     async def run(self) -> None:
         """Run the HTTP server."""

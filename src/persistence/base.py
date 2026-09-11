@@ -13,6 +13,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -22,6 +23,55 @@ DEFAULT_DATA_DIR = Path.home() / ".claude" / "session-intelligence"
 DEFAULT_POSTGRES_DSN = "postgresql://localhost/session_intelligence"
 # SQLite path for testing (SQLite is test-only, not for production)
 DEFAULT_SQLITE_PATH = DEFAULT_DATA_DIR / "sessions.db"
+
+# Issue #69: staleness threshold (hours) for 'active' sessions. A session
+# that never received an explicit finalize call stays 'active' forever
+# unless something reaps it. This single constant backs both the read guard
+# (get_active_session_for_project / find_recent_session_by_project) and the
+# startup sweep (reap_abandoned_sessions) in both backends, so they can never
+# drift apart. Overridable via SESSION_INTELLIGENCE_SESSION_MAX_AGE_HOURS.
+DEFAULT_SESSION_MAX_AGE_HOURS = 24
+
+
+def get_session_max_age_hours() -> int:
+    """Return the staleness threshold (hours) for 'active' sessions.
+
+    Issue #82: guards and sweeps compare against COALESCE(last_seen_at,
+    started_at), so a session that has been heartbeat-updated is judged by
+    its most recent activity rather than only its creation time. Rows
+    predating the last_seen_at migration fall back to started_at via the
+    same COALESCE, so behavior is unaffected until they receive a heartbeat.
+    """
+    raw = os.environ.get("SESSION_INTELLIGENCE_SESSION_MAX_AGE_HOURS")
+    if raw is None:
+        return DEFAULT_SESSION_MAX_AGE_HOURS
+    try:
+        return int(raw)
+    except ValueError:
+        return DEFAULT_SESSION_MAX_AGE_HOURS
+
+
+# Issue #70: staleness threshold (hours) for 'running' agent_executions. The
+# SubagentStop hook ("agent_stop" phase) is the only signal that transitions
+# an execution out of RUNNING (see session_engine.py). If that event never
+# arrives -- agent killed, session ends mid-flight, hook fails/times out,
+# server restart between start and stop -- the row stays 'running' forever,
+# permanently inflating the success_rate denominator (see get_agent_stats).
+# Mirrors DEFAULT_SESSION_MAX_AGE_HOURS / get_session_max_age_hours() exactly
+# so the two staleness sweeps cannot drift apart in behavior. Overridable via
+# SESSION_INTELLIGENCE_EXECUTION_MAX_AGE_HOURS.
+DEFAULT_EXECUTION_MAX_AGE_HOURS = 24
+
+
+def get_execution_max_age_hours() -> int:
+    """Return the staleness threshold (hours) for 'running' agent_executions."""
+    raw = os.environ.get("SESSION_INTELLIGENCE_EXECUTION_MAX_AGE_HOURS")
+    if raw is None:
+        return DEFAULT_EXECUTION_MAX_AGE_HOURS
+    try:
+        return int(raw)
+    except ValueError:
+        return DEFAULT_EXECUTION_MAX_AGE_HOURS
 
 
 def get_default_data_dir() -> Path:
@@ -138,8 +188,14 @@ class DatabaseBackend(Protocol):
         limit: int = 50,
         project_path: str | None = None,
         status: str | None = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """Query sessions with optional filters."""
+        """Query sessions with optional filters.
+
+        Ordered by started_at DESC with `id` as a tiebreaker, so paginating by
+        `offset` cannot skip or repeat rows that share a timestamp. Paginate by
+        increasing offset until fewer than `limit` rows are returned.
+        """
         ...
 
     async def get_active_session_for_project(self, project_path: str) -> dict[str, Any] | None:
@@ -150,21 +206,49 @@ class DatabaseBackend(Protocol):
         """Delete a session by ID. Returns True if deleted."""
         ...
 
+    async def reap_abandoned_sessions(self, older_than_hours: int | None = None) -> int:
+        """Flip stale 'active' sessions to 'abandoned'. Returns rows affected.
+
+        Distinct from 'completed': an abandoned session never received an
+        explicit finalize call, so the status stays honest about that.
+        Defaults to get_session_max_age_hours() when older_than_hours is None.
+        """
+        ...
+
+    async def reap_stale_executions(self, older_than_hours: int | None = None) -> int:
+        """Flip stale 'running' agent_executions to 'abandoned'. Returns rows affected.
+
+        Issue #70: reconcile-on-finalize (see session_engine._finalize_session)
+        catches executions whose session was explicitly finalized; this sweep
+        catches the rest (server restart, crash, etc.) so no execution stays
+        'running' forever. Defaults to get_execution_max_age_hours() when
+        older_than_hours is None.
+        """
+        ...
+
     # Decision operations
     async def save_decision(self, decision_data: dict[str, Any]) -> None:
         """Save a decision."""
         ...
 
     async def query_decisions_by_category(
-        self, category: str, limit: int = 100
+        self, category: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
-        """Query decisions by category across sessions."""
+        """Query decisions by category across sessions.
+
+        Ordered by timestamp DESC with `id` as a tiebreaker; paginated like
+        query_sessions.
+        """
         ...
 
     async def query_decisions_by_session(
-        self, session_id: str, limit: int = 100
+        self, session_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
-        """Query decisions for a specific session."""
+        """Query decisions for a specific session.
+
+        Ordered by timestamp DESC with `id` as a tiebreaker; paginated like
+        query_sessions.
+        """
         ...
 
     # Metrics operations
@@ -177,9 +261,13 @@ class DatabaseBackend(Protocol):
         ...
 
     async def query_metrics_by_session(
-        self, session_id: str, limit: int = 100
+        self, session_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
-        """Query metrics for a specific session."""
+        """Query metrics for a specific session.
+
+        Ordered by timestamp DESC with `id` as a tiebreaker; paginated like
+        query_sessions.
+        """
         ...
 
     # Notes operations
@@ -189,6 +277,19 @@ class DatabaseBackend(Protocol):
 
     async def query_notes_by_date(self, date: str, limit: int = 100) -> list[dict[str, Any]]:
         """Query notes by date across sessions."""
+        ...
+
+    async def query_notes(self, limit: int = 1000, offset: int = 0) -> list[dict[str, Any]]:
+        """Query notes across all sessions, ordered by id.
+
+        Unlike query_notes_by_date this does NOT join sessions, so notes whose
+        session row is missing (orphans) are still returned. Paginate by
+        increasing offset until fewer than `limit` rows are returned.
+        """
+        ...
+
+    async def query_mcp_sessions(self, limit: int = 1000, offset: int = 0) -> list[dict[str, Any]]:
+        """Query MCP session mappings, ordered by a stable key. Paginated like query_notes."""
         ...
 
     # Agent execution operations
@@ -201,8 +302,13 @@ class DatabaseBackend(Protocol):
         session_id: str | None = None,
         agent_name: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """Query agent executions with optional filters."""
+        """Query agent executions with optional filters.
+
+        Ordered by started_at DESC with `id` as a tiebreaker; paginated like
+        query_sessions.
+        """
         ...
 
     async def get_agent_stats(self, time_window_hours: int = 168) -> dict[str, Any]:
@@ -292,6 +398,7 @@ class BaseDatabaseBackend:
             "id": row.get("id"),
             "started": row.get("started_at") or row.get("started"),
             "completed": row.get("ended_at") or row.get("completed"),
+            "last_seen_at": row.get("last_seen_at"),
             "project_path": row.get("project_path", ""),
             "project_name": row.get("project_name"),
             "mode": row.get("mode", "local"),

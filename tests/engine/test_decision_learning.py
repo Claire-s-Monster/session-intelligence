@@ -14,7 +14,7 @@ asyncio_mode = "auto" (from pyproject.toml) — no @pytest.mark.asyncio needed.
 
 import pytest
 
-from core.session_engine import SessionIntelligenceEngine
+from core.session_engine import SessionIntelligenceEngine, UNKNOWN_PROJECT_PATH
 from models.session_models import DecisionResult, LearningResult
 
 
@@ -239,12 +239,11 @@ async def test_query_learnings_by_category(engine):
         allow_unbound=True,
     )
 
-    project_path = str(engine.claude_sessions_path.parent)
     error_fix_rows = await engine.database.query_project_learnings(
-        project_path=project_path, category="error_fix"
+        project_path=UNKNOWN_PROJECT_PATH, category="error_fix"
     )
     pattern_rows = await engine.database.query_project_learnings(
-        project_path=project_path, category="pattern"
+        project_path=UNKNOWN_PROJECT_PATH, category="pattern"
     )
 
     assert any("UTC timestamps" in r["learning_content"] for r in error_fix_rows)
@@ -266,8 +265,7 @@ async def test_update_learning_usage(engine):
     update = await engine.database.update_learning_usage(learning_id, success=True)
     assert update["updated"] is True
 
-    project_path = str(engine.claude_sessions_path.parent)
-    rows = await engine.database.query_project_learnings(project_path=project_path)
+    rows = await engine.database.query_project_learnings(project_path=UNKNOWN_PROJECT_PATH)
     matching = [r for r in rows if r["id"] == learning_id]
     assert matching
     # success_count was 1 on insert, now incremented to 2

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 try:
@@ -25,7 +26,14 @@ try:
 except ImportError:
     asyncpg = None  # type: ignore
 
-from .base import DEFAULT_POSTGRES_DSN, BaseDatabaseBackend, db_retry, sanitize_dsn
+from .base import (
+    DEFAULT_POSTGRES_DSN,
+    BaseDatabaseBackend,
+    db_retry,
+    get_execution_max_age_hours,
+    get_session_max_age_hours,
+    sanitize_dsn,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +53,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         id TEXT PRIMARY KEY,
         started_at TIMESTAMPTZ NOT NULL,
         ended_at TIMESTAMPTZ,
+        last_seen_at TIMESTAMPTZ,
         project_path TEXT NOT NULL,
         project_name TEXT,
         session_name TEXT,
@@ -132,6 +141,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         agent_type TEXT,
         started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         completed_at TIMESTAMPTZ,
+        last_seen_at TIMESTAMPTZ,
         status TEXT DEFAULT 'running',
         execution_steps JSONB DEFAULT '[]',
         performance JSONB DEFAULT '{}',
@@ -177,7 +187,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         COUNT(CASE WHEN status = 'error' THEN 1 END) as failed,
         AVG(EXTRACT(EPOCH FROM (completed_at - started_at))) as avg_duration_seconds
     FROM agent_executions
-    WHERE completed_at IS NOT NULL
+    -- Issue #70: 'abandoned' executions never reported a stop event and are
+    -- unknown, not failed -- excluded from the denominator entirely so they
+    -- cannot silently understate the success rate.
+    WHERE completed_at IS NOT NULL AND status != 'abandoned'
     GROUP BY agent_name;
 
     CREATE OR REPLACE VIEW decision_summary AS
@@ -398,6 +411,25 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 "ON project_learnings(project_name) WHERE project_name IS NOT NULL"
             )
 
+            # Issue #82: idempotent migration for existing databases: add
+            # last_seen_at heartbeat column to sessions and agent_executions.
+            # Immediately backfilled from the start-time column so existing
+            # rows do not become more reap-able than they are today.
+            await conn.execute(
+                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ"
+            )
+            await conn.execute(
+                "UPDATE sessions SET last_seen_at = started_at WHERE last_seen_at IS NULL"
+            )
+            await conn.execute(
+                "ALTER TABLE agent_executions "
+                "ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ"
+            )
+            await conn.execute(
+                "UPDATE agent_executions SET last_seen_at = started_at "
+                "WHERE last_seen_at IS NULL"
+            )
+
         self._is_connected = True
         logger.info(f"PostgreSQL database initialized: {sanitize_dsn(self.dsn)}")
 
@@ -477,15 +509,20 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         if isinstance(ended_at, str):
             ended_at = datetime.fromisoformat(ended_at.replace("Z", "+00:00"))
 
+        last_seen_at = session_data.get("last_seen_at") or started_at
+        if isinstance(last_seen_at, str):
+            last_seen_at = datetime.fromisoformat(last_seen_at.replace("Z", "+00:00"))
+
         async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO sessions
-                (id, started_at, ended_at, project_path, project_name, session_name,
-                 mode, status, metadata, performance_metrics, health_status)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                (id, started_at, ended_at, last_seen_at, project_path, project_name,
+                 session_name, mode, status, metadata, performance_metrics, health_status)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
                 ON CONFLICT (id) DO UPDATE SET
                     ended_at = EXCLUDED.ended_at,
+                    last_seen_at = EXCLUDED.last_seen_at,
                     status = EXCLUDED.status,
                     session_name = EXCLUDED.session_name,
                     metadata = EXCLUDED.metadata,
@@ -495,6 +532,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 session_data["id"],
                 started_at,
                 ended_at,
+                last_seen_at,
                 session_data.get("project_path", ""),
                 session_data.get("project_name"),
                 session_data.get("session_name"),
@@ -528,6 +566,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         limit: int = 50,
         project_path: str | None = None,
         status: str | None = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Query sessions with optional filters."""
         pool = self._ensure_connected()
@@ -545,8 +584,11 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             params.append(status)
             param_idx += 1
 
-        query += f" ORDER BY started_at DESC LIMIT ${param_idx}"
+        query += f" ORDER BY started_at DESC, id DESC LIMIT ${param_idx}"
         params.append(limit)
+        param_idx += 1
+        query += f" OFFSET ${param_idx}"
+        params.append(offset)
 
         async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
@@ -554,22 +596,88 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     @db_retry
     async def get_active_session_for_project(self, project_path: str) -> dict[str, Any] | None:
-        """Get the most recent active session for a project path."""
+        """Get the most recent active session for a project path.
+
+        Issue #69: excludes sessions older than get_session_max_age_hours() so a
+        session abandoned without an explicit finalize is not resurrected as the
+        current session for new work. Issue #82: staleness is judged by
+        COALESCE(last_seen_at, started_at) so a heartbeat-updated session is not
+        excluded just because it started long ago.
+        """
         pool = self._ensure_connected()
+        cutoff = datetime.now(UTC) - timedelta(hours=get_session_max_age_hours())
 
         async with pool.acquire() as conn:
             row = await conn.fetchrow(
                 """
                 SELECT * FROM sessions
                 WHERE project_path = $1 AND status = 'active'
+                  AND COALESCE(last_seen_at, started_at) >= $2
                 ORDER BY started_at DESC
                 LIMIT 1
                 """,
                 project_path,
+                cutoff,
             )
             if row:
                 return self._normalize_session_data(self._from_record(row))
             return None
+
+    @db_retry
+    async def reap_abandoned_sessions(self, older_than_hours: int | None = None) -> int:
+        """Flip stale 'active' sessions to 'abandoned'. Returns rows affected.
+
+        Issue #69: run once at server startup so no process resurrects a
+        months-old 'active' session via get_active_session_for_project /
+        find_recent_session_by_project. Uses 'abandoned', not 'completed', so
+        the data stays honest about never having been finalized. Issue #82:
+        staleness is judged by COALESCE(last_seen_at, started_at), matching
+        the read guard, so a heartbeat-updated session is not reaped early.
+        """
+        pool = self._ensure_connected()
+        hours = older_than_hours if older_than_hours is not None else get_session_max_age_hours()
+        cutoff = datetime.now(UTC) - timedelta(hours=hours)
+
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE sessions
+                SET status = 'abandoned'
+                WHERE status = 'active' AND COALESCE(last_seen_at, started_at) < $1
+                """,
+                cutoff,
+            )
+            try:
+                return int(result.split()[-1])
+            except (IndexError, ValueError):
+                return 0
+
+    @db_retry
+    async def reap_stale_executions(self, older_than_hours: int | None = None) -> int:
+        """Flip stale 'running' agent_executions to 'abandoned'. Returns rows affected.
+
+        Issue #70: run once at server startup, alongside reap_abandoned_sessions,
+        so an execution whose stop event never arrives doesn't stay 'running'
+        forever and inflate the success_rate denominator (see get_agent_stats).
+        Issue #82: staleness is judged by COALESCE(last_seen_at, started_at).
+        """
+        pool = self._ensure_connected()
+        hours = older_than_hours if older_than_hours is not None else get_execution_max_age_hours()
+        cutoff = datetime.now(UTC) - timedelta(hours=hours)
+
+        async with pool.acquire() as conn:
+            result = await conn.execute(
+                """
+                UPDATE agent_executions
+                SET status = 'abandoned', completed_at = COALESCE(completed_at, NOW())
+                WHERE status = 'running' AND COALESCE(last_seen_at, started_at) < $1
+                """,
+                cutoff,
+            )
+            try:
+                return int(result.split()[-1])
+            except (IndexError, ValueError):
+                return 0
 
     @db_retry
     async def delete_session(self, session_id: str) -> bool:
@@ -634,20 +742,41 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
         Returns the most-recent match (ORDER BY started_at DESC LIMIT 1), or None
         if no matching session exists.
+
+        Issue #69: when status == 'active', excludes sessions older than
+        get_session_max_age_hours() -- same staleness guard as
+        get_active_session_for_project, applied here too so this lookup can't
+        reintroduce the abandoned-session-resurrection bug by a second path.
+        Issue #82: staleness is judged by COALESCE(last_seen_at, started_at).
         """
         pool = self._ensure_connected()
 
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                """
-                SELECT * FROM sessions
-                WHERE project_name = $1 AND status = $2
-                ORDER BY started_at DESC
-                LIMIT 1
-                """,
-                project_name,
-                status,
-            )
+            if status == "active":
+                cutoff = datetime.now(UTC) - timedelta(hours=get_session_max_age_hours())
+                row = await conn.fetchrow(
+                    """
+                    SELECT * FROM sessions
+                    WHERE project_name = $1 AND status = $2
+                      AND COALESCE(last_seen_at, started_at) >= $3
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    project_name,
+                    status,
+                    cutoff,
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    SELECT * FROM sessions
+                    WHERE project_name = $1 AND status = $2
+                    ORDER BY started_at DESC
+                    LIMIT 1
+                    """,
+                    project_name,
+                    status,
+                )
             if row:
                 return self._normalize_session_data(self._from_record(row))
             return None
@@ -690,7 +819,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     @db_retry
     async def query_decisions_by_category(
-        self, category: str, limit: int = 100
+        self, category: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
         """Query decisions by category across sessions."""
         pool = self._ensure_connected()
@@ -702,16 +831,17 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 FROM decisions d
                 JOIN sessions s ON d.session_id = s.id
                 WHERE d.category = $1
-                ORDER BY d.timestamp DESC
-                LIMIT $2
+                ORDER BY d.timestamp DESC, d.id DESC
+                LIMIT $2 OFFSET $3
                 """,
                 category,
                 limit,
+                offset,
             )
             return [self._from_record(row) for row in rows]
 
     async def query_decisions_by_session(
-        self, session_id: str, limit: int = 100
+        self, session_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
         """Query decisions for a specific session."""
         pool = self._ensure_connected()
@@ -721,11 +851,12 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 """
                 SELECT * FROM decisions
                 WHERE session_id = $1
-                ORDER BY timestamp DESC
-                LIMIT $2
+                ORDER BY timestamp DESC, id DESC
+                LIMIT $2 OFFSET $3
                 """,
                 session_id,
                 limit,
+                offset,
             )
             return [self._from_record(row) for row in rows]
 
@@ -779,7 +910,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             return [self._from_record(row) for row in rows]
 
     async def query_metrics_by_session(
-        self, session_id: str, limit: int = 100
+        self, session_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
         """Query metrics for a specific session."""
         pool = self._ensure_connected()
@@ -789,18 +920,30 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 """
                 SELECT * FROM metrics
                 WHERE session_id = $1
-                ORDER BY timestamp DESC
-                LIMIT $2
+                ORDER BY timestamp DESC, id DESC
+                LIMIT $2 OFFSET $3
                 """,
                 session_id,
                 limit,
+                offset,
             )
             return [self._from_record(row) for row in rows]
 
     # Notes operations
 
     async def save_note(self, note_data: dict[str, Any]) -> None:
-        """Save a session note."""
+        """Save a session note.
+
+        Idempotent when note_data carries a non-None "id": the row is
+        upserted by id via ON CONFLICT. Without an "id" this is a plain
+        insert, preserving prior behaviour for normal note creation — two
+        id-less notes with identical content still produce two rows.
+
+        NOTE: notes.id is SERIAL. Explicit-id inserts do not advance the
+        sequence, so callers that preserve ids across a bulk load (e.g. the
+        migrator) must call resync_notes_sequence() afterward or later
+        auto-assigned inserts can collide with an existing id.
+        """
         pool = self._ensure_connected()
 
         from datetime import date
@@ -809,16 +952,51 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         if isinstance(note_date, str):
             note_date = date.fromisoformat(note_date)
 
+        note_id = note_data.get("id")
+        async with pool.acquire() as conn:
+            if note_id is not None:
+                await conn.execute(
+                    """
+                    INSERT INTO notes (id, session_id, date, content, tags)
+                    VALUES ($1, $2, $3, $4, $5)
+                    ON CONFLICT (id) DO UPDATE SET
+                        session_id = EXCLUDED.session_id,
+                        date = EXCLUDED.date,
+                        content = EXCLUDED.content,
+                        tags = EXCLUDED.tags
+                    """,
+                    note_id,
+                    note_data["session_id"],
+                    note_date,
+                    note_data["content"],
+                    json.dumps(note_data.get("tags", [])),
+                )
+            else:
+                await conn.execute(
+                    """
+                    INSERT INTO notes (session_id, date, content, tags)
+                    VALUES ($1, $2, $3, $4)
+                    """,
+                    note_data["session_id"],
+                    note_date,
+                    note_data["content"],
+                    json.dumps(note_data.get("tags", [])),
+                )
+
+    async def resync_notes_sequence(self) -> None:
+        """Resync the notes.id SERIAL sequence after explicit-id inserts.
+
+        Explicit-id inserts (e.g. from save_note during migration) bypass the
+        sequence, so subsequent auto-assigned inserts could otherwise collide
+        with a preserved id. Call this once after any bulk load that preserves
+        ids.
+        """
+        pool = self._ensure_connected()
+
         async with pool.acquire() as conn:
             await conn.execute(
-                """
-                INSERT INTO notes (session_id, date, content, tags)
-                VALUES ($1, $2, $3, $4)
-                """,
-                note_data["session_id"],
-                note_date,
-                note_data["content"],
-                json.dumps(note_data.get("tags", [])),
+                "SELECT setval(pg_get_serial_sequence('notes','id'), "
+                "COALESCE((SELECT MAX(id) FROM notes), 0) + 1, false)"
             )
 
     async def query_notes_by_date(self, date: str, limit: int = 100) -> list[dict[str, Any]]:
@@ -846,6 +1024,25 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             for row in rows:
                 result = self._from_record(row)
                 # Normalize DATE column: PostgreSQL returns datetime.date, tests expect string
+                if "date" in result and not isinstance(result["date"], str):
+                    result["date"] = str(result["date"])
+                results.append(result)
+            return results
+
+    async def query_notes(self, limit: int = 1000, offset: int = 0) -> list[dict[str, Any]]:
+        """Query notes across all sessions, ordered by id. Not joined to sessions,
+        so orphaned notes (missing session row) are still returned."""
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM notes ORDER BY id LIMIT $1 OFFSET $2",
+                limit,
+                offset,
+            )
+            results = []
+            for row in rows:
+                result = self._from_record(row)
                 if "date" in result and not isinstance(result["date"], str):
                     result["date"] = str(result["date"])
                 results.append(result)
@@ -948,7 +1145,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     async def query_session_summaries(
         self,
-        project_path: str | None = None,
+        project_name: str | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
@@ -958,16 +1155,16 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         async with pool.acquire() as conn:
             if tags:
                 # Query by tags using JSONB containment
-                if project_path:
+                if project_name:
                     query = """
                         SELECT ss.*, s.project_path, s.project_name
                         FROM session_summaries ss
                         JOIN sessions s ON ss.session_id = s.id
-                        WHERE ss.tags @> $1::jsonb AND s.project_path = $2
+                        WHERE ss.tags @> $1::jsonb AND s.project_name = $2
                         ORDER BY ss.created_at DESC
                         LIMIT $3
                     """
-                    rows = await conn.fetch(query, json.dumps([tags[0]]), project_path, limit)
+                    rows = await conn.fetch(query, json.dumps([tags[0]]), project_name, limit)
                 else:
                     query = """
                         SELECT ss.*, s.project_path, s.project_name
@@ -978,17 +1175,17 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                         LIMIT $2
                     """
                     rows = await conn.fetch(query, json.dumps([tags[0]]), limit)
-            elif project_path:
+            elif project_name:
                 # Query by project
                 query = """
                     SELECT ss.*, s.project_path, s.project_name
                     FROM session_summaries ss
                     JOIN sessions s ON ss.session_id = s.id
-                    WHERE s.project_path = $1
+                    WHERE s.project_name = $1
                     ORDER BY ss.created_at DESC
                     LIMIT $2
                 """
-                rows = await conn.fetch(query, project_path, limit)
+                rows = await conn.fetch(query, project_name, limit)
             else:
                 # Query all recent
                 query = """
@@ -1223,15 +1420,20 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         if isinstance(completed_at, str):
             completed_at = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
 
+        last_seen_at = execution_data.get("last_seen_at") or started_at
+        if isinstance(last_seen_at, str):
+            last_seen_at = datetime.fromisoformat(last_seen_at.replace("Z", "+00:00"))
+
         async with pool.acquire() as conn:
             await conn.execute(
                 """
                 INSERT INTO agent_executions
                 (id, session_id, agent_name, agent_type, started_at, completed_at,
-                 status, execution_steps, performance, errors)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                 last_seen_at, status, execution_steps, performance, errors)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
                 ON CONFLICT (id) DO UPDATE SET
                     completed_at = EXCLUDED.completed_at,
+                    last_seen_at = EXCLUDED.last_seen_at,
                     status = EXCLUDED.status,
                     execution_steps = EXCLUDED.execution_steps,
                     performance = EXCLUDED.performance,
@@ -1243,6 +1445,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 execution_data.get("agent_type"),
                 started_at,
                 completed_at,
+                last_seen_at,
                 str(execution_data.get("status", "running")),
                 json.dumps(execution_data.get("execution_steps", []), default=str),
                 json.dumps(execution_data.get("performance", {}), default=str),
@@ -1254,6 +1457,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         session_id: str | None = None,
         agent_name: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Query agent executions with optional filters."""
         pool = self._ensure_connected()
@@ -1271,8 +1475,11 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             params.append(agent_name)
             param_idx += 1
 
-        query += f" ORDER BY started_at DESC LIMIT ${param_idx}"
+        query += f" ORDER BY started_at DESC, id DESC LIMIT ${param_idx}"
         params.append(limit)
+        param_idx += 1
+        query += f" OFFSET ${param_idx}"
+        params.append(offset)
 
         async with pool.acquire() as conn:
             rows = await conn.fetch(query, *params)
@@ -1298,6 +1505,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 SELECT agent_type, agent_name, status, performance, started_at, completed_at
                 FROM agent_executions
                 WHERE started_at >= NOW() - ($1 * INTERVAL '1 hour')
+                    AND status != 'abandoned'
                 ORDER BY started_at DESC
                 """,
                 time_window_hours,
@@ -1456,6 +1664,18 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 engine_session_id,
                 mcp_session_id,
             )
+
+    async def query_mcp_sessions(self, limit: int = 1000, offset: int = 0) -> list[dict[str, Any]]:
+        """Query MCP session mappings, ordered by mcp_session_id (the primary key)."""
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT * FROM mcp_sessions ORDER BY mcp_session_id LIMIT $1 OFFSET $2",
+                limit,
+                offset,
+            )
+            return [self._from_record(row) for row in rows]
 
     # Maintenance operations
 

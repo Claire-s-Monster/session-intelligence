@@ -13,13 +13,18 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
 
-from .base import DEFAULT_SQLITE_PATH, BaseDatabaseBackend
+from .base import (
+    DEFAULT_SQLITE_PATH,
+    BaseDatabaseBackend,
+    get_execution_max_age_hours,
+    get_session_max_age_hours,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +44,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         id TEXT PRIMARY KEY,
         started_at TEXT NOT NULL,
         ended_at TEXT,
+        last_seen_at TEXT,
         project_path TEXT NOT NULL,
         project_name TEXT,
         session_name TEXT,
@@ -128,6 +134,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         agent_type TEXT,
         started_at TEXT NOT NULL,
         completed_at TEXT,
+        last_seen_at TEXT,
         status TEXT DEFAULT 'running',
         execution_steps TEXT,
         performance TEXT,
@@ -390,6 +397,38 @@ class SQLiteBackend(BaseDatabaseBackend):
         except Exception as e:
             logger.debug(f"project_learnings project_name index creation: {e}")
 
+        # Issue #82: idempotent migration for existing databases: add
+        # last_seen_at heartbeat column to sessions and agent_executions.
+        # Immediately backfilled from the start-time column so existing rows
+        # do not become more reap-able than they are today.
+        try:
+            await self._connection.execute(
+                "ALTER TABLE sessions ADD COLUMN last_seen_at TEXT"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+        await self._connection.execute(
+            "UPDATE sessions SET last_seen_at = started_at WHERE last_seen_at IS NULL"
+        )
+        await self._connection.commit()
+
+        try:
+            await self._connection.execute(
+                "ALTER TABLE agent_executions ADD COLUMN last_seen_at TEXT"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
+
+        await self._connection.execute(
+            "UPDATE agent_executions SET last_seen_at = started_at WHERE last_seen_at IS NULL"
+        )
+        await self._connection.commit()
+
         self._is_connected = True
         logger.info(f"SQLite database initialized: {self.db_path}")
 
@@ -426,17 +465,20 @@ class SQLiteBackend(BaseDatabaseBackend):
         """Save or update a session."""
         conn = self._ensure_connected()
 
+        started_at = session_data.get("started") or session_data.get("started_at")
+
         await conn.execute(
             """
             INSERT OR REPLACE INTO sessions
-            (id, started_at, ended_at, project_path, project_name, session_name,
-             mode, status, metadata, performance_metrics, health_status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, started_at, ended_at, last_seen_at, project_path, project_name,
+             session_name, mode, status, metadata, performance_metrics, health_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 session_data["id"],
-                session_data.get("started") or session_data.get("started_at"),
+                started_at,
                 session_data.get("completed") or session_data.get("ended_at"),
+                session_data.get("last_seen_at") or started_at,
                 session_data.get("project_path", ""),
                 session_data.get("project_name"),
                 session_data.get("session_name"),
@@ -466,6 +508,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         limit: int = 50,
         project_path: str | None = None,
         status: str | None = None,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Query sessions with optional filters."""
         conn = self._ensure_connected()
@@ -480,30 +523,88 @@ class SQLiteBackend(BaseDatabaseBackend):
             query += " AND status = ?"
             params.append(status)
 
-        query += " ORDER BY started_at DESC LIMIT ?"
+        query += " ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?"
         params.append(limit)
+        params.append(offset)
 
         cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
         return [self._normalize_session_data(dict(row)) for row in rows]
 
     async def get_active_session_for_project(self, project_path: str) -> dict[str, Any] | None:
-        """Get the most recent active session for a project path."""
+        """Get the most recent active session for a project path.
+
+        Issue #69: excludes sessions older than get_session_max_age_hours() so a
+        session abandoned without an explicit finalize is not resurrected as the
+        current session for new work. Issue #82: staleness is judged by
+        COALESCE(last_seen_at, started_at) so a heartbeat-updated session is not
+        excluded just because it started long ago.
+        """
         conn = self._ensure_connected()
+        cutoff = (datetime.now(UTC) - timedelta(hours=get_session_max_age_hours())).isoformat()
 
         cursor = await conn.execute(
             """
             SELECT * FROM sessions
             WHERE project_path = ? AND status = 'active'
+              AND COALESCE(last_seen_at, started_at) >= ?
             ORDER BY started_at DESC
             LIMIT 1
             """,
-            (project_path,),
+            (project_path, cutoff),
         )
         row = await cursor.fetchone()
         if row:
             return self._normalize_session_data(dict(row))
         return None
+
+    async def reap_abandoned_sessions(self, older_than_hours: int | None = None) -> int:
+        """Flip stale 'active' sessions to 'abandoned'. Returns rows affected.
+
+        Issue #69: run once at server startup so no process resurrects a
+        months-old 'active' session via get_active_session_for_project /
+        find_recent_session_by_project. Uses 'abandoned', not 'completed', so
+        the data stays honest about never having been finalized. Issue #82:
+        staleness is judged by COALESCE(last_seen_at, started_at), matching
+        the read guard, so a heartbeat-updated session is not reaped early.
+        """
+        conn = self._ensure_connected()
+        hours = older_than_hours if older_than_hours is not None else get_session_max_age_hours()
+        cutoff = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+
+        cursor = await conn.execute(
+            """
+            UPDATE sessions
+            SET status = 'abandoned'
+            WHERE status = 'active' AND COALESCE(last_seen_at, started_at) < ?
+            """,
+            (cutoff,),
+        )
+        await conn.commit()
+        return cursor.rowcount
+
+    async def reap_stale_executions(self, older_than_hours: int | None = None) -> int:
+        """Flip stale 'running' agent_executions to 'abandoned'. Returns rows affected.
+
+        Issue #70: see postgresql.py counterpart for rationale. Run once at
+        server startup, alongside reap_abandoned_sessions. Issue #82:
+        staleness is judged by COALESCE(last_seen_at, started_at).
+        """
+        conn = self._ensure_connected()
+        hours = older_than_hours if older_than_hours is not None else get_execution_max_age_hours()
+        cutoff = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+        now = datetime.now(UTC).isoformat()
+
+        cursor = await conn.execute(
+            """
+            UPDATE agent_executions
+            SET status = 'abandoned', completed_at = COALESCE(completed_at, ?)
+            WHERE status = 'running' AND COALESCE(last_seen_at, started_at) < ?
+            """,
+            (now, cutoff),
+        )
+        await conn.commit()
+        return cursor.rowcount
 
     async def delete_session(self, session_id: str) -> bool:
         """Delete a session by ID."""
@@ -568,18 +669,39 @@ class SQLiteBackend(BaseDatabaseBackend):
 
         Returns the most-recent match (ORDER BY started_at DESC LIMIT 1), or None
         if no matching session exists.
+
+        Issue #69: when status == 'active', excludes sessions older than
+        get_session_max_age_hours() -- same staleness guard as
+        get_active_session_for_project, applied here too so this lookup can't
+        reintroduce the abandoned-session-resurrection bug by a second path.
+        Issue #82: staleness is judged by COALESCE(last_seen_at, started_at).
         """
         conn = self._ensure_connected()
 
-        cursor = await conn.execute(
-            """
-            SELECT * FROM sessions
-            WHERE project_name = ? AND status = ?
-            ORDER BY started_at DESC
-            LIMIT 1
-            """,
-            (project_name, status),
-        )
+        if status == "active":
+            cutoff = (
+                datetime.now(UTC) - timedelta(hours=get_session_max_age_hours())
+            ).isoformat()
+            cursor = await conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE project_name = ? AND status = ?
+                  AND COALESCE(last_seen_at, started_at) >= ?
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (project_name, status, cutoff),
+            )
+        else:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM sessions
+                WHERE project_name = ? AND status = ?
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (project_name, status),
+            )
 
         row = await cursor.fetchone()
         if row:
@@ -598,6 +720,10 @@ class SQLiteBackend(BaseDatabaseBackend):
             (id, session_id, timestamp, category, description, rationale,
              context, impact_level, artifacts)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                description = excluded.description,
+                rationale = excluded.rationale,
+                context = excluded.context
         """,
             (
                 decision_data.get("decision_id") or decision_data.get("id"),
@@ -614,7 +740,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         await conn.commit()
 
     async def query_decisions_by_category(
-        self, category: str, limit: int = 100
+        self, category: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
         """Query decisions by category across sessions."""
         conn = self._ensure_connected()
@@ -625,16 +751,16 @@ class SQLiteBackend(BaseDatabaseBackend):
             FROM decisions d
             JOIN sessions s ON d.session_id = s.id
             WHERE d.category = ?
-            ORDER BY d.timestamp DESC
-            LIMIT ?
+            ORDER BY d.timestamp DESC, d.id DESC
+            LIMIT ? OFFSET ?
         """,
-            (category, limit),
+            (category, limit, offset),
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
     async def query_decisions_by_session(
-        self, session_id: str, limit: int = 100
+        self, session_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
         """Query decisions for a specific session."""
         conn = self._ensure_connected()
@@ -643,10 +769,10 @@ class SQLiteBackend(BaseDatabaseBackend):
             """
             SELECT * FROM decisions
             WHERE session_id = ?
-            ORDER BY timestamp DESC
-            LIMIT ?
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ? OFFSET ?
         """,
-            (session_id, limit),
+            (session_id, limit, offset),
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -695,7 +821,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         return [dict(row) for row in rows]
 
     async def query_metrics_by_session(
-        self, session_id: str, limit: int = 100
+        self, session_id: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:
         """Query metrics for a specific session."""
         conn = self._ensure_connected()
@@ -704,10 +830,10 @@ class SQLiteBackend(BaseDatabaseBackend):
             """
             SELECT * FROM metrics
             WHERE session_id = ?
-            ORDER BY timestamp DESC
-            LIMIT ?
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ? OFFSET ?
         """,
-            (session_id, limit),
+            (session_id, limit, offset),
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -715,21 +841,46 @@ class SQLiteBackend(BaseDatabaseBackend):
     # Notes operations
 
     async def save_note(self, note_data: dict[str, Any]) -> None:
-        """Save a session note."""
+        """Save a session note.
+
+        Idempotent when note_data carries a non-None "id": the row is
+        upserted by id (SQLite AUTOINCREMENT bookkeeping in sqlite_sequence
+        is updated automatically on explicit-id inserts, so no sequence
+        resync is needed here, unlike PostgreSQL's SERIAL). Without an "id"
+        this is a plain insert, preserving prior behaviour for normal note
+        creation — two id-less notes with identical content still produce
+        two rows.
+        """
         conn = self._ensure_connected()
 
-        await conn.execute(
-            """
-            INSERT INTO notes (session_id, date, content, tags)
-            VALUES (?, ?, ?, ?)
-        """,
-            (
-                note_data["session_id"],
-                note_data.get("date", datetime.now().strftime("%Y-%m-%d")),
-                note_data["content"],
-                self._serialize_json(note_data.get("tags", [])),
-            ),
-        )
+        note_id = note_data.get("id")
+        if note_id is not None:
+            await conn.execute(
+                """
+                INSERT OR REPLACE INTO notes (id, session_id, date, content, tags)
+                VALUES (?, ?, ?, ?, ?)
+            """,
+                (
+                    note_id,
+                    note_data["session_id"],
+                    note_data.get("date", datetime.now().strftime("%Y-%m-%d")),
+                    note_data["content"],
+                    self._serialize_json(note_data.get("tags", [])),
+                ),
+            )
+        else:
+            await conn.execute(
+                """
+                INSERT INTO notes (session_id, date, content, tags)
+                VALUES (?, ?, ?, ?)
+            """,
+                (
+                    note_data["session_id"],
+                    note_data.get("date", datetime.now().strftime("%Y-%m-%d")),
+                    note_data["content"],
+                    self._serialize_json(note_data.get("tags", [])),
+                ),
+            )
         await conn.commit()
 
     async def query_notes_by_date(self, date: str, limit: int = 100) -> list[dict[str, Any]]:
@@ -746,6 +897,18 @@ class SQLiteBackend(BaseDatabaseBackend):
             LIMIT ?
         """,
             (date, limit),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def query_notes(self, limit: int = 1000, offset: int = 0) -> list[dict[str, Any]]:
+        """Query notes across all sessions, ordered by id. Not joined to sessions,
+        so orphaned notes (missing session row) are still returned."""
+        conn = self._ensure_connected()
+
+        cursor = await conn.execute(
+            "SELECT * FROM notes ORDER BY id LIMIT ? OFFSET ?",
+            (limit, offset),
         )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
@@ -830,7 +993,7 @@ class SQLiteBackend(BaseDatabaseBackend):
 
     async def query_session_summaries(
         self,
-        project_path: str | None = None,
+        project_name: str | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
@@ -848,22 +1011,22 @@ class SQLiteBackend(BaseDatabaseBackend):
                 )
             """
             params: list[Any] = [tags[0]]  # Match first tag
-            if project_path:
-                query += " AND s.project_path = ?"
-                params.append(project_path)
+            if project_name:
+                query += " AND s.project_name = ?"
+                params.append(project_name)
             query += " ORDER BY ss.created_at DESC LIMIT ?"
             params.append(limit)
-        elif project_path:
+        elif project_name:
             # Query by project
             query = """
                 SELECT ss.*, s.project_path, s.project_name
                 FROM session_summaries ss
                 JOIN sessions s ON ss.session_id = s.id
-                WHERE s.project_path = ?
+                WHERE s.project_name = ?
                 ORDER BY ss.created_at DESC
                 LIMIT ?
             """
-            params = [project_path, limit]
+            params = [project_name, limit]
         else:
             # Query all recent
             query = """
@@ -911,13 +1074,14 @@ class SQLiteBackend(BaseDatabaseBackend):
             or self._get_timestamp()
         )
         completed_at = execution_data.get("completed_at") or execution_data.get("completed")
+        last_seen_at = execution_data.get("last_seen_at") or started_at
 
         await conn.execute(
             """
             INSERT OR REPLACE INTO agent_executions
             (id, session_id, agent_name, agent_type, started_at, completed_at,
-             status, execution_steps, performance, errors)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             last_seen_at, status, execution_steps, performance, errors)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
             (
                 execution_id,
@@ -926,6 +1090,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 execution_data.get("agent_type"),
                 started_at,
                 completed_at,
+                last_seen_at,
                 str(execution_data.get("status", "running")),
                 self._serialize_json(execution_data.get("execution_steps", [])),
                 self._serialize_json(execution_data.get("performance", {})),
@@ -939,6 +1104,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         session_id: str | None = None,
         agent_name: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         """Query agent executions with optional filters."""
         conn = self._ensure_connected()
@@ -953,8 +1119,9 @@ class SQLiteBackend(BaseDatabaseBackend):
             query += " AND agent_name = ?"
             params.append(agent_name)
 
-        query += " ORDER BY started_at DESC LIMIT ?"
+        query += " ORDER BY started_at DESC, id DESC LIMIT ? OFFSET ?"
         params.append(limit)
+        params.append(offset)
 
         cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
@@ -979,7 +1146,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             """
             SELECT agent_type, agent_name, status, performance, started_at, completed_at
             FROM agent_executions
-            WHERE started_at >= ?
+            WHERE started_at >= ? AND status != 'abandoned'
             ORDER BY started_at DESC
             """,
             (cutoff,),
@@ -1118,6 +1285,17 @@ class SQLiteBackend(BaseDatabaseBackend):
             (engine_session_id, mcp_session_id),
         )
         await conn.commit()
+
+    async def query_mcp_sessions(self, limit: int = 1000, offset: int = 0) -> list[dict[str, Any]]:
+        """Query MCP session mappings, ordered by mcp_session_id (the primary key)."""
+        conn = self._ensure_connected()
+
+        cursor = await conn.execute(
+            "SELECT * FROM mcp_sessions ORDER BY mcp_session_id LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
     # Duplicate methods removed - see lines 692-732 for session summary operations
 

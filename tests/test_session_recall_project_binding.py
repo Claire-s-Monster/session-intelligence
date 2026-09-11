@@ -103,7 +103,20 @@ async def test_log_without_create_raises_without_allow_unbound(db):
 
 
 @pytest.mark.asyncio
-async def test_create_then_log_uses_current_session(db):
+async def test_create_then_log_requires_explicit_scope(db):
+    """Issue #72 reversed this case.
+
+    Creating a session in-process used to be enough for a later unbound
+    session_log_decision to bind to it.  That premise held only for a
+    single-project engine; the HTTP transport shares ONE engine across every
+    project (http_server.py lifespan()), so the in-process flag never proved
+    the session belonged to the caller's project.
+
+    The decision must now carry an explicit scope -- and when it does, the row
+    still lands under that session.
+    """
+    from core.session_engine import SessionContextRequiredError
+
     pn = f"test-proj-{uuid.uuid4().hex[:8]}"
     engine = _make_engine(db)
     try:
@@ -116,7 +129,14 @@ async def test_create_then_log_uses_current_session(db):
 
         await db.save_session(create_result.session_data.model_dump(mode="python"))
 
-        result = await engine.session_log_decision(decision="create-then-log-probe")
+        # The ambient current session no longer licenses an unbound call.
+        with pytest.raises(SessionContextRequiredError):
+            await engine.session_log_decision(decision="create-then-log-probe")
+
+        # Passing the id that create returned is the documented replacement.
+        result = await engine.session_log_decision(
+            decision="create-then-log-probe", session_id=sid
+        )
         assert result.decision_id != "error"
 
         pool = db._ensure_connected()
@@ -127,6 +147,74 @@ async def test_create_then_log_uses_current_session(db):
         assert row is not None
     finally:
         await _cleanup(db, [pn])
+
+
+@pytest.mark.asyncio
+async def test_log_learning_with_absolute_project_path_derives_project_name(
+    db, tmp_path
+):
+    """No session identifier, but an absolute project_path: should derive a
+    project_name instead of raising, and must not bind to '_unbound_'."""
+    engine = _make_engine(db)
+    project_path = str(tmp_path)
+    result = await engine.session_log_learning(
+        category="error_fix",
+        learning_content="derive-project-name-probe",
+        project_path=project_path,
+    )
+    row = None
+    try:
+        assert result.status == "saved"
+
+        pool = db._ensure_connected()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT project_name FROM project_learnings WHERE id = $1",
+                result.id,
+            )
+        assert row is not None
+        assert row["project_name"] is not None
+        assert row["project_name"] != "_unbound_"
+    finally:
+        pool = db._ensure_connected()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM project_learnings WHERE id = $1", result.id
+            )
+            if row and row["project_name"]:
+                await conn.execute(
+                    "DELETE FROM sessions WHERE project_name = $1",
+                    row["project_name"],
+                )
+
+
+@pytest.mark.asyncio
+async def test_log_learning_without_project_path_raises(db):
+    """No session identifier and no project_path at all: must still raise."""
+    from core.session_engine import SessionContextRequiredError
+
+    engine = _make_engine(db)
+    with pytest.raises(SessionContextRequiredError):
+        await engine.session_log_learning(
+            category="error_fix",
+            learning_content="no-project-path-probe",
+            project_path=None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_log_learning_with_relative_project_path_raises(db):
+    """A relative project_path must NOT be used for derivation (guard 3):
+    derive_project_name() would resolve it against the server's own cwd."""
+    from core.session_engine import SessionContextRequiredError
+
+    engine = _make_engine(db)
+    with pytest.raises(SessionContextRequiredError):
+        await engine.session_log_learning(
+            category="error_fix",
+            learning_content="relative-project-path-probe",
+            project_path="relative/path/to/project",
+        )
 
 
 @pytest.mark.asyncio

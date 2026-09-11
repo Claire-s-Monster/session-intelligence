@@ -23,6 +23,7 @@ import argparse
 import asyncio
 import json
 import logging
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,22 @@ logger = logging.getLogger(__name__)
 class MigrationManager:
     """Handles database migrations between backends and locations."""
 
+    ENTITIES: tuple[str, ...] = (
+        "sessions",
+        "decisions",
+        "metrics",
+        "notes",
+        "agent_executions",
+        "mcp_sessions",
+    )
+
+    # Safety valve. A backend that accepted `offset` but ignored it would make
+    # the pagination loops below spin forever, which is worse than the cap this
+    # change removes. Each scan stops after this many pages and reports the stop
+    # as truncation. At the default batch_size=100 that is 10M rows per scan —
+    # far above any real source, so it never trips on an honest backend.
+    MAX_PAGES: int = 100_000
+
     def __init__(
         self,
         source: DatabaseBackend,
@@ -43,17 +60,70 @@ class MigrationManager:
     ) -> None:
         self.source = source
         self.target = target
-        self.stats: dict[str, int] = {
-            "sessions": 0,
-            "decisions": 0,
-            "metrics": 0,
-            "notes": 0,
-            "agent_executions": 0,
-            "mcp_sessions": 0,
-        }
+        self.stats: dict[str, int] = dict.fromkeys(self.ENTITIES, 0)
+        # Per-entity counts of records that raised while saving to target.
+        self.failed: dict[str, int] = dict.fromkeys(self.ENTITIES, 0)
+        # Human-readable messages: both save failures and detected truncation.
+        self.warnings: list[str] = []
+        # Set when any query hit its limit and we cannot prove nothing was
+        # left behind (no offset support on that reader).
+        self.truncated = False
+
+    def _record_failure(self, entity: str, message: str) -> None:
+        """Record a record that raised while being saved to the target."""
+        self.failed[entity] += 1
+        self.warnings.append(message)
+        logger.warning(message)
+
+    def _record_truncation(self, entity: str, message: str) -> None:
+        """Record that a query may have left records behind (hit its cap)."""
+        self.truncated = True
+        self.warnings.append(message)
+        logger.warning(message)
+
+    async def _paginate(
+        self,
+        entity: str,
+        reader: Callable[..., Awaitable[list[dict[str, Any]]]],
+        batch_size: int,
+        *args: Any,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield every row from a paginated reader, oldest page first.
+
+        Loops by `offset` until the source is exhausted, so `batch_size` bounds
+        memory per page and never caps how many rows are produced. All six
+        entities now go through here; issue #57 removed the last reader that
+        could not paginate.
+        """
+        offset = 0
+        for _ in range(self.MAX_PAGES):
+            rows = await reader(*args, limit=batch_size, offset=offset)
+            if not rows:
+                return
+            for row in rows:
+                yield row
+            if len(rows) < batch_size:
+                return
+            offset += batch_size
+
+        self._record_truncation(
+            entity,
+            f"{entity}: pagination stopped after {self.MAX_PAGES} pages of "
+            f"{batch_size} rows without the reader ever returning a short page, "
+            "which means it is ignoring `offset`; the source may not be fully migrated",
+        )
 
     async def migrate_all(self, batch_size: int = 100) -> dict[str, Any]:
-        """Migrate all data from source to target."""
+        """Migrate all data from source to target.
+
+        `batch_size` is the page size for every reader: each scan loops by
+        `offset` until the source is exhausted, so it bounds memory per page and
+        never caps the total number of rows migrated. There is no scan ceiling —
+        issue #57 added `offset` to the last five readers that lacked it, so the
+        `scan_limit` escape hatch this method used to carry is gone. The only
+        remaining truncation path is the MAX_PAGES safety valve in `_paginate`,
+        which trips only on a backend that ignores `offset`.
+        """
         start_time = datetime.now()
 
         logger.info("Starting migration...")
@@ -70,12 +140,16 @@ class MigrationManager:
 
         duration = (datetime.now() - start_time).total_seconds()
 
-        result = {
-            "status": "success",
+        is_clean = sum(self.failed.values()) == 0 and not self.truncated
+        result: dict[str, Any] = {
+            "status": "success" if is_clean else "partial",
             "duration_seconds": duration,
             "records_migrated": self.stats,
             "total_records": sum(self.stats.values()),
         }
+        if not is_clean:
+            result["warnings"] = list(self.warnings)
+            result["failed"] = {k: v for k, v in self.failed.items() if v}
 
         logger.info(f"Migration completed in {duration:.2f}s")
         logger.info(f"Total records migrated: {sum(self.stats.values())}")
@@ -85,50 +159,59 @@ class MigrationManager:
     async def _migrate_sessions(self, batch_size: int) -> None:
         """Migrate sessions table."""
         logger.info("Migrating sessions...")
-        sessions = await self.source.query_sessions(limit=10000)
 
-        for session in sessions:
+        async for session in self._paginate("sessions", self.source.query_sessions, batch_size):
             try:
                 await self.target.save_session(session)
                 self.stats["sessions"] += 1
             except Exception as e:
-                logger.warning(f"Failed to migrate session {session.get('id')}: {e}")
+                self._record_failure(
+                    "sessions", f"Failed to migrate session {session.get('id')}: {e}"
+                )
 
         logger.info(f"  Migrated {self.stats['sessions']} sessions")
 
     async def _migrate_decisions(self, batch_size: int) -> None:
-        """Migrate decisions table."""
+        """Migrate decisions table.
+
+        Decisions are collected into a dict keyed by id BEFORE saving, so a
+        decision found by both the category loop and the session fallback
+        loop (uncategorized decisions) is saved and counted exactly once.
+        """
         logger.info("Migrating decisions...")
 
-        # Query decisions by common categories
         categories = [
             "architecture",
             "implementation",
             "testing",
             "deployment",
             "refactoring",
-            None,  # Uncategorized
         ]
 
-        for category in categories:
-            if category:
-                decisions = await self.source.query_decisions_by_category(category, limit=10000)
-            else:
-                # Get all decisions not in known categories via session
-                sessions = await self.source.query_sessions(limit=10000)
-                decisions = []
-                for session in sessions:
-                    session_decisions = await self.source.query_decisions_by_session(
-                        session["id"], limit=1000
-                    )
-                    decisions.extend(session_decisions)
+        collected: dict[Any, dict[str, Any]] = {}
 
-            for decision in decisions:
-                try:
-                    await self.target.save_decision(decision)
-                    self.stats["decisions"] += 1
-                except Exception as e:
-                    logger.warning(f"Failed to migrate decision {decision.get('id')}: {e}")
+        for category in categories:
+            async for decision in self._paginate(
+                "decisions", self.source.query_decisions_by_category, batch_size, category
+            ):
+                collected[decision.get("id")] = decision
+
+        # Uncategorized decisions: pull all decisions per session and keep
+        # only the ones not already collected above.
+        async for session in self._paginate("decisions", self.source.query_sessions, batch_size):
+            async for decision in self._paginate(
+                "decisions", self.source.query_decisions_by_session, batch_size, session["id"]
+            ):
+                collected.setdefault(decision.get("id"), decision)
+
+        for decision in collected.values():
+            try:
+                await self.target.save_decision(decision)
+                self.stats["decisions"] += 1
+            except Exception as e:
+                self._record_failure(
+                    "decisions", f"Failed to migrate decision {decision.get('id')}: {e}"
+                )
 
         logger.info(f"  Migrated {self.stats['decisions']} decisions")
 
@@ -136,36 +219,43 @@ class MigrationManager:
         """Migrate metrics table."""
         logger.info("Migrating metrics...")
 
-        # Get metrics via sessions
-        sessions = await self.source.query_sessions(limit=10000)
-        for session in sessions:
-            metrics = await self.source.query_metrics_by_session(session["id"], limit=1000)
-            for metric in metrics:
+        async for session in self._paginate("metrics", self.source.query_sessions, batch_size):
+            async for metric in self._paginate(
+                "metrics", self.source.query_metrics_by_session, batch_size, session["id"]
+            ):
                 try:
                     await self.target.save_metrics(metric)
                     self.stats["metrics"] += 1
                 except Exception as e:
-                    logger.warning(f"Failed to migrate metric: {e}")
+                    self._record_failure("metrics", f"Failed to migrate metric: {e}")
 
         logger.info(f"  Migrated {self.stats['metrics']} metrics")
 
     async def _migrate_notes(self, batch_size: int) -> None:
-        """Migrate notes table."""
+        """Migrate notes table.
+
+        Paginated full scan via query_notes (not joined to sessions, so
+        orphaned notes are included), superseding the old 365-day walk which
+        silently dropped anything older than a year, capped each day at
+        1000, and never surfaced the cap.
+        """
         logger.info("Migrating notes...")
 
-        # Get notes for recent dates
-        from datetime import timedelta
+        async for note in self._paginate("notes", self.source.query_notes, batch_size):
+            try:
+                await self.target.save_note(note)
+                self.stats["notes"] += 1
+            except Exception as e:
+                self._record_failure("notes", f"Failed to migrate note {note.get('id')}: {e}")
 
-        for days_ago in range(365):  # Last year
-            date = (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
-            notes = await self.source.query_notes_by_date(date, limit=1000)
-
-            for note in notes:
-                try:
-                    await self.target.save_note(note)
-                    self.stats["notes"] += 1
-                except Exception as e:
-                    logger.warning(f"Failed to migrate note: {e}")
+        # notes.id is SERIAL on PostgreSQL; explicit-id inserts (preserving
+        # source ids for idempotency) don't advance the sequence. Resync it
+        # if the target supports it. SQLite's AUTOINCREMENT bookkeeping is
+        # updated automatically on explicit-id inserts, so no equivalent call
+        # exists there — this is not an oversight.
+        resync = getattr(self.target, "resync_notes_sequence", None)
+        if resync is not None:
+            await resync()
 
         logger.info(f"  Migrated {self.stats['notes']} notes")
 
@@ -173,23 +263,37 @@ class MigrationManager:
         """Migrate agent_executions table."""
         logger.info("Migrating agent executions...")
 
-        executions = await self.source.query_agent_executions(limit=10000)
-        for execution in executions:
+        async for execution in self._paginate(
+            "agent_executions", self.source.query_agent_executions, batch_size
+        ):
             try:
                 await self.target.save_agent_execution(execution)
                 self.stats["agent_executions"] += 1
             except Exception as e:
-                logger.warning(f"Failed to migrate agent execution {execution.get('id')}: {e}")
+                self._record_failure(
+                    "agent_executions",
+                    f"Failed to migrate agent execution {execution.get('id')}: {e}",
+                )
 
         logger.info(f"  Migrated {self.stats['agent_executions']} agent executions")
 
     async def _migrate_mcp_sessions(self, batch_size: int) -> None:
-        """Migrate mcp_sessions table."""
+        """Migrate mcp_sessions table via a paginated full scan."""
         logger.info("Migrating MCP sessions...")
 
-        # MCP sessions don't have a query_all method, so we skip or implement differently
-        # For now, we'll log that this needs manual handling if needed
-        logger.info("  MCP sessions migration: manual review recommended")
+        async for mcp_session in self._paginate(
+            "mcp_sessions", self.source.query_mcp_sessions, batch_size
+        ):
+            try:
+                await self.target.save_mcp_session(mcp_session)
+                self.stats["mcp_sessions"] += 1
+            except Exception as e:
+                self._record_failure(
+                    "mcp_sessions",
+                    f"Failed to migrate MCP session {mcp_session.get('mcp_session_id')}: {e}",
+                )
+
+        logger.info(f"  Migrated {self.stats['mcp_sessions']} MCP sessions")
 
 
 async def migrate_local_to_global(

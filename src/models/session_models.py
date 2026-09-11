@@ -21,6 +21,7 @@ class SessionStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     RECOVERED = "recovered"
+    ABANDONED = "abandoned"  # Issue #69: reaped for staleness, never explicitly finalized
 
 
 class ExecutionStatus(StrEnum):
@@ -31,6 +32,7 @@ class ExecutionStatus(StrEnum):
     SUCCESS = "success"
     ERROR = "error"
     SKIPPED = "skipped"
+    ABANDONED = "abandoned"  # Issue #70: never reported agent_stop; distinct from ERROR
 
 
 class ImpactLevel(StrEnum):
@@ -254,6 +256,7 @@ class AgentExecution(BaseModel):
     execution_id: str
     started: datetime
     completed: datetime | None = None
+    last_seen_at: datetime | None = None
     status: ExecutionStatus = ExecutionStatus.RUNNING
     execution_steps: list[ExecutionStep] = Field(default_factory=list)
     context: AgentContext
@@ -451,6 +454,7 @@ class Session(BaseModel):
     id: str
     started: datetime
     completed: datetime | None = None
+    last_seen_at: datetime | None = None
     mode: str = "local"  # local, remote, hybrid
     project_name: str
     project_path: str

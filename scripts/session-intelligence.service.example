@@ -1,6 +1,6 @@
 [Unit]
 Description=Session Intelligence MCP HTTP Server
-Documentation=https://github.com/MementoRC/session-intelligence
+Documentation=https://github.com/Claire-s-Monster/session-intelligence
 After=network.target postgresql.service
 Requires=postgresql.service
 

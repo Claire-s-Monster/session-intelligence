@@ -14,7 +14,7 @@ import inspect
 
 import pytest
 
-from core.session_engine import SessionIntelligenceEngine
+from core.session_engine import SessionContextRequiredError, SessionIntelligenceEngine
 from models.session_models import SessionHealthResult, SessionResult, SessionStatus
 
 
@@ -119,10 +119,11 @@ async def test_finalize_session(engine):
     create_result = await _create_session(engine)
     session_id = create_result.session_id
 
-    # Set the engine's current session pointer so finalize can find it
-    engine._current_session_id = session_id
-
-    finalize_result = await engine.session_manage_lifecycle(operation="finalize")
+    # Pass explicit scope (issue #77): finalize no longer resolves an
+    # unscoped call via ambient `_current_session_id`/session_cache state.
+    finalize_result = await engine.session_manage_lifecycle(
+        operation="finalize", session_id=session_id
+    )
 
     assert finalize_result.status == "success"
     assert finalize_result.operation == "finalize"
@@ -130,17 +131,26 @@ async def test_finalize_session(engine):
     assert finalize_result.session_data.status == SessionStatus.COMPLETED
 
 
-async def test_finalize_nonexistent_session(engine):
-    """Finalizing when no session was explicitly created still completes without
-    raising an exception — _finalize_session auto-creates a session via
-    _get_or_create_current_session_id, so the result is either 'success'
-    (auto-created and finalized) or 'error' (no session found). We verify no
-    exception is raised and that the result is a valid SessionResult."""
-    result = await engine.session_manage_lifecycle(operation="finalize")
+async def test_finalize_nonexistent_session_requires_scope(engine):
+    """Issue #77: finalizing with no session_id/session_name/project_name and
+    no allow_unbound now raises SessionContextRequiredError instead of
+    silently falling back to ambient `_get_or_create_current_session_id()`
+    state -- on a shared engine that state can belong to a different
+    project entirely."""
+    with pytest.raises(SessionContextRequiredError):
+        await engine.session_manage_lifecycle(operation="finalize")
+
+
+async def test_finalize_nonexistent_session_allow_unbound_still_completes(engine):
+    """The allow_unbound=True escape hatch preserves the pre-#77 ambient
+    behavior: it auto-creates/uses the ambient session and finalizes it
+    without raising."""
+    result = await engine.session_manage_lifecycle(
+        operation="finalize", allow_unbound=True
+    )
 
     assert isinstance(result, SessionResult)
     assert result.operation == "finalize"
-    # Valid terminal status — engine either auto-created+finalized or returned error
     assert result.status in {"success", "error"}
 
 
@@ -167,7 +177,7 @@ async def test_session_health_check(engine):
     create_result = await _create_session(engine)
     session_id = create_result.session_id
 
-    health = engine.session_monitor_health(session_id=session_id)
+    health = await engine.session_monitor_health(session_id=session_id)
 
     assert isinstance(health, SessionHealthResult)
     assert isinstance(health.health_score, float)
@@ -176,7 +186,7 @@ async def test_session_health_check(engine):
 
 async def test_session_health_no_session_returns_zero(engine):
     """Health monitoring with no active session returns health_score=0.0."""
-    health = engine.session_monitor_health(session_id="nonexistent-id")
+    health = await engine.session_monitor_health(session_id="nonexistent-id")
 
     assert health.health_score == 0.0
     assert len(health.issues) > 0
@@ -187,7 +197,7 @@ async def test_session_health_includes_diagnostics(engine):
     create_result = await _create_session(engine)
     session_id = create_result.session_id
 
-    health = engine.session_monitor_health(
+    health = await engine.session_monitor_health(
         session_id=session_id, include_diagnostics=True
     )
 
@@ -201,7 +211,7 @@ async def test_session_health_custom_checks(engine):
     create_result = await _create_session(engine)
     session_id = create_result.session_id
 
-    health = engine.session_monitor_health(
+    health = await engine.session_monitor_health(
         session_id=session_id,
         health_checks=["state"],  # only state check
     )

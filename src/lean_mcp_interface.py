@@ -81,23 +81,55 @@ class LeanMCPInterface:
                         "description": "Session mode",
                     },
                     "project_name": {"type": "string", "description": "Project context (optional)"},
+                    "project_path": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the caller's project, recorded on the "
+                            "created session. Relative paths are ignored (they would "
+                            "resolve against the server's cwd, not the caller's)."
+                        ),
+                    },
                     "metadata": {"description": "Additional session metadata"},
                     "auto_recovery": {
                         "type": "boolean",
                         "default": True,
                         "description": "Enable automatic recovery",
                     },
+                    "session_id": {
+                        "type": "string",
+                        "description": (
+                            "Explicit session to resume/finalize/validate. "
+                            "Required (with session_name/project_name as alternatives) "
+                            "for operations other than 'create'."
+                        ),
+                    },
+                    "session_name": {
+                        "type": "string",
+                        "description": (
+                            "Session name to resolve against for resume/finalize/validate."
+                        ),
+                    },
+                    "allow_unbound": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "For resume/finalize/validate: opt into the legacy "
+                            "'_unbound_' ambient-session fallback instead of raising "
+                            "when no scope is supplied (deprecated)."
+                        ),
+                    },
                 },
                 "required": ["operation"],
             },
             "examples": [
                 {"operation": "create", "project_name": "my-project"},
-                {"operation": "resume", "mode": "hybrid"},
+                {"operation": "resume", "mode": "hybrid", "project_name": "my-project"},
+                {"operation": "finalize", "project_name": "my-project"},
             ],
         }
 
         registry["session_track_execution"] = {
-            "implementation": self._wrap_tool(self.session_engine.session_track_execution),
+            "implementation": self._wrap_async_tool(self.session_engine.session_track_execution),
             "description": "Track agent execution with pattern detection",
             "schema": {
                 "type": "object",
@@ -114,6 +146,36 @@ class LeanMCPInterface:
                         "type": "boolean",
                         "default": True,
                         "description": "Generate optimization suggestions",
+                    },
+                    "session_name": {
+                        "type": "string",
+                        "description": (
+                            "Session name to resolve against when session_id is omitted."
+                        ),
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": (
+                            "Project context to bind the execution step to when "
+                            "session_id is omitted."
+                        ),
+                    },
+                    "project_path": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the caller's project; a project_name is "
+                            "derived from it when session_id is omitted. Relative paths "
+                            "are ignored."
+                        ),
+                    },
+                    "allow_unbound": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Opt into the legacy '_unbound_' ambient-session fallback "
+                            "instead of raising when session_id is omitted and no other "
+                            "scope is supplied (deprecated)."
+                        ),
                     },
                 },
                 "required": ["agent_name", "step_data"],
@@ -202,6 +264,15 @@ class LeanMCPInterface:
                             "creates a new session if not found (and create_if_missing=True)."
                         ),
                     },
+                    "project_path": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the caller's project. When no session_id, "
+                            "session_name, or project_name is given, project_name is "
+                            "derived from this path. Relative paths are ignored (they "
+                            "would resolve against the server's cwd, not the caller's)."
+                        ),
+                    },
                     "allow_unbound": {
                         "type": "boolean",
                         "default": False,
@@ -233,7 +304,10 @@ class LeanMCPInterface:
             "implementation": self._wrap_async_tool(
                 self.session_engine.session_track_file_operation
             ),
-            "description": "Track file create/edit/delete operations for session notebook",
+            "description": (
+                "Track file create/edit/delete operations for session notebook "
+                "(requires a session/project scope)"
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -255,6 +329,34 @@ class LeanMCPInterface:
                     },
                     "summary": {"type": "string", "description": "Brief description of changes"},
                     "tool_name": {"type": "string", "description": "Tool that made the change"},
+                    "session_id": {
+                        "type": "string",
+                        "description": "Explicit session to attribute the operation to",
+                    },
+                    "session_name": {
+                        "type": "string",
+                        "description": "Session name to resolve against",
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": "Project context to bind the operation to",
+                    },
+                    "project_path": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the caller's project; a project_name is "
+                            "derived from it. Relative paths are ignored (they would "
+                            "resolve against the server's cwd, not the caller's)."
+                        ),
+                    },
+                    "allow_unbound": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Opt into the legacy '_unbound_' fallback instead of "
+                            "raising when no scope is supplied (deprecated)."
+                        ),
+                    },
                 },
                 "required": ["operation", "file_path"],
             },
@@ -299,14 +401,20 @@ class LeanMCPInterface:
         }
 
         registry["session_monitor_health"] = {
-            "implementation": self._wrap_tool(self.session_engine.session_monitor_health),
-            "description": "Real-time session health monitoring with auto-recovery",
+            "implementation": self._wrap_async_tool(self.session_engine.session_monitor_health),
+            "description": (
+                "Real-time session health monitoring with auto-recovery "
+                "(requires a session/project scope when session_id is null)"
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
                     "session_id": {
                         "type": ["string", "null"],
-                        "description": "Session to monitor (use null for current session)",
+                        "description": (
+                            "Session to monitor. If null, session_name or "
+                            "project_name (or allow_unbound=True) is required."
+                        ),
                     },
                     "health_checks": {
                         "type": "array",
@@ -327,6 +435,31 @@ class LeanMCPInterface:
                         "default": True,
                         "description": "Include detailed diagnostics",
                     },
+                    "session_name": {
+                        "type": "string",
+                        "description": "Session name to resolve against when session_id is null.",
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": "Project context to monitor when session_id is null.",
+                    },
+                    "project_path": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the caller's project; a project_name is "
+                            "derived from it when session_id is null. Relative paths "
+                            "are ignored."
+                        ),
+                    },
+                    "allow_unbound": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Opt into the legacy '_unbound_' ambient-session fallback "
+                            "instead of raising when session_id is null and no other "
+                            "scope is supplied (deprecated)."
+                        ),
+                    },
                 },
                 "required": ["session_id"],
             },
@@ -336,34 +469,12 @@ class LeanMCPInterface:
             ],
         }
 
-        registry["session_orchestrate_workflow"] = {
-            "implementation": self._wrap_tool(self.session_engine.session_orchestrate_workflow),
-            "description": "Advanced workflow orchestration with optimization",
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "workflow_type": {
-                        "type": "string",
-                        "enum": ["tdd", "atomic", "quality", "prime", "custom"],
-                        "description": "Workflow type",
-                    },
-                    "session_id": {"type": "string", "description": "Session context"},
-                    "workflow_config": {"type": "object", "description": "Workflow configuration"},
-                    "parallel_execution": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": "Enable parallel execution",
-                    },
-                    "optimize_execution": {
-                        "type": "boolean",
-                        "default": True,
-                        "description": "Optimize execution order",
-                    },
-                },
-                "required": ["workflow_type"],
-            },
-            "examples": [{"workflow_type": "tdd", "parallel_execution": True}],
-        }
+        # session_orchestrate_workflow is intentionally NOT registered here.
+        # session_engine.session_orchestrate_workflow() hardcodes
+        # state_machine={} inside WorkflowState(...), and StateMachine
+        # requires current_state: str with no default, so every call
+        # raises a pydantic ValidationError. Unregistered per #64 pending
+        # a real implementation.
 
         registry["session_analyze_commands"] = {
             "implementation": self._wrap_tool(self.session_engine.session_analyze_commands),
@@ -601,7 +712,20 @@ class LeanMCPInterface:
                 "properties": {
                     "project_path": {
                         "type": "string",
-                        "description": "Filter notebooks by project path",
+                        "description": (
+                            "Filter notebooks by project path. Accepted for "
+                            "convenience and resolved to a project_name "
+                            "internally; prefer project_name directly when "
+                            "known, since path equality is fragile (trailing "
+                            "slashes, symlinks, subdirectories)."
+                        ),
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": (
+                            "Filter notebooks by project name (preferred over "
+                            "project_path). Takes priority if both are given."
+                        ),
                     },
                     "tags": {
                         "type": "array",
@@ -618,6 +742,7 @@ class LeanMCPInterface:
             "examples": [
                 {"limit": 10},
                 {"project_path": "/home/user/my-project", "limit": 5},
+                {"project_name": "session-intelligence", "limit": 5},
                 {"tags": ["feature", "bugfix"]},
             ],
         }
@@ -772,12 +897,26 @@ class LeanMCPInterface:
                         "default": True,
                         "description": "Whether to include universal (cross-project) solutions",
                     },
+                    "project_path": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the caller's project, used to scope "
+                            "project-specific solutions. Omitting it falls back to the "
+                            "server's own working directory, which is almost never the "
+                            "caller's project. Relative paths are ignored (they would "
+                            "resolve against the server's cwd, not the caller's)."
+                        ),
+                    },
                 },
                 "required": ["error_text"],
             },
             "examples": [
                 {"error_text": "ModuleNotFoundError: No module named 'foo'"},
                 {"error_text": "TypeError: expected str, got int", "error_category": "runtime"},
+                {
+                    "error_text": "ModuleNotFoundError: No module named 'foo'",
+                    "project_path": "/home/user/projects/my-project",
+                },
             ],
         }
 
@@ -1373,31 +1512,90 @@ class LeanMCPInterface:
 
         return result
 
+    def validate_tool_parameters(
+        self, tool_name: str, parameters: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """
+        Validate parameters against a tool's declared schema.
+
+        Returns an error envelope when the call must be refused, or None when it
+        is safe to dispatch. Both the stdio meta-tool and the HTTP transport call
+        this, so a mistyped parameter name is rejected identically over either
+        one instead of reaching the engine and raising a raw TypeError.
+
+        Callers are responsible for checking registry membership first; an
+        unregistered tool has no schema to validate against and returns None.
+        Schemas without declared properties are not validated either - there is
+        nothing to check the parameters against.
+        """
+        tool_info = self.tool_registry.get(tool_name)
+        if tool_info is None:
+            return None
+
+        schema = tool_info.get("schema") or {}
+        valid_params = set(schema.get("properties", {}))
+        if not valid_params:
+            return None
+
+        unknown = sorted(set(parameters) - valid_params)
+        missing = sorted(set(schema.get("required", [])) - set(parameters))
+        if not unknown and not missing:
+            return None
+
+        problems = []
+        if unknown:
+            problems.append(f"unexpected parameter(s): {unknown}")
+        if missing:
+            problems.append(f"missing required parameter(s): {missing}")
+        return {
+            "tool": tool_name,
+            "status": "error",
+            "error": (
+                f"Invalid parameters for '{tool_name}' - "
+                f"{'; '.join(problems)}. "
+                f"Valid parameters: {sorted(valid_params)}. "
+                f"Call get_tool_spec('{tool_name}') for the full schema."
+            ),
+        }
+
     def _wrap_tool(self, tool_func):
-        """Wrap tool function with token limiting and error handling."""
+        """
+        Wrap tool function with token limiting.
+
+        Exceptions are logged and re-raised rather than turned into an
+        {"error": ...} result. Both transports catch them at the dispatch
+        boundary and report status="error"; swallowing them here made a failed
+        call surface inside a status="success" envelope (issue #61).
+        """
 
         @wraps(tool_func)
         def wrapper(*args, **kwargs):
             try:
                 result = tool_func(*args, **kwargs)
                 return apply_token_limits(result, tool_func.__name__)
-            except Exception as e:
-                logger.error(f"Error in {tool_func.__name__}: {e}")
-                return {"error": str(e), "tool": tool_func.__name__}
+            except Exception:
+                logger.exception(f"Error in {tool_func.__name__}")
+                raise
 
         return wrapper
 
     def _wrap_async_tool(self, async_tool_func):
-        """Wrap async tool function with token limiting and error handling."""
+        """
+        Wrap async tool function with token limiting.
+
+        Exceptions are logged and re-raised for the same reason as _wrap_tool
+        (issue #61) - the dispatch boundary in each transport turns them into a
+        status="error" envelope.
+        """
 
         @wraps(async_tool_func)
         async def wrapper(*args, **kwargs):
             try:
                 result = await async_tool_func(*args, **kwargs)
                 return apply_token_limits(result, async_tool_func.__name__)
-            except Exception as e:
-                logger.error(f"Error in {async_tool_func.__name__}: {e}")
-                return {"error": str(e), "tool": async_tool_func.__name__}
+            except Exception:
+                logger.exception(f"Error in {async_tool_func.__name__}")
+                raise
 
         return wrapper
 
@@ -1533,7 +1731,7 @@ class LeanMCPInterface:
                 discover_tools("learning")      # Find learning/knowledge tools
 
             MISSING TOOL? If you need an operation that's not available:
-            File an issue at https://github.com/MementoRC/session-intelligence
+            File an issue at https://github.com/Claire-s-Monster/session-intelligence
             """
             return self._discover_tools(pattern)
 
@@ -1624,7 +1822,7 @@ class LeanMCPInterface:
 
             TOOL NOT FOUND? Use discover_tools() first to find available tools.
             If the tool should exist but doesn't, file a feature request at:
-            https://github.com/MementoRC/session-intelligence
+            https://github.com/Claire-s-Monster/session-intelligence
             """
             if tool_name not in self.tool_registry:
                 available_tools = list(self.tool_registry.keys())
@@ -1713,7 +1911,7 @@ class LeanMCPInterface:
             Call discover_tools(pattern) first to find the right tool for your task.
 
             FOUND A BUG OR MISSING FEATURE?
-            File an issue at https://github.com/MementoRC/session-intelligence
+            File an issue at https://github.com/Claire-s-Monster/session-intelligence
             Include: tool name, parameters used, error message, expected vs actual behavior
             """
             import inspect
@@ -1744,6 +1942,12 @@ class LeanMCPInterface:
                     "status": "error",
                     "error": f"parameters must be a mapping, got {type(parameters).__name__}",
                 }
+
+            # Validate against the declared schema before dispatch. Shared with the
+            # HTTP transport so both refuse an invalid call identically (issue #61).
+            validation_error = self.validate_tool_parameters(tool_name, parameters)
+            if validation_error is not None:
+                return validation_error
 
             try:
                 # Execute tool - await if async, call directly if sync

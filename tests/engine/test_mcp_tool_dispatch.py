@@ -22,8 +22,15 @@ from persistence.sqlite import SQLiteBackend
 
 
 @pytest.fixture
-async def lean_interface(tmp_path):
-    """Yield a LeanMCPInterface backed by a fresh in-process SQLite database."""
+async def lean_interface(tmp_path, monkeypatch):
+    """Yield a LeanMCPInterface backed by a fresh in-process SQLite database.
+
+    Agent-name validation is disabled (mirrors the `engine` fixture in
+    tests/engine/conftest.py) so tests using synthetic agent names like
+    "test-dispatch-agent" do not depend on real files under
+    ~/.claude/agents/, which is machine-specific and would break in CI.
+    """
+    monkeypatch.setenv("SESSION_INTELLIGENCE_AGENT_VALIDATION", "off")
     db = SQLiteBackend(str(tmp_path / "test.db"))
     await db.initialize()
     engine = SessionIntelligenceEngine(
@@ -34,6 +41,19 @@ async def lean_interface(tmp_path):
     interface = LeanMCPInterface(engine)
     yield interface
     await db.close()
+
+
+def _extract_session_id(create_result: dict) -> str:
+    """Pull session_id out of a session_manage_lifecycle(create) response.
+
+    The 'result' payload may be a Pydantic model instance or a plain dict
+    depending on dispatch path, so handle both (same pattern used by
+    test_execute_session_manage_lifecycle_create below).
+    """
+    inner = create_result["result"]
+    if hasattr(inner, "session_id"):
+        return inner.session_id
+    return inner.get("session_id") or inner.get("result", {}).get("session_id")
 
 
 # ---------------------------------------------------------------------------
@@ -210,9 +230,18 @@ class TestExecuteSessionManageLifecycle:
             assert inner.get("session_id") or inner.get("result", {}).get("session_id")
 
     async def test_execute_session_manage_lifecycle_validate(self, lean_interface):
-        """execute_tool session_manage_lifecycle validate runs without error."""
+        """execute_tool session_manage_lifecycle validate runs without error.
+
+        Issue #77: validate now requires an explicit scope (session_id here)
+        rather than falling back to ambient session_cache state.
+        """
         execute = _get_meta_tool(lean_interface, "execute_tool")
-        result = await execute("session_manage_lifecycle", {"operation": "validate"})
+        create_result = await execute("session_manage_lifecycle", {"operation": "create"})
+        session_id = _extract_session_id(create_result)
+        result = await execute(
+            "session_manage_lifecycle",
+            {"operation": "validate", "session_id": session_id},
+        )
         assert result["status"] == "success"
 
 
@@ -220,9 +249,15 @@ class TestExecuteSessionTrackExecution:
     async def test_execute_session_track_execution(self, lean_interface):
         """session_track_execution succeeds with minimal params."""
         execute = _get_meta_tool(lean_interface, "execute_tool")
+        create_result = await execute("session_manage_lifecycle", {"operation": "create"})
+        session_id = _extract_session_id(create_result)
         result = await execute(
             "session_track_execution",
-            {"agent_name": "test-agent", "step_data": {"phase": "start"}},
+            {
+                "session_id": session_id,
+                "agent_name": "test-agent",
+                "step_data": {"phase": "start"},
+            },
         )
         assert result["status"] == "success"
 
@@ -231,9 +266,11 @@ class TestExecuteSessionCoordinateAgents:
     async def test_execute_session_coordinate_agents(self, lean_interface):
         """session_coordinate_agents succeeds with a minimal agents list."""
         execute = _get_meta_tool(lean_interface, "execute_tool")
+        create_result = await execute("session_manage_lifecycle", {"operation": "create"})
+        session_id = _extract_session_id(create_result)
         result = await execute(
             "session_coordinate_agents",
-            {"agents": [{"name": "agent-a"}]},
+            {"session_id": session_id, "agents": [{"name": "agent-a"}]},
         )
         assert result["status"] == "success"
 
@@ -244,7 +281,7 @@ class TestExecuteSessionLogDecision:
         execute = _get_meta_tool(lean_interface, "execute_tool")
         result = await execute(
             "session_log_decision",
-            {"decision": "Use pytest for all new tests"},
+            {"decision": "Use pytest for all new tests", "project_name": "test-project"},
         )
         assert result["status"] == "success"
 
@@ -255,7 +292,12 @@ class TestExecuteSessionTrackFileOperation:
         execute = _get_meta_tool(lean_interface, "execute_tool")
         result = await execute(
             "session_track_file_operation",
-            {"operation": "create", "file_path": "src/new_module.py", "lines_added": 10},
+            {
+                    "operation": "create",
+                    "file_path": "src/new_module.py",
+                    "lines_added": 10,
+                    "project_name": "test-project",
+                },
         )
         assert result["status"] == "success"
 
@@ -270,21 +312,56 @@ class TestExecuteSessionAnalyzePatterns:
 
 class TestExecuteSessionMonitorHealth:
     async def test_execute_session_monitor_health(self, lean_interface):
-        """session_monitor_health succeeds with session_id=None (current session)."""
+        """session_monitor_health succeeds with an explicit session_id.
+
+        Issue #77: session_id=None now requires session_name/project_name
+        (or allow_unbound=True) instead of silently resolving via ambient
+        session_cache state.
+        """
         execute = _get_meta_tool(lean_interface, "execute_tool")
-        result = await execute("session_monitor_health", {"session_id": None})
+        create_result = await execute("session_manage_lifecycle", {"operation": "create"})
+        session_id = _extract_session_id(create_result)
+        result = await execute("session_monitor_health", {"session_id": session_id})
         assert result["status"] == "success"
 
+    async def test_execute_session_monitor_health_null_session_id_requires_scope(
+        self, lean_interface
+    ):
+        """session_id=None with no session_name/project_name/allow_unbound
+        returns a status='error' envelope (SessionContextRequiredError),
+        not a silent fallback to ambient state."""
+        execute = _get_meta_tool(lean_interface, "execute_tool")
+        await execute("session_manage_lifecycle", {"operation": "create"})
+        result = await execute("session_monitor_health", {"session_id": None})
+        assert result["status"] == "error"
 
-class TestExecuteSessionOrchestrateWorkflow:
-    async def test_execute_session_orchestrate_workflow(self, lean_interface):
-        """session_orchestrate_workflow succeeds with a valid workflow_type."""
+
+class TestSessionOrchestrateWorkflowUnregistered:
+    """session_orchestrate_workflow is intentionally unregistered (#64).
+
+    The underlying engine method hardcodes state_machine={} inside
+    WorkflowState(...), and WorkflowState.state_machine is a required
+    StateMachine (whose current_state: str has no default), so every
+    call would raise a pydantic ValidationError. Rather than expose a
+    tool that can never succeed, it was removed from the registry.
+    """
+
+    async def test_not_advertised_by_discover_tools(self, lean_interface):
+        discover = _get_meta_tool(lean_interface, "discover_tools")
+        result = discover("")
+        tool_names = {tool["name"] for tool in result["available_tools"]}
+        assert "session_orchestrate_workflow" not in tool_names
+
+    async def test_execute_returns_tool_not_found(self, lean_interface):
         execute = _get_meta_tool(lean_interface, "execute_tool")
         result = await execute(
             "session_orchestrate_workflow",
             {"workflow_type": "tdd"},
         )
-        assert result["status"] == "success"
+        assert result == {
+            "error": "Tool 'session_orchestrate_workflow' not found",
+            "available_tools": list(lean_interface.tool_registry.keys()),
+        }
 
 
 class TestExecuteSessionAnalyzeCommands:
@@ -313,9 +390,9 @@ class TestExecuteSessionGetDashboard:
 
 class TestExecuteSessionCreateNotebook:
     async def test_execute_session_create_notebook(self, lean_interface):
-        """session_create_notebook succeeds with no required params."""
+        """session_create_notebook succeeds when bound to a project_name."""
         execute = _get_meta_tool(lean_interface, "execute_tool")
-        result = await execute("session_create_notebook", {})
+        result = await execute("session_create_notebook", {"project_name": "test-project"})
         assert result["status"] == "success"
 
 
@@ -352,6 +429,7 @@ class TestExecuteSessionLogLearning:
             {
                 "category": "pattern",
                 "learning_content": "Always use fixtures for shared test data.",
+                "project_name": "test-project",
             },
         )
         assert result["status"] == "success"
@@ -562,10 +640,8 @@ class TestToolWrapperIntegrity:
         import inspect
 
         sync_tools = {
-            "session_track_execution",
             "session_coordinate_agents",
             "session_analyze_patterns",
-            "session_monitor_health",
             "session_orchestrate_workflow",
             "session_analyze_commands",
             "session_track_missing_functions",

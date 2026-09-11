@@ -91,8 +91,9 @@ async def test_finalize_persists_status_completed_to_db(engine):
     assert pre is not None, "Session row missing immediately after create"
     assert pre["status"] == "active"
 
-    engine._current_session_id = session_id
-    finalize_result = await engine.session_manage_lifecycle(operation="finalize")
+    finalize_result = await engine.session_manage_lifecycle(
+        operation="finalize", session_id=session_id
+    )
     assert finalize_result.status == "success"
 
     # Post-finalize: DB row must reflect completed status. Pre-fix this
@@ -122,8 +123,7 @@ async def test_finalize_clears_active_session_for_find_recent(engine):
     assert active_before is not None
     assert active_before["id"] == session_id
 
-    engine._current_session_id = session_id
-    await engine.session_manage_lifecycle(operation="finalize")
+    await engine.session_manage_lifecycle(operation="finalize", session_id=session_id)
 
     # After finalize: no active session matches the project anymore.
     active_after = await engine.database.find_recent_session_by_project(
@@ -150,8 +150,7 @@ async def test_finalize_removes_session_from_cache(engine):
     session_id = create_result.session_id
     assert session_id in engine.session_cache
 
-    engine._current_session_id = session_id
-    await engine.session_manage_lifecycle(operation="finalize")
+    await engine.session_manage_lifecycle(operation="finalize", session_id=session_id)
 
     assert session_id not in engine.session_cache, (
         "Finalized session is still in session_cache. This violates "
@@ -179,8 +178,9 @@ async def test_disk_reload_skips_completed_session(engine_with_fs):
         operation="create", mode="local", project_name="issue-25-disk"
     )
     completed_id = create_result.session_id
-    engine_with_fs._current_session_id = completed_id
-    await engine_with_fs.session_manage_lifecycle(operation="finalize")
+    await engine_with_fs.session_manage_lifecycle(
+        operation="finalize", session_id=completed_id
+    )
 
     # Sanity: metadata file says completed.
     session_dir = engine_with_fs.claude_sessions_path / completed_id

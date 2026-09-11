@@ -9,7 +9,7 @@ import inspect
 
 import pytest
 
-from core.session_engine import SessionIntelligenceEngine
+from core.session_engine import SessionIntelligenceEngine, UNKNOWN_PROJECT_PATH
 from persistence.sqlite import SQLiteBackend
 
 
@@ -33,6 +33,7 @@ class TestAsyncAwaitBugs:
         await engine.session_log_decision(
             decision="Test decision",
             context={"rationale": "Test rationale", "category": "test"},
+            session_id=session_id,
         )
 
         decisions = await engine.database.query_decisions_by_session(session_id)
@@ -50,9 +51,8 @@ class TestAsyncAwaitBugs:
             allow_unbound=True,
         )
 
-        project_path = str(engine.claude_sessions_path.parent)
         learnings = await engine.database.query_project_learnings(
-            project_path=project_path
+            project_path=UNKNOWN_PROJECT_PATH
         )
         assert len(learnings) >= 1
 

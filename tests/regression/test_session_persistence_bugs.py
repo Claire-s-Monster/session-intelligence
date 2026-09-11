@@ -59,6 +59,7 @@ class TestSessionPersistenceBugs:
         await engine.session_log_decision(
             decision="FK test decision",
             context={"rationale": "Verify FK satisfied", "category": "test"},
+            session_id=session_id,
         )
 
         decisions = await engine.database.query_decisions_by_session(session_id)

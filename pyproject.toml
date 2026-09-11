@@ -64,7 +64,6 @@ vulture = ">=2.10"
 
 [tool.pixi.tasks]
 lean-server = { cmd = "python src/lean_server.py", env = { PYTHONPATH = "src" } }
-mcp-server = { cmd = "python -m session.server", env = { PYTHONPATH = "src" } }
 # HTTP transport server (PostgreSQL only)
 http-server = { cmd = "python src/http_lean_server.py", env = { PYTHONPATH = "src" } }
 # Daemon management
@@ -209,7 +208,6 @@ omit = [
     "*/tests/*",
     "*/__pycache__/*",
     "*/site-packages/*",
-    "src/session/server.py",  # Legacy server
 ]
 
 [tool.coverage.paths]

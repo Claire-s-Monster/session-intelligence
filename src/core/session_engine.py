@@ -116,7 +116,16 @@ class InvalidEntryContentError(ValueError):
     """Raised when logged content is a captured tool result rather than knowledge."""
 
 
-_TOOL_RESULT_ENVELOPE_RE = re.compile(r"^\s*Tool\s+'[^']*'\s+(failed|error)\b", re.IGNORECASE)
+# Closed alternation of the known generator prefixes (issue #96). Deliberately
+# under-matches: a false positive is silent data loss, because a rejection is
+# returned in-band as {"status": "error"} and wrapped in HTTP 200, so the caller
+# sees success and its content vanishes. Widen this only by adding a newly
+# observed prefix -- never by loosening the grammar to a general
+# (\w+\s+)?(tool|command) form, which also matches ordinary prose.
+_TOOL_RESULT_ENVELOPE_RE = re.compile(
+    r"^\s*(?:Tool|Bash command|MCP tool)\s+'[^']*'\s+(?:failed|error)\b",
+    re.IGNORECASE,
+)
 
 
 def _reject_tool_result_envelope(tool_name: str, field_name: str, content: str) -> None:

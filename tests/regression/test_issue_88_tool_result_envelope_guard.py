@@ -61,11 +61,45 @@ class TestToolResultEnvelopeRejected:
                 project_name="proj-a",
             )
 
-    async def test_rejects_bash_shebang_variant(self, engine):
+    # Varies the payload after the colon (a shebang line), NOT the prefix, so
+    # it does not constitute Bash-prefix coverage -- that is what
+    # test_rejects_bash_command_prefix below covers.
+    async def test_rejects_tool_prefix_with_shebang_payload(self, engine):
         with pytest.raises(InvalidEntryContentError):
             await engine.session_log_learning(
                 category="error_fix",
                 learning_content="Tool 'Write' failed: #!/usr/bin/env bash",
+                project_name="proj-a",
+            )
+
+    async def test_rejects_bash_command_prefix(self, engine):
+        with pytest.raises(InvalidEntryContentError):
+            await engine.session_log_learning(
+                category="error_fix",
+                learning_content="Bash command 'pixi' failed: exit 1",
+                project_name="proj-a",
+            )
+
+    async def test_rejects_mcp_tool_prefix(self, engine):
+        with pytest.raises(InvalidEntryContentError):
+            await engine.session_log_learning(
+                category="error_fix",
+                learning_content="MCP tool 'git_status' failed: boom",
+                project_name="proj-a",
+            )
+
+    async def test_session_log_decision_rejects_bash_command_prefix(self, engine):
+        with pytest.raises(InvalidEntryContentError):
+            await engine.session_log_decision(
+                decision="Bash command 'make' failed: exit 2",
+                project_name="proj-a",
+            )
+
+    async def test_rejects_new_prefixes_case_insensitive(self, engine):
+        with pytest.raises(InvalidEntryContentError):
+            await engine.session_log_learning(
+                category="error_fix",
+                learning_content="bash command 'x' Failed: y",
                 project_name="proj-a",
             )
 
@@ -182,6 +216,39 @@ class TestLegitimateContentIsNotRejected:
 
         result = await engine.session_log_learning(
             category="pattern",
+            learning_content=content,
+            project_name="proj-a",
+        )
+        assert result is not None
+        assert result.learning is not None
+
+    async def test_lowercase_the_tool_prefix_is_not_rejected(self, engine):
+        content = (
+            "the tool 'foo' failed because the path was wrong; fix is to "
+            "quote it"
+        )
+        result = await engine.session_log_learning(
+            category="error_fix",
+            learning_content=content,
+            project_name="proj-a",
+        )
+        assert result is not None
+        assert result.learning is not None
+
+    async def test_this_tool_prefix_is_not_rejected(self, engine):
+        content = "This tool 'ruff' failed on us until we pinned it"
+        result = await engine.session_log_learning(
+            category="error_fix",
+            learning_content=content,
+            project_name="proj-a",
+        )
+        assert result is not None
+        assert result.learning is not None
+
+    async def test_a_command_prefix_is_not_rejected(self, engine):
+        content = "a command 'make' failed intermittently -- root cause was a race"
+        result = await engine.session_log_learning(
+            category="error_fix",
             learning_content=content,
             project_name="proj-a",
         )

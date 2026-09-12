@@ -704,87 +704,23 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                 logger.debug("No active sessions found in database")
                 return
 
-            # Reconstruct Session object and add to cache
-            from models.session_models import (
-                HealthStatus,
-                PerformanceMetrics,
-                Session,
-                SessionMetadata,
-                SessionStatus,
-            )
-
-            # Build session from database data
+            # Reconstruction lives on the engine (_hydrate_session) so this
+            # transport and the notebook read paths cannot drift apart. The
+            # copy that used to live here rebuilt Decision.artifacts without
+            # the isinstance/json.loads guard and so silently mangled them on
+            # SQLite, where the column is TEXT (issue #103).
             session_id = session_data["id"]
-            session = Session(
-                id=session_id,
-                started=(
-                    datetime.fromisoformat(session_data["started"])
-                    if isinstance(session_data["started"], str)
-                    else session_data["started"]
-                ),
-                completed=(
-                    datetime.fromisoformat(session_data["completed"])
-                    if session_data.get("completed") and isinstance(session_data["completed"], str)
-                    else session_data.get("completed")
-                ),
-                last_seen_at=(
-                    datetime.fromisoformat(session_data["last_seen_at"])
-                    if session_data.get("last_seen_at")
-                    and isinstance(session_data["last_seen_at"], str)
-                    else session_data.get("last_seen_at")
-                ),
-                mode=session_data.get("mode", "local"),
-                project_name=session_data.get("project_name", ""),
-                project_path=session_data.get("project_path", project_path),
-                status=SessionStatus(session_data.get("status", "active")),
-                metadata=SessionMetadata(
-                    **session_data.get(
-                        "metadata",
-                        {"session_type": "development", "environment": "local", "user": "user"},
-                    )
-                ),
-                health_status=(
-                    HealthStatus(**session_data.get("health_status", {}))
-                    if session_data.get("health_status")
-                    else HealthStatus()
-                ),
-                performance_metrics=(
-                    PerformanceMetrics(**session_data.get("performance_metrics", {}))
-                    if session_data.get("performance_metrics")
-                    else PerformanceMetrics()
-                ),
-            )
+            session = await session_engine._hydrate_session(session_id)
+            if session is None:
+                logger.warning(
+                    f"Could not reconstruct session {session_id} from database"
+                )
+                return
 
-            # Load decisions for this session
-            decisions = await database.query_decisions_by_session(session_id)
-            if decisions:
-                from models.session_models import Decision, DecisionContext, ImpactLevel
-
-                for dec_data in decisions:
-                    try:
-                        decision = Decision(
-                            decision_id=dec_data.get("id", dec_data.get("decision_id", "")),
-                            timestamp=(
-                                datetime.fromisoformat(dec_data["timestamp"])
-                                if isinstance(dec_data["timestamp"], str)
-                                else dec_data["timestamp"]
-                            ),
-                            description=dec_data.get("description", ""),
-                            context=DecisionContext(
-                                session_id=session_id, project_state=dec_data.get("context", {})
-                            ),
-                            impact_level=ImpactLevel(dec_data.get("impact_level", "medium")),
-                            artifacts=dec_data.get("artifacts", []),
-                        )
-                        session.decisions.append(decision)
-                    except Exception as e:
-                        logger.warning(f"Failed to load decision: {e}")
-
-            # Add to cache
-            session_engine.session_cache[session_id] = session
             session_engine._current_session_id = session_id
             logger.info(
-                f"Loaded session {session_id} from database with {len(session.decisions)} decisions"
+                f"Loaded session {session_id} from database with "
+                f"{len(session.decisions)} decisions"
             )
 
         except Exception as e:

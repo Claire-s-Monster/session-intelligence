@@ -16,6 +16,7 @@ Solution: Meta-Tool Pattern
 - Zero functionality loss with massive context savings
 """
 
+import importlib.metadata
 import json
 import logging
 from functools import wraps
@@ -1676,8 +1677,59 @@ class LeanMCPInterface:
             }
         return result
 
+    def build_server_info(self, transport: str = "stdio") -> dict[str, Any]:
+        """
+        Build the server_info payload from the live tool registry.
+
+        Single source of truth for both transports (stdio/FastMCP and HTTP) —
+        neither transport should construct this payload independently, so
+        total_tools/domains cannot drift out of sync with the registry.
+
+        Args:
+            transport: The transport this payload is being served over
+                       (e.g. "stdio", "HTTP (SSE)").
+
+        Returns:
+            Dictionary describing this MCP server: identity, version,
+            support links, and a live domain/tool-count breakdown.
+        """
+        try:
+            version = importlib.metadata.version("session-intelligence")
+        except importlib.metadata.PackageNotFoundError:
+            version = "1.0.0"
+
+        domains: dict[str, int] = {}
+        for tool_name, tool_info in self.tool_registry.items():
+            domain = tool_info.get("domain") or tool_name.split("_", 1)[0]
+            domains[domain] = domains.get(domain, 0) + 1
+
+        issues_url = "https://github.com/Claire-s-Monster/session-intelligence/issues"
+
+        return {
+            "name": "session-intelligence",
+            "version": version,
+            "description": (
+                "Lean MCP server for session lifecycle, decision/learning logging, "
+                "and cross-project agent knowledge, exposed via 4 meta-tools."
+            ),
+            "repository": "https://github.com/Claire-s-Monster/session-intelligence",
+            "issues": issues_url,
+            "documentation": "https://github.com/Claire-s-Monster/session-intelligence#readme",
+            "support": {
+                "bug_reports": f"{issues_url}/new?template=bug_report.md",
+                "feature_requests": f"{issues_url}/new?template=feature_request.md",
+            },
+            "domains": domains,
+            "total_tools": len(self.tool_registry),
+            "transport": transport,
+            # Mirrors HTTPSessionIntelligenceServer.MCP_PROTOCOL_VERSION in
+            # transport/http_server.py. Not imported directly to avoid a
+            # circular import (that module imports LeanMCPInterface).
+            "protocol_version": "2024-11-05",
+        }
+
     def _setup_meta_tools(self):
-        """Setup the 3 meta-tools for dynamic discovery."""
+        """Setup the 4 meta-tools for dynamic discovery."""
 
         @self.app.tool(
             description=(
@@ -1979,6 +2031,44 @@ class LeanMCPInterface:
             except Exception as e:
                 logger.error(f"Error executing {tool_name}: {e}")
                 return {"tool": tool_name, "status": "error", "error": str(e)}
+
+        @self.app.tool(
+            description=(
+                "Identify this server, its version, and where to find repository, "
+                "documentation, and support links. "
+                "USE WHEN: identifying this server, finding where to file bugs or "
+                "feature requests."
+            )
+        )
+        def server_info() -> dict[str, Any]:
+            """
+            [INFO] Identify this MCP server and where to find help.
+
+            USE WHEN:
+            - You need to identify this server, its name, or version
+            - You want to file a bug report or feature request and need the URL
+            - You need the repository or documentation link
+            - You want a live count of available tools by domain
+
+            Returns:
+                Dictionary containing:
+                - name: Server name ("session-intelligence")
+                - version: Installed package version
+                - description: Short one-liner describing the server
+                - repository: GitHub repository URL
+                - issues: GitHub issues URL
+                - documentation: README/documentation URL
+                - support: Dict with bug_reports and feature_requests URLs
+                - domains: Dict mapping domain prefix (session, agent, knowledge)
+                  to live tool count
+                - total_tools: Total tools currently in the registry
+                - transport: Transport this response was served over ("stdio")
+                - protocol_version: MCP protocol version this server advertises
+
+            Examples:
+                server_info()  # No arguments needed
+            """
+            return self.build_server_info(transport="stdio")
 
     def get_app(self) -> FastMCP:
         """Get the FastMCP app instance."""

@@ -515,6 +515,19 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                             "required": ["tool_name", "parameters"],
                         },
                     },
+                    {
+                        "name": "server_info",
+                        "description": (
+                            "Identify this server, its version, and where to find repository, "
+                            "documentation, and support links. "
+                            "USE WHEN: identifying this server, finding where to file bugs or "
+                            "feature requests."
+                        ),
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {},
+                        },
+                    },
                 ]
             }
 
@@ -984,6 +997,10 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                 except Exception as e:
                     logger.exception(f"Error executing tool {target}")
                     result = {"tool": target, "status": "error", "error": str(e)}
+
+        elif tool_name == "server_info":
+            result = lean_interface.build_server_info(transport="HTTP (SSE)")
+
         else:
             result = {"error": f"Unknown tool: {tool_name}"}
 

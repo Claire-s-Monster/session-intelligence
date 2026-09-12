@@ -182,7 +182,7 @@ async def test_mcp_initialize_result_has_protocol_version(asgi_client):
 
 
 async def test_tools_list_returns_meta_tools(asgi_client):
-    """tools/list response includes the 3 meta-tools by name."""
+    """tools/list response includes the 4 meta-tools by name."""
     session_id = await _initialize_mcp(asgi_client)
     resp = await asgi_client.post(
         "/mcp",
@@ -194,6 +194,7 @@ async def test_tools_list_returns_meta_tools(asgi_client):
     assert "discover_tools" in names
     assert "get_tool_spec" in names
     assert "execute_tool" in names
+    assert "server_info" in names
 
 
 # ===========================================================================

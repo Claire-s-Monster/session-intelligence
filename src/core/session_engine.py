@@ -20,13 +20,16 @@ from core.debug_logging import configure_debug_logger
 from core.project_naming import UNBOUND, derive_project_name
 from models.session_models import (
     Agent,
+    AgentContext,
     AgentDecision,
     AgentDecisionResult,
+    AgentError,
     AgentExecution,
     AgentLearning,
     AgentLearningResult,
     AgentNotebook,
     AgentNotebookResult,
+    AgentPerformance,
     AgentRegistrationResult,
     AnalysisScope,
     CommandAnalysisResult,
@@ -82,6 +85,32 @@ debug_logger = configure_debug_logger(
 # to wherever the daemon lives rather than to the caller's project.
 # Parallels the existing "_unbound_" sentinel used for project_name.
 UNKNOWN_PROJECT_PATH = "_unknown_"
+
+# query_agent_executions() is paginated. Loading only the first page would be
+# actively harmful here, not merely incomplete: session_engine recomputes
+# performance_metrics.agents_executed as len(session.agents_executed), so a
+# truncated load would overwrite a correct stored count with a smaller one and
+# the next persist pass would write that back. Hydration therefore pages to
+# exhaustion; MAX_PAGES is only a runaway guard.
+AGENT_EXECUTION_PAGE_SIZE = 200
+AGENT_EXECUTION_MAX_PAGES = 100
+
+
+def _json_or_default(value: Any, default: Any) -> Any:
+    """Decode a column that may arrive as JSON text or already parsed.
+
+    SQLite stores these columns as TEXT while PostgreSQL returns native JSONB,
+    so every read site needs this guard. Without it SQLite yields the
+    individual characters of a JSON string where a list was expected.
+    """
+    if value is None:
+        return default
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return default
+    return value
 
 
 def safe_parse_datetime(value: Any) -> datetime | None:
@@ -2094,19 +2123,8 @@ class SessionIntelligenceEngine:
         PostgreSQL returns already-parsed JSONB -- without it, SQLite yields
         the individual CHARACTERS of a JSON string where a list was expected.
         """
-        artifacts = row.get("artifacts") or []
-        if isinstance(artifacts, str):
-            try:
-                artifacts = json.loads(artifacts)
-            except (json.JSONDecodeError, TypeError):
-                artifacts = []
-
-        context = row.get("context") or {}
-        if isinstance(context, str):
-            try:
-                context = json.loads(context)
-            except (json.JSONDecodeError, TypeError):
-                context = {}
+        artifacts = _json_or_default(row.get("artifacts"), [])
+        context = _json_or_default(row.get("context"), {})
 
         return Decision(
             decision_id=row.get("id") or row.get("decision_id") or "",
@@ -2121,6 +2139,118 @@ class SessionIntelligenceEngine:
             impact_level=ImpactLevel(row.get("impact_level", "medium")),
             artifacts=artifacts if isinstance(artifacts, list) else [],
         )
+
+    def _agent_execution_from_row(
+        self, row: dict[str, Any], session_id: str, project_path: str
+    ) -> AgentExecution:
+        """Rebuild an AgentExecution from a persisted row.
+
+        The row and the model do not share a vocabulary: the table stores
+        id/started_at/completed_at where the model wants
+        execution_id/started/completed, and it has no `context` column at all
+        even though AgentContext is required -- so the context is synthesised
+        from the owning session. Unlike sessions there is no
+        _normalize_agent_execution in BaseDatabaseBackend, so the renames live
+        here.
+
+        Nested steps and errors are best-effort: an individual malformed entry
+        is skipped rather than failing the whole execution, since a partially
+        readable execution is still worth showing in a notebook.
+        """
+        steps_raw = _json_or_default(row.get("execution_steps"), [])
+        perf_raw = _json_or_default(row.get("performance"), {})
+        errors_raw = _json_or_default(row.get("errors"), [])
+
+        steps: list[ExecutionStep] = []
+        if isinstance(steps_raw, list):
+            for step_raw in steps_raw:
+                try:
+                    steps.append(ExecutionStep(**step_raw))
+                except Exception as e:
+                    debug_logger.warning(
+                        f"Skipping unreadable execution step: {e}"
+                    )
+
+        errors: list[AgentError] = []
+        if isinstance(errors_raw, list):
+            for err_raw in errors_raw:
+                try:
+                    errors.append(AgentError(**err_raw))
+                except Exception as e:
+                    debug_logger.warning(
+                        f"Skipping unreadable agent error: {e}"
+                    )
+
+        try:
+            status = ExecutionStatus(row.get("status") or "running")
+        except ValueError:
+            status = ExecutionStatus.RUNNING
+
+        return AgentExecution(
+            agent_name=row.get("agent_name") or "",
+            agent_type=row.get("agent_type") or "",
+            execution_id=row.get("id") or row.get("execution_id") or "",
+            started=(
+                safe_parse_datetime(row.get("started_at"))
+                or datetime.now(UTC)
+            ),
+            completed=safe_parse_datetime(row.get("completed_at")),
+            last_seen_at=safe_parse_datetime(row.get("last_seen_at")),
+            status=status,
+            execution_steps=steps,
+            context=AgentContext(
+                session_id=session_id,
+                project_path=project_path,
+                working_directory=project_path,
+            ),
+            performance=(
+                AgentPerformance(**perf_raw)
+                if isinstance(perf_raw, dict) and perf_raw
+                else AgentPerformance()
+            ),
+            errors=errors,
+        )
+
+    async def _load_agent_executions(
+        self, session_id: str, project_path: str
+    ) -> list[AgentExecution]:
+        """Load every agent execution for a session, paging to exhaustion.
+
+        Paging to exhaustion is load-bearing, not thoroughness for its own
+        sake -- see AGENT_EXECUTION_PAGE_SIZE above for why a partial load
+        would be worse than loading nothing.
+        """
+        executions: list[AgentExecution] = []
+        offset = 0
+        for _ in range(AGENT_EXECUTION_MAX_PAGES):
+            try:
+                rows = await self.database.query_agent_executions(
+                    session_id=session_id,
+                    limit=AGENT_EXECUTION_PAGE_SIZE,
+                    offset=offset,
+                )
+            except Exception as e:
+                debug_logger.error(
+                    f"Error loading agent executions for {session_id}: {e}"
+                )
+                break
+            if not rows:
+                break
+            for row in rows:
+                try:
+                    executions.append(
+                        self._agent_execution_from_row(
+                            row, session_id, project_path
+                        )
+                    )
+                except Exception as e:
+                    debug_logger.warning(
+                        f"Skipping unreadable agent execution row: {e}"
+                    )
+            if len(rows) < AGENT_EXECUTION_PAGE_SIZE:
+                break
+            offset += len(rows)
+        return executions
 
     async def _hydrate_session(self, session_id: str) -> Session | None:
         """Return a Session by ID, loading it from the database when uncached.
@@ -2214,6 +2344,14 @@ class SessionIntelligenceEngine:
             debug_logger.error(
                 f"Error loading decisions for {session_id}: {e}"
             )
+
+        # Without this the notebook's "Agents Executed" section is silently
+        # omitted for a cold-loaded session, because _generate_agents_section
+        # reads session.agents_executed rather than querying the database the
+        # way _generate_files_section does.
+        session.agents_executed = await self._load_agent_executions(
+            session_id, session.project_path
+        )
 
         self.session_cache[session_id] = session
         return session

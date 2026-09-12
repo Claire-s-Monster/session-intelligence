@@ -854,23 +854,49 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             return [self._from_record(row) for row in rows]
 
     async def query_decisions_by_session(
-        self, session_id: str, limit: int = 100, offset: int = 0
+        self,
+        session_id: str,
+        limit: int = 100,
+        offset: int = 0,
+        *,
+        exclude_superseded: bool = False,
     ) -> list[dict[str, Any]]:
-        """Query decisions for a specific session."""
+        """Query decisions for a specific session.
+
+        exclude_superseded defaults to False because migration/export paths
+        (migration.py) must preserve retired rows; callers that render
+        rollups (e.g. notebooks) opt in explicitly.
+        """
         pool = self._ensure_connected()
 
         async with pool.acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT * FROM decisions
-                WHERE session_id = $1
-                ORDER BY timestamp DESC, id DESC
-                LIMIT $2 OFFSET $3
-                """,
-                session_id,
-                limit,
-                offset,
-            )
+            if exclude_superseded:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM decisions
+                    WHERE session_id = $1
+                      AND id NOT IN (
+                          SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
+                      )
+                    ORDER BY timestamp DESC, id DESC
+                    LIMIT $2 OFFSET $3
+                    """,
+                    session_id,
+                    limit,
+                    offset,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT * FROM decisions
+                    WHERE session_id = $1
+                    ORDER BY timestamp DESC, id DESC
+                    LIMIT $2 OFFSET $3
+                    """,
+                    session_id,
+                    limit,
+                    offset,
+                )
             return [self._from_record(row) for row in rows]
 
     # Metrics operations
@@ -1848,16 +1874,35 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         project_path: str,
         category: str | None = None,
         limit: int = 20,
+        *,
+        exclude_superseded: bool = False,
     ) -> list[dict[str, Any]]:
-        """Query learnings for a project."""
+        """Query learnings for a project.
+
+        exclude_superseded defaults to False because migration/export paths
+        (migration.py) must preserve retired rows; callers that render
+        rollups (e.g. notebooks) opt in explicitly.
+        """
         pool = self._ensure_connected()
+
+        supersede_clause = (
+            """
+                  AND id NOT IN (
+                      SELECT supersedes FROM project_learnings
+                      WHERE supersedes IS NOT NULL
+                  )
+            """
+            if exclude_superseded
+            else ""
+        )
 
         async with pool.acquire() as conn:
             if category:
                 rows = await conn.fetch(
-                    """
+                    f"""
                     SELECT * FROM project_learnings
                     WHERE project_path = $1 AND category = $2
+                    {supersede_clause}
                     ORDER BY success_count DESC, last_used DESC
                     LIMIT $3
                     """,
@@ -1867,9 +1912,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 )
             else:
                 rows = await conn.fetch(
-                    """
+                    f"""
                     SELECT * FROM project_learnings
                     WHERE project_path = $1
+                    {supersede_clause}
                     ORDER BY success_count DESC, last_used DESC
                     LIMIT $2
                     """,

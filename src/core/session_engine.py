@@ -6,6 +6,7 @@ unified, intelligent system with pattern recognition, optimization, and learning
 capabilities.
 """
 
+import copy
 import json
 import re
 import secrets
@@ -2472,8 +2473,31 @@ class SessionIntelligenceEngine:
             # Merge decisions from database
             if self.database:
                 db_decisions = (
-                    await self.database.query_decisions_by_session(session_id)
+                    await self.database.query_decisions_by_session(
+                        session_id, exclude_superseded=True
+                    )
                 )
+                # _hydrate_session loads the full, unfiltered decision
+                # history (issue #103), so a cached/hydrated session still
+                # carries rows this exclude_superseded query has since
+                # dropped. Prune those out here rather than only adding
+                # missing ones, or the exclude_superseded flag has no
+                # effect on an already-hydrated session (issue #106).
+                keep_ids = {
+                    (db_dec.get("id") or db_dec.get("decision_id"))
+                    for db_dec in db_decisions
+                }
+                # `session` may be the exact object cached in
+                # self.session_cache (see _hydrate_session's cache-hit
+                # path), so rebinding .decisions in place would
+                # permanently strip superseded decisions from every other
+                # caller sharing that cached session (issue #106 follow-up).
+                # Shallow-copy first so the rebind below lands on a
+                # per-call object instead.
+                session = copy.copy(session)
+                session.decisions = [
+                    d for d in session.decisions if d.decision_id in keep_ids
+                ]
                 existing_ids = {d.decision_id for d in session.decisions}
                 for db_dec in db_decisions:
                     dec_id = db_dec.get("id") or db_dec.get("decision_id")
@@ -2683,9 +2707,30 @@ class SessionIntelligenceEngine:
             try:
                 db_decisions_list = (
                     await self.database.query_decisions_by_session(
-                        session_id
+                        session_id, exclude_superseded=True
                     )
                 )
+                # _hydrate_session loads the full, unfiltered decision
+                # history (issue #103), so a cached/hydrated session still
+                # carries rows this exclude_superseded query has since
+                # dropped. Prune those out here rather than only adding
+                # missing ones, or the exclude_superseded flag has no
+                # effect on an already-hydrated session (issue #106).
+                keep_ids = {
+                    (db_dec.get("id") or db_dec.get("decision_id"))
+                    for db_dec in db_decisions_list
+                }
+                # `session` may be the exact object cached in
+                # self.session_cache (see _hydrate_session's cache-hit
+                # path), so rebinding .decisions in place would
+                # permanently strip superseded decisions from every other
+                # caller sharing that cached session (issue #106 follow-up).
+                # Shallow-copy first so the rebind below lands on a
+                # per-call object instead.
+                session = copy.copy(session)
+                session.decisions = [
+                    d for d in session.decisions if d.decision_id in keep_ids
+                ]
                 existing_ids = {
                     d.decision_id for d in session.decisions
                 }
@@ -3075,7 +3120,7 @@ class SessionIntelligenceEngine:
             return None
 
         learnings = await self.database.query_project_learnings(
-            project_path, limit=10
+            project_path, limit=10, exclude_superseded=True
         )
         if not learnings:
             return None

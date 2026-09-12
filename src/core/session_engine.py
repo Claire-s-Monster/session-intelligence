@@ -34,6 +34,7 @@ from models.session_models import (
     DashboardResult,
     DashboardType,
     Decision,
+    DecisionContext,
     DecisionResult,
     ErrorSolution,
     ExecutionMode,
@@ -2080,6 +2081,143 @@ class SessionIntelligenceEngine:
             recommendations=[],
         )
 
+    # ===== SESSION HYDRATION =====
+
+    def _decision_from_row(
+        self, row: dict[str, Any], session_id: str
+    ) -> Decision:
+        """Rebuild a Decision from a persisted row.
+
+        Single conversion site for every path that reads decisions back out of
+        the database. Both `artifacts` and `context` need the
+        isinstance/json.loads guard because SQLite stores them as TEXT while
+        PostgreSQL returns already-parsed JSONB -- without it, SQLite yields
+        the individual CHARACTERS of a JSON string where a list was expected.
+        """
+        artifacts = row.get("artifacts") or []
+        if isinstance(artifacts, str):
+            try:
+                artifacts = json.loads(artifacts)
+            except (json.JSONDecodeError, TypeError):
+                artifacts = []
+
+        context = row.get("context") or {}
+        if isinstance(context, str):
+            try:
+                context = json.loads(context)
+            except (json.JSONDecodeError, TypeError):
+                context = {}
+
+        return Decision(
+            decision_id=row.get("id") or row.get("decision_id") or "",
+            timestamp=(
+                safe_parse_datetime(row.get("timestamp")) or datetime.now(UTC)
+            ),
+            description=row.get("description", ""),
+            context=DecisionContext(
+                session_id=session_id,
+                project_state=context if isinstance(context, dict) else {},
+            ),
+            impact_level=ImpactLevel(row.get("impact_level", "medium")),
+            artifacts=artifacts if isinstance(artifacts, list) else [],
+        )
+
+    async def _hydrate_session(self, session_id: str) -> Session | None:
+        """Return a Session by ID, loading it from the database when uncached.
+
+        `session_cache` holds only the sessions this PROCESS created or
+        adopted, so it starts empty and every session predating the current
+        run is absent from it. Gating a read path on cache membership
+        therefore made that path work only for the session the caller happened
+        to be sitting in, and only until the next restart -- issue #103. The
+        rows were always persisted and `_resolve_session_context` already
+        resolved to the right ID; only this load was missing.
+
+        Returns None only when the session genuinely does not exist.
+        """
+        cached = self.session_cache.get(session_id)
+        if cached is not None:
+            return cached
+        if not self.database:
+            return None
+
+        try:
+            row = await self.database.get_session(session_id)
+        except Exception as e:
+            debug_logger.error(f"Error loading session {session_id}: {e}")
+            return None
+        if not row:
+            return None
+
+        # get_session() returns rows already put through
+        # BaseDatabaseBackend._normalize_session_data(), so JSON columns arrive
+        # as dicts on both backends and the key names are backend-independent.
+        metadata = row.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        health = row.get("health_status")
+        metrics = row.get("performance_metrics")
+
+        try:
+            session = Session(
+                id=row["id"],
+                started=(
+                    safe_parse_datetime(row.get("started")) or datetime.now(UTC)
+                ),
+                completed=safe_parse_datetime(row.get("completed")),
+                last_seen_at=safe_parse_datetime(row.get("last_seen_at")),
+                mode=row.get("mode") or "local",
+                project_name=row.get("project_name") or UNBOUND,
+                project_path=row.get("project_path") or "",
+                status=SessionStatus(row.get("status") or "active"),
+                # session_type/environment/user are REQUIRED on
+                # SessionMetadata, so a row with an empty metadata blob still
+                # needs all three supplied here.
+                metadata=SessionMetadata(
+                    **{
+                        "session_type": "development",
+                        "environment": "local",
+                        "user": "user",
+                        **metadata,
+                    }
+                ),
+                health_status=(
+                    HealthStatus(**health)
+                    if isinstance(health, dict) and health
+                    else HealthStatus()
+                ),
+                performance_metrics=(
+                    PerformanceMetrics(**metrics)
+                    if isinstance(metrics, dict) and metrics
+                    else PerformanceMetrics()
+                ),
+            )
+        except Exception as e:
+            debug_logger.error(
+                f"Error reconstructing session {session_id}: {e}"
+            )
+            return None
+
+        try:
+            for dec_row in await self.database.query_decisions_by_session(
+                session_id
+            ):
+                try:
+                    session.decisions.append(
+                        self._decision_from_row(dec_row, session_id)
+                    )
+                except Exception as e:
+                    debug_logger.warning(
+                        f"Skipping unreadable decision row: {e}"
+                    )
+        except Exception as e:
+            debug_logger.error(
+                f"Error loading decisions for {session_id}: {e}"
+            )
+
+        self.session_cache[session_id] = session
+        return session
+
     # ===== SESSION NOTEBOOK =====
 
     async def session_create_notebook(
@@ -2176,14 +2314,22 @@ class SessionIntelligenceEngine:
                     allow_unbound=allow_unbound,
                 )
                 session_id = resolved.session_id
-            if not session_id or session_id not in self.session_cache:
+            if not session_id:
                 return NotebookResult(
-                    session_id=session_id or "unknown",
+                    session_id="unknown",
                     status="error",
                     message="No session found",
                 )
 
-            session = self.session_cache[session_id]
+            # Load from the database when this process never cached the
+            # session (issue #103); None here means it truly does not exist.
+            session = await self._hydrate_session(session_id)
+            if session is None:
+                return NotebookResult(
+                    session_id=session_id,
+                    status="error",
+                    message="No session found",
+                )
 
             # Merge decisions from database
             if self.database:
@@ -2194,37 +2340,8 @@ class SessionIntelligenceEngine:
                 for db_dec in db_decisions:
                     dec_id = db_dec.get("id") or db_dec.get("decision_id")
                     if dec_id and dec_id not in existing_ids:
-                        from models.session_models import Decision, DecisionContext
-
                         session.decisions.append(
-                            Decision(
-                                decision_id=dec_id,
-                                timestamp=(
-                                    safe_parse_datetime(
-                                        db_dec.get("timestamp")
-                                    )
-                                    or datetime.now(UTC)
-                                ),
-                                description=db_dec.get(
-                                    "description", ""
-                                ),
-                                context=DecisionContext(
-                                    session_id=session_id,
-                                    project_state={},
-                                ),
-                                impact_level=ImpactLevel(
-                                    db_dec.get("impact_level", "medium")
-                                ),
-                                artifacts=(
-                                    json.loads(
-                                        db_dec.get("artifacts", "[]")
-                                    )
-                                    if isinstance(
-                                        db_dec.get("artifacts"), str
-                                    )
-                                    else db_dec.get("artifacts", [])
-                                ),
-                            )
+                            self._decision_from_row(db_dec, session_id)
                         )
 
             # Build sections
@@ -2413,14 +2530,15 @@ class SessionIntelligenceEngine:
                 "before calling (no ambient session fallback is available here)."
             )
 
-        if session_id not in self.session_cache:
+        # Load from the database when this process never cached the session
+        # (issue #103); None here means it truly does not exist.
+        session = await self._hydrate_session(session_id)
+        if session is None:
             return NotebookResult(
-                session_id=session_id or "unknown",
+                session_id=session_id,
                 status="error",
                 message="No session found to create notebook for",
             )
-
-        session = self.session_cache[session_id]
 
         # Merge decisions from database if available
         if self.database:
@@ -2439,39 +2557,8 @@ class SessionIntelligenceEngine:
                         or db_dec.get("decision_id")
                     )
                     if dec_id and dec_id not in existing_ids:
-                        from models.session_models import Decision, DecisionContext
-
                         session.decisions.append(
-                            Decision(
-                                decision_id=dec_id,
-                                timestamp=(
-                                    safe_parse_datetime(
-                                        db_dec.get("timestamp")
-                                    )
-                                    or datetime.now(UTC)
-                                ),
-                                description=db_dec.get(
-                                    "description", ""
-                                ),
-                                context=DecisionContext(
-                                    session_id=session_id,
-                                    project_state={},
-                                ),
-                                impact_level=ImpactLevel(
-                                    db_dec.get(
-                                        "impact_level", "medium"
-                                    )
-                                ),
-                                artifacts=(
-                                    json.loads(
-                                        db_dec.get("artifacts", "[]")
-                                    )
-                                    if isinstance(
-                                        db_dec.get("artifacts"), str
-                                    )
-                                    else db_dec.get("artifacts", [])
-                                ),
-                            )
+                            self._decision_from_row(db_dec, session_id)
                         )
             except Exception as e:
                 debug_logger.error(f"Error merging DB decisions: {e}")

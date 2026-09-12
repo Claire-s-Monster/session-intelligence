@@ -2920,17 +2920,50 @@ class SessionIntelligenceEngine:
         return "\n".join(lines), decisions_made
 
     def _generate_metrics_section(self, session: Session) -> str:
-        """Generate performance metrics section."""
+        """Generate performance metrics section.
+
+        The count-like rows are DERIVED from the same lists the rest of the
+        notebook renders, not read from session.performance_metrics. Reading
+        the stored blob made a notebook contradict itself: a cold-loaded
+        session showed 26 entries under "Agents Executed" above a metrics
+        table reporting 2, because that counter is refreshed only on the live
+        track_execution path and had been written mid-session.
+
+        Deriving is display-only and deliberately writes nothing back. The
+        stale stored value is a recording-side problem; silently "correcting"
+        it from here would persist a number this method is not authoritative
+        for, and a notebook render is the wrong place to mutate session state.
+
+        Timing and efficiency stay on the stored blob -- no list carried on
+        the session can reproduce them.
+        """
         metrics = session.performance_metrics
+
+        successful = sum(
+            1
+            for agent in session.agents_executed
+            if agent.status == ExecutionStatus.SUCCESS
+        )
+        failed = sum(
+            1
+            for agent in session.agents_executed
+            if agent.status == ExecutionStatus.ERROR
+        )
+        commands = sum(
+            len(step.commands_executed)
+            for agent in session.agents_executed
+            for step in agent.execution_steps
+        )
+
         return f"""
 | Metric | Value |
 |--------|-------|
 | Total Execution Time | {metrics.total_execution_time_ms / 1000:.1f}s |
-| Agents Executed | {metrics.agents_executed} |
-| Successful Executions | {metrics.successful_executions} |
-| Failed Executions | {metrics.failed_executions} |
-| Commands Executed | {metrics.commands_executed} |
-| Decisions Made | {metrics.decisions_made} |
+| Agents Executed | {len(session.agents_executed)} |
+| Successful Executions | {successful} |
+| Failed Executions | {failed} |
+| Commands Executed | {commands} |
+| Decisions Made | {len(session.decisions)} |
 | Efficiency Score | {metrics.efficiency_score:.1f}% |
 """.strip()
 

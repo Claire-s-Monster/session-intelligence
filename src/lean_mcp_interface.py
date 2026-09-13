@@ -582,7 +582,9 @@ class LeanMCPInterface:
                 self.session_engine.session_create_notebook_async
             ),
             "description": (
-                "Create a reasoning narrative for this project session. "
+                "Create a reasoning narrative for this project session. A notebook is "
+                "caller-authored prose (see body) plus an optional derived appendix of "
+                "compiled sections. "
                 "**SYSTEM**: session — project-scoped work history. "
                 "**TIER**: notebook — reasoning narrative recording abandoned paths, "
                 "hypotheses, and context that lets future readers judge whether stored "
@@ -650,6 +652,22 @@ class LeanMCPInterface:
                         "default": True,
                         "description": "Persist to database for FTS search",
                     },
+                    "body": {
+                        "type": "string",
+                        "description": (
+                            "Caller-authored narrative, stored verbatim and never "
+                            "regenerated. Supplying it makes the compiled sections "
+                            "opt-in -- see include_derived_sections."
+                        ),
+                    },
+                    "include_derived_sections": {
+                        "type": "boolean",
+                        "description": (
+                            "Render the compiled sections (agents, decisions, metrics, "
+                            "learnings, files). Defaults to true when no body is given "
+                            "and false when a body is given."
+                        ),
+                    },
                 },
             },
             "examples": [
@@ -662,6 +680,11 @@ class LeanMCPInterface:
                     "project_name": "session-intelligence",
                     "title": "Feature Implementation Session",
                     "tags": ["feature", "python"],
+                },
+                {
+                    "_workflow_hint": "STEP 3: authored narrative, no compiled appendix",
+                    "project_name": "session-intelligence",
+                    "body": "Explored three approaches to X before settling on Y because Z.",
                 },
             ],
         }
@@ -755,6 +778,68 @@ class LeanMCPInterface:
                 {"project_path": "/home/user/my-project", "limit": 5},
                 {"project_name": "session-intelligence", "limit": 5},
                 {"tags": ["feature", "bugfix"]},
+            ],
+        }
+
+        registry["session_update_notebook"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.session_update_notebook),
+            "description": (
+                "Update the caller-authored body and/or title of an existing session "
+                "notebook. "
+                "**SYSTEM**: session — project-scoped work history. "
+                "**TIER**: notebook — amends the authored narrative in place rather "
+                "than regenerating it; the compiled sections already stored on the "
+                "notebook are left untouched. Use this to append findings or correct "
+                "the title on a notebook already created via session_create_notebook. "
+                "**DISCIPLINE**: pass at least one of session_id, session_name, or "
+                "project_name, and at least one of body or title. Use allow_unbound=true "
+                "to opt into the legacy unbound fallback (deprecated)."
+            ),
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Explicit session ID whose notebook to update.",
+                    },
+                    "session_name": {
+                        "type": "string",
+                        "description": "Named session whose notebook to update.",
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": (
+                            "Project name — updates the notebook for the most-recent "
+                            "active session for that project."
+                        ),
+                    },
+                    "allow_unbound": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "If True, opt into the legacy '_unbound_' fallback when no "
+                            "session identifier is provided. Deprecated."
+                        ),
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "New caller-authored narrative, stored verbatim.",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "New title for the notebook.",
+                    },
+                },
+            },
+            "examples": [
+                {
+                    "project_name": "session-intelligence",
+                    "body": "Follow-up: the fix landed in PR #110, verified in CI.",
+                },
+                {
+                    "session_id": "abc123",
+                    "title": "Feature Implementation Session (revised)",
+                },
             ],
         }
 

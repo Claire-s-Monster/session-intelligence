@@ -617,6 +617,10 @@ class SessionNotebook(BaseModel):
     duration_minutes: float
     sections: list[NotebookSection] = Field(default_factory=list)
     summary_markdown: str
+    # Caller-authored narrative, stored verbatim and never regenerated.
+    # Distinct from summary_markdown, which is a regenerated snapshot of
+    # the compiled sections (issue #106).
+    authored_body: str | None = None
     key_changes: list[str] = Field(default_factory=list)
     agents_used: list[str] = Field(default_factory=list)
     decisions_made: list[str] = Field(default_factory=list)

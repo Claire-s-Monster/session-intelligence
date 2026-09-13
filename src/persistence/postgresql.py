@@ -209,6 +209,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
         title TEXT,
         summary_markdown TEXT,
+        authored_body TEXT,
         key_changes JSONB DEFAULT '[]',
         tags JSONB DEFAULT '[]',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -431,6 +432,13 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             )
             await conn.execute(
                 "UPDATE agent_executions SET last_seen_at = started_at WHERE last_seen_at IS NULL"
+            )
+
+            # Issue #106: idempotent migration for existing databases: add the
+            # caller-authored notebook body. Distinct from summary_markdown,
+            # which is a regenerated snapshot.
+            await conn.execute(
+                "ALTER TABLE session_summaries ADD COLUMN IF NOT EXISTS authored_body TEXT"
             )
 
         self._is_connected = True
@@ -1146,11 +1154,18 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             await conn.execute(
                 """
                 INSERT INTO session_summaries
-                (session_id, title, summary_markdown, key_changes, tags, created_at)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                (session_id, title, summary_markdown, authored_body, key_changes, tags, created_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
                 ON CONFLICT (session_id) DO UPDATE SET
                     title = EXCLUDED.title,
                     summary_markdown = EXCLUDED.summary_markdown,
+                    -- Regeneration refreshes the derived snapshot but must never
+                    -- wipe caller-authored prose. COALESCE means a regeneration
+                    -- that passes no body preserves the stored one, while one
+                    -- that passes a body updates it.
+                    authored_body = COALESCE(
+                        EXCLUDED.authored_body, session_summaries.authored_body
+                    ),
                     key_changes = EXCLUDED.key_changes,
                     tags = EXCLUDED.tags,
                     created_at = EXCLUDED.created_at
@@ -1158,10 +1173,45 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 summary_data["session_id"],
                 summary_data.get("title"),
                 summary_data.get("summary_markdown"),
+                summary_data.get("authored_body"),
                 json.dumps(summary_data.get("key_changes", [])),
                 json.dumps(summary_data.get("tags", [])),
                 created_at,
             )
+
+    async def update_session_summary_body(
+        self, session_id: str, authored_body: str | None = None, title: str | None = None
+    ) -> bool:
+        """Update only the caller-authored fields of an existing notebook row.
+
+        Returns False when no row exists for session_id, so callers can
+        distinguish "updated" from "nothing to update" rather than silently
+        succeeding. Never touches summary_markdown, key_changes or tags --
+        those are regenerated, not authored.
+        """
+        if authored_body is None and title is None:
+            return False
+
+        pool = self._ensure_connected()
+
+        set_clauses = []
+        params: list[Any] = []
+        if authored_body is not None:
+            params.append(authored_body)
+            set_clauses.append(f"authored_body = ${len(params)}")
+        if title is not None:
+            params.append(title)
+            set_clauses.append(f"title = ${len(params)}")
+        params.append(session_id)
+
+        async with pool.acquire() as conn:
+            status = await conn.execute(
+                f"UPDATE session_summaries SET {', '.join(set_clauses)} "
+                f"WHERE session_id = ${len(params)}",
+                *params,
+            )
+            # asyncpg returns a status string like "UPDATE 1"
+            return int(status.split()[-1]) > 0
 
     async def get_session_summary(self, session_id: str) -> dict[str, Any] | None:
         """Retrieve a session summary by session ID."""

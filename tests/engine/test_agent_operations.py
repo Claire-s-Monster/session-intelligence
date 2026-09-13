@@ -14,7 +14,6 @@ asyncio_mode = "auto" is set project-wide — do NOT add @pytest.mark.asyncio.
 """
 
 
-
 # ============================================================================
 # Helper: register an agent and return its registration result
 # ============================================================================

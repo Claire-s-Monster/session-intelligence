@@ -90,8 +90,7 @@ async def test_find_solution_schema_matches_engine_signature(lean_interface):
 
     undeclared_in_engine = schema_params - engine_params
     assert not undeclared_in_engine, (
-        f"Schema declares parameters the engine method does not accept: "
-        f"{undeclared_in_engine}"
+        f"Schema declares parameters the engine method does not accept: {undeclared_in_engine}"
     )
 
     assert "project_path" in schema_params

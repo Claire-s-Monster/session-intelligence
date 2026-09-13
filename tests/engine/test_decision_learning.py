@@ -14,9 +14,8 @@ asyncio_mode = "auto" (from pyproject.toml) — no @pytest.mark.asyncio needed.
 
 import pytest
 
-from core.session_engine import SessionIntelligenceEngine, UNKNOWN_PROJECT_PATH
+from core.session_engine import UNKNOWN_PROJECT_PATH
 from models.session_models import DecisionResult, LearningResult
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -40,14 +39,18 @@ async def _create_session(engine, project_name="test-project"):
 
 async def test_log_decision_returns_decision_result(engine):
     """session_log_decision returns a DecisionResult instance."""
-    result = await engine.session_log_decision(decision="Use SQLite for testing", allow_unbound=True)
+    result = await engine.session_log_decision(
+        decision="Use SQLite for testing", allow_unbound=True
+    )
 
     assert isinstance(result, DecisionResult)
 
 
 async def test_log_decision_returns_decision_id(engine):
     """Returned DecisionResult has a non-empty decision_id."""
-    result = await engine.session_log_decision(decision="Choose pytest over unittest", allow_unbound=True)
+    result = await engine.session_log_decision(
+        decision="Choose pytest over unittest", allow_unbound=True
+    )
 
     assert result.decision_id
     assert result.decision_id != "error"
@@ -133,15 +136,17 @@ async def test_query_decisions_by_category(engine):
     engine._current_session_id = session_id
 
     # Save decision data directly to db with category set
-    await engine.database.save_decision({
-        "id": "decision-cat-test-01",
-        "session_id": session_id,
-        "description": "Architecture decision with category",
-        "category": "architecture",
-        "impact_level": "high",
-        "context": "{}",
-        "artifacts": "[]",
-    })
+    await engine.database.save_decision(
+        {
+            "id": "decision-cat-test-01",
+            "session_id": session_id,
+            "description": "Architecture decision with category",
+            "category": "architecture",
+            "impact_level": "high",
+            "context": "{}",
+            "artifacts": "[]",
+        }
+    )
 
     rows = await engine.database.query_decisions_by_category("architecture")
     assert any(r["id"] == "decision-cat-test-01" for r in rows)

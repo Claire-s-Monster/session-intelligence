@@ -17,8 +17,6 @@ from datetime import datetime
 
 import httpx
 import pytest
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 from core.session_engine import SessionIntelligenceEngine
 from lean_mcp_interface import LeanMCPInterface
@@ -26,7 +24,6 @@ from persistence.sqlite import SQLiteBackend
 from transport.http_server import HTTPSessionIntelligenceServer, NotificationManager
 from transport.mcp_session_manager import MCPSessionManager
 from transport.security import SecurityConfig
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -405,9 +402,7 @@ async def test_persist_sessions_survives_cache_mutation_during_iteration(tmp_pat
         persisted_ids.append(session_data["id"])
         if call_count["n"] == 1:
             # Simulate a concurrent request adding a new session mid-iteration.
-            engine.session_cache["s3-concurrent"] = _make_session(
-                "s3-concurrent", str(tmp_path)
-            )
+            engine.session_cache["s3-concurrent"] = _make_session("s3-concurrent", str(tmp_path))
         await original_save_session(session_data)
 
     db.save_session = racy_save_session

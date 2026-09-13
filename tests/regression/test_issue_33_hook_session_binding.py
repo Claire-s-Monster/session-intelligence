@@ -71,8 +71,7 @@ async def test_hook_session_id_auto_binds_on_first_track_execution(engine):
     assert result.status == "success"
 
     assert NATIVE_SESSION_ID in engine.session_cache, (
-        "Native session id was not registered in session_cache after "
-        "auto-creation."
+        "Native session id was not registered in session_cache after auto-creation."
     )
 
     bound_session = engine.session_cache[NATIVE_SESSION_ID]

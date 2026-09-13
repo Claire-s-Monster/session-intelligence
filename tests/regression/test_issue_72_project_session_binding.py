@@ -19,13 +19,16 @@ Fix: session_log_decision now raises SessionContextRequiredError when none of
 
 import pytest
 
-from core.session_engine import SessionContextRequiredError, SessionIntelligenceEngine, UNKNOWN_PROJECT_PATH
+from core.session_engine import (
+    UNKNOWN_PROJECT_PATH,
+    SessionContextRequiredError,
+    SessionIntelligenceEngine,
+)
 from persistence.sqlite import SQLiteBackend
 
 
 @pytest.mark.regression
 class TestUnboundDecisionIsRejected:
-
     @pytest.fixture
     async def engine(self, tmp_path):
         eng = SessionIntelligenceEngine(repository_path=str(tmp_path))
@@ -74,7 +77,6 @@ class TestUnboundDecisionIsRejected:
 
 @pytest.mark.regression
 class TestCreateRecordsProjectPath:
-
     @pytest.fixture
     async def engine(self, tmp_path):
         eng = SessionIntelligenceEngine(repository_path=str(tmp_path))

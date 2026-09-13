@@ -16,7 +16,6 @@ import pytest
 from core.session_engine import SessionIntelligenceEngine
 from persistence.sqlite import SQLiteBackend
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -77,18 +76,14 @@ async def _register_agent(engine: SessionIntelligenceEngine, name: str):
 
 async def test_concurrent_session_creates_all_succeed(engine):
     """Five concurrent session_manage_lifecycle(create) calls all return status=success."""
-    results = await asyncio.gather(
-        *[_create_session(engine, f"project-{i}") for i in range(5)]
-    )
+    results = await asyncio.gather(*[_create_session(engine, f"project-{i}") for i in range(5)])
     for result in results:
         assert result.status == "success", f"Unexpected status: {result.status}"
 
 
 async def test_concurrent_session_creates_all_have_session_ids(engine):
     """Concurrent creates all return a non-empty session_id."""
-    results = await asyncio.gather(
-        *[_create_session(engine, f"project-{i}") for i in range(5)]
-    )
+    results = await asyncio.gather(*[_create_session(engine, f"project-{i}") for i in range(5)])
     for result in results:
         assert result.session_id, "session_id must be non-empty"
 
@@ -149,6 +144,7 @@ async def test_concurrent_decision_logging(engine):
 
 async def test_reads_concurrent_with_writes(engine):
     """Session creates and agent_query_learnings can run simultaneously."""
+
     async def _create():
         return await _create_session(engine, "concurrent-rw-project")
 
@@ -158,7 +154,10 @@ async def test_reads_concurrent_with_writes(engine):
         return result
 
     results = await asyncio.gather(
-        _create(), _read(), _create(), _read(),
+        _create(),
+        _read(),
+        _create(),
+        _read(),
     )
     # All four coroutines should complete without raising
     assert len(results) == 4

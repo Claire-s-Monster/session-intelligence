@@ -74,9 +74,7 @@ TIER_EXEMPT_TOOLS = {"agent_register"}
 @pytest.mark.parametrize("tool_name", sorted((SESSION_TOOLS | AGENT_TOOLS) - TIER_EXEMPT_TOOLS))
 def test_tool_description_mentions_tier(interface, tool_name):
     desc = interface.tool_registry[tool_name]["description"]
-    assert "TIER" in desc or "READS" in desc, (
-        f"{tool_name} description missing TIER or READS tag"
-    )
+    assert "TIER" in desc or "READS" in desc, f"{tool_name} description missing TIER or READS tag"
 
 
 @pytest.mark.parametrize("tool_name", sorted(WRITE_TOOLS))
@@ -113,9 +111,7 @@ def test_session_write_tool_mentions_project_scope_discipline(interface, tool_na
 def test_agent_write_tool_mentions_validation(interface, tool_name):
     desc = interface.tool_registry[tool_name]["description"]
     assert (
-        "~/.claude/agents" in desc
-        or "AgentNotFoundError" in desc
-        or "validated" in desc.lower()
+        "~/.claude/agents" in desc or "AgentNotFoundError" in desc or "validated" in desc.lower()
     ), f"{tool_name} description missing agent-name validation reminder"
 
 
@@ -145,9 +141,7 @@ def test_write_tool_examples_include_workflow_hint(interface):
     """Write tools should have at least one example with _workflow_hint."""
     for tool_name in sorted(WRITE_TOOLS):
         examples = interface.tool_registry[tool_name].get("examples", [])
-        has_hint = any(
-            "_workflow_hint" in (ex if isinstance(ex, dict) else {}) for ex in examples
-        )
+        has_hint = any("_workflow_hint" in (ex if isinstance(ex, dict) else {}) for ex in examples)
         assert has_hint, f"{tool_name} examples missing _workflow_hint workflow guidance"
 
 

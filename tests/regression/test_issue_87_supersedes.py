@@ -28,7 +28,6 @@ from persistence.sqlite import SQLiteBackend
 
 @pytest.mark.regression
 class TestSupersedesLearnings:
-
     @pytest.fixture
     async def engine(self, tmp_path):
         eng = SessionIntelligenceEngine(repository_path=str(tmp_path))
@@ -51,9 +50,7 @@ class TestSupersedesLearnings:
         )
         assert second.learning.supersedes == first.id
 
-    async def test_recall_excludes_superseded_learning_but_keeps_superseder(
-        self, engine
-    ):
+    async def test_recall_excludes_superseded_learning_but_keeps_superseder(self, engine):
         first = await engine.session_log_learning(
             category="error_fix",
             learning_content="Old, wrong fix",
@@ -98,9 +95,7 @@ class TestSupersedesLearnings:
         assert "A: first attempt" not in contents
         assert "B: second attempt" not in contents
 
-    async def test_dangling_supersedes_is_accepted_and_retires_nothing(
-        self, engine
-    ):
+    async def test_dangling_supersedes_is_accepted_and_retires_nothing(self, engine):
         unrelated = await engine.session_log_learning(
             category="pattern",
             learning_content="Unrelated learning that must survive",
@@ -121,9 +116,7 @@ class TestSupersedesLearnings:
         assert "Corrects a learning that never existed" in contents
         assert unrelated.id  # sanity: the earlier entry really was saved
 
-    async def test_supersedes_defaults_to_none_and_is_still_recalled(
-        self, engine
-    ):
+    async def test_supersedes_defaults_to_none_and_is_still_recalled(self, engine):
         result = await engine.session_log_learning(
             category="pattern",
             learning_content="Plain learning, no correction involved",
@@ -138,7 +131,6 @@ class TestSupersedesLearnings:
 
 @pytest.mark.regression
 class TestSupersedesDecisions:
-
     @pytest.fixture
     async def engine(self, tmp_path):
         eng = SessionIntelligenceEngine(repository_path=str(tmp_path))
@@ -159,9 +151,7 @@ class TestSupersedesDecisions:
         )
         assert second.supersedes == first.decision_id
 
-    async def test_recall_excludes_superseded_decision_but_keeps_superseder(
-        self, engine
-    ):
+    async def test_recall_excludes_superseded_decision_but_keeps_superseder(self, engine):
         first = await engine.session_log_decision(
             decision="Old, wrong decision",
             project_name="proj-b",
@@ -201,9 +191,7 @@ class TestSupersedesDecisions:
         assert "A: first attempt" not in descriptions
         assert "B: second attempt" not in descriptions
 
-    async def test_dangling_supersedes_is_accepted_and_retires_nothing(
-        self, engine
-    ):
+    async def test_dangling_supersedes_is_accepted_and_retires_nothing(self, engine):
         await engine.session_log_decision(
             decision="Unrelated decision that must survive",
             project_name="proj-b",
@@ -221,9 +209,7 @@ class TestSupersedesDecisions:
         assert "Unrelated decision that must survive" in descriptions
         assert "Corrects a decision that never existed" in descriptions
 
-    async def test_supersedes_defaults_to_none_and_is_still_recalled(
-        self, engine
-    ):
+    async def test_supersedes_defaults_to_none_and_is_still_recalled(self, engine):
         result = await engine.session_log_decision(
             decision="Plain decision, no correction involved",
             project_name="proj-b",

@@ -13,7 +13,6 @@ from core.project_naming import UNBOUND, derive_project_name
 from core.session_engine import SessionContextRequiredError, SessionIntelligenceEngine
 from persistence.sqlite import SQLiteBackend
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

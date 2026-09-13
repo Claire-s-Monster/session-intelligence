@@ -22,7 +22,6 @@ from core.session_engine import SessionIntelligenceEngine
 from models.session_models import SessionStatus
 from persistence.sqlite import SQLiteBackend
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -102,8 +101,7 @@ async def test_finalize_persists_status_completed_to_db(engine):
     post = await engine.database.get_session(session_id)
     assert post is not None
     assert post["status"] == "completed", (
-        "Finalize did not persist status='completed' to DB. "
-        "This is issue #25 Bug 1."
+        "Finalize did not persist status='completed' to DB. This is issue #25 Bug 1."
     )
 
 
@@ -178,9 +176,7 @@ async def test_disk_reload_skips_completed_session(engine_with_fs):
         operation="create", mode="local", project_name="issue-25-disk"
     )
     completed_id = create_result.session_id
-    await engine_with_fs.session_manage_lifecycle(
-        operation="finalize", session_id=completed_id
-    )
+    await engine_with_fs.session_manage_lifecycle(operation="finalize", session_id=completed_id)
 
     # Sanity: metadata file says completed.
     session_dir = engine_with_fs.claude_sessions_path / completed_id

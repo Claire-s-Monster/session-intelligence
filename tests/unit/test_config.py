@@ -5,13 +5,8 @@ save/roundtrip, and missing-file handling.
 """
 
 import json
-import os
-from pathlib import Path
-
-import pytest
 
 from persistence.config import DatabaseConfig
-
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -67,8 +62,12 @@ class TestDatabaseConfigFromEnv:
         assert cfg.retention_days == 30
 
     def test_from_env_without_vars_uses_defaults(self, monkeypatch):
-        for var in ("SESSION_DB_DSN", "SESSION_DB_POOL_MIN", "SESSION_DB_POOL_MAX",
-                    "SESSION_DB_RETENTION_DAYS"):
+        for var in (
+            "SESSION_DB_DSN",
+            "SESSION_DB_POOL_MIN",
+            "SESSION_DB_POOL_MAX",
+            "SESSION_DB_RETENTION_DAYS",
+        ):
             monkeypatch.delenv(var, raising=False)
         cfg = DatabaseConfig.from_env()
         assert cfg.postgresql_dsn is None

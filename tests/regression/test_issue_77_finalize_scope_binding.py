@@ -80,9 +80,7 @@ class TestUnboundLifecycleOpsAreRejected:
         )
         engine._current_session_id = create_result.session_id
 
-        result = await engine.session_manage_lifecycle(
-            operation="finalize", allow_unbound=True
-        )
+        result = await engine.session_manage_lifecycle(operation="finalize", allow_unbound=True)
         assert result.status == "success"
 
     async def test_resume_allow_unbound_escape_hatch_still_works(self, engine):
@@ -91,9 +89,7 @@ class TestUnboundLifecycleOpsAreRejected:
         )
         engine._current_session_id = create_result.session_id
 
-        result = await engine.session_manage_lifecycle(
-            operation="resume", allow_unbound=True
-        )
+        result = await engine.session_manage_lifecycle(operation="resume", allow_unbound=True)
         assert result.status == "success"
 
     async def test_validate_allow_unbound_escape_hatch_still_works(self, engine):
@@ -102,9 +98,7 @@ class TestUnboundLifecycleOpsAreRejected:
         )
         engine._current_session_id = create_result.session_id
 
-        result = await engine.session_manage_lifecycle(
-            operation="validate", allow_unbound=True
-        )
+        result = await engine.session_manage_lifecycle(operation="validate", allow_unbound=True)
         assert result.status in {"success", "warning"}
 
 
@@ -151,14 +145,10 @@ class TestSharedEngineDoesNotBleedAcrossProjects:
         )
         return proj_a_create, proj_b_create
 
-    async def test_finalize_binds_to_caller_project_not_last_cache_key(
-        self, engine, tmp_path
-    ):
+    async def test_finalize_binds_to_caller_project_not_last_cache_key(self, engine, tmp_path):
         proj_a_create, proj_b_create = await self._create_two_projects(engine, tmp_path)
 
-        result = await engine.session_manage_lifecycle(
-            operation="finalize", project_name="proj-a"
-        )
+        result = await engine.session_manage_lifecycle(operation="finalize", project_name="proj-a")
 
         assert result.status == "success"
         assert result.session_id == proj_a_create.session_id, (
@@ -172,10 +162,7 @@ class TestSharedEngineDoesNotBleedAcrossProjects:
         assert proj_a_create.session_id not in engine.session_cache
         # ...while proj-b's untouched session remains active in the cache.
         assert proj_b_create.session_id in engine.session_cache
-        assert (
-            engine.session_cache[proj_b_create.session_id].status
-            == SessionStatus.ACTIVE
-        )
+        assert engine.session_cache[proj_b_create.session_id].status == SessionStatus.ACTIVE
 
     async def test_finalize_binds_by_absolute_project_path(self, engine, tmp_path):
         proj_a_create, proj_b_create = await self._create_two_projects(engine, tmp_path)
@@ -199,14 +186,10 @@ class TestSharedEngineDoesNotBleedAcrossProjects:
         assert result.session_id == proj_a_create.session_id
         assert result.session_id != proj_b_create.session_id
 
-    async def test_resume_binds_to_caller_project_not_last_cache_key(
-        self, engine, tmp_path
-    ):
+    async def test_resume_binds_to_caller_project_not_last_cache_key(self, engine, tmp_path):
         proj_a_create, proj_b_create = await self._create_two_projects(engine, tmp_path)
 
-        result = await engine.session_manage_lifecycle(
-            operation="resume", project_name="proj-a"
-        )
+        result = await engine.session_manage_lifecycle(operation="resume", project_name="proj-a")
 
         assert result.status == "success"
         assert result.session_id == proj_a_create.session_id, (
@@ -216,14 +199,10 @@ class TestSharedEngineDoesNotBleedAcrossProjects:
         assert result.session_id != proj_b_create.session_id
         assert engine._current_session_id == proj_a_create.session_id
 
-    async def test_validate_binds_to_caller_project_not_last_cache_key(
-        self, engine, tmp_path
-    ):
+    async def test_validate_binds_to_caller_project_not_last_cache_key(self, engine, tmp_path):
         proj_a_create, proj_b_create = await self._create_two_projects(engine, tmp_path)
 
-        result = await engine.session_manage_lifecycle(
-            operation="validate", project_name="proj-a"
-        )
+        result = await engine.session_manage_lifecycle(operation="validate", project_name="proj-a")
 
         assert result.status in {"success", "warning"}
         assert result.session_id == proj_a_create.session_id, (

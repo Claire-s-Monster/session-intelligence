@@ -69,9 +69,7 @@ async def test_agent_stop_success_transitions_to_success_status(engine):
     session_id = start_result.session_id
 
     session = engine.session_cache[session_id]
-    agent_execution = next(
-        a for a in session.agents_executed if a.agent_name == AGENT_NAME
-    )
+    agent_execution = next(a for a in session.agents_executed if a.agent_name == AGENT_NAME)
     assert agent_execution.status == ExecutionStatus.RUNNING
 
     stop_result = await engine.session_track_execution(
@@ -86,9 +84,7 @@ async def test_agent_stop_success_transitions_to_success_status(engine):
     )
     assert stop_result.status == "success"
 
-    agent_execution = next(
-        a for a in session.agents_executed if a.agent_name == AGENT_NAME
-    )
+    agent_execution = next(a for a in session.agents_executed if a.agent_name == AGENT_NAME)
     assert agent_execution.status == ExecutionStatus.SUCCESS, (
         "AgentExecution.status did not transition from RUNNING to SUCCESS "
         "on agent_stop with success=True. This is issue #39."
@@ -125,9 +121,7 @@ async def test_agent_stop_failure_transitions_to_error_status(engine):
     assert stop_result.status == "success"
 
     session = engine.session_cache[session_id]
-    agent_execution = next(
-        a for a in session.agents_executed if a.agent_name == AGENT_NAME
-    )
+    agent_execution = next(a for a in session.agents_executed if a.agent_name == AGENT_NAME)
     assert agent_execution.status == ExecutionStatus.ERROR, (
         "AgentExecution.status did not transition from RUNNING to ERROR "
         "on agent_stop with success=False. This is issue #39."
@@ -156,9 +150,7 @@ async def test_non_agent_stop_phase_keeps_running_status(engine):
     session_id = start_result.session_id
 
     session = engine.session_cache[session_id]
-    agent_execution = next(
-        a for a in session.agents_executed if a.agent_name == AGENT_NAME
-    )
+    agent_execution = next(a for a in session.agents_executed if a.agent_name == AGENT_NAME)
     assert agent_execution.status == ExecutionStatus.RUNNING
     assert agent_execution.completed is None
 

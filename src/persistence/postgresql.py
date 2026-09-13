@@ -349,7 +349,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
         if asyncpg is None:
             raise ImportError(
-                "asyncpg is required for PostgreSQL backend. " "Install with: pixi add asyncpg"
+                "asyncpg is required for PostgreSQL backend. Install with: pixi add asyncpg"
             )
 
         self.dsn = dsn or DEFAULT_POSTGRES_DSN
@@ -361,9 +361,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         # Default pool configuration for production use
         # These can be overridden via __init__ kwargs
         pool_defaults = {
-            "min_size": 2,        # Minimum connections to maintain
-            "max_size": 10,       # Maximum connections allowed
-            "timeout": 30,        # Connection acquisition timeout (seconds)
+            "min_size": 2,  # Minimum connections to maintain
+            "max_size": 10,  # Maximum connections allowed
+            "timeout": 30,  # Connection acquisition timeout (seconds)
             "command_timeout": 60,  # Command execution timeout (seconds)
         }
         # Merge defaults with user-provided kwargs (user kwargs take precedence)
@@ -397,16 +397,13 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             )
 
             # Idempotent migrations for existing databases
-            await conn.execute(
-                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_name TEXT"
-            )
+            await conn.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_name TEXT")
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_sessions_session_name "
                 "ON sessions(session_name) WHERE session_name IS NOT NULL"
             )
             await conn.execute(
-                "ALTER TABLE project_learnings "
-                "ADD COLUMN IF NOT EXISTS project_name TEXT"
+                "ALTER TABLE project_learnings ADD COLUMN IF NOT EXISTS project_name TEXT"
             )
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_learnings_project_name "
@@ -414,12 +411,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             )
             # Issue #87: idempotent migration for existing databases: add
             # the supersedes pointer used to retire corrected entries.
+            await conn.execute("ALTER TABLE decisions ADD COLUMN IF NOT EXISTS supersedes TEXT")
             await conn.execute(
-                "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS supersedes TEXT"
-            )
-            await conn.execute(
-                "ALTER TABLE project_learnings "
-                "ADD COLUMN IF NOT EXISTS supersedes TEXT"
+                "ALTER TABLE project_learnings ADD COLUMN IF NOT EXISTS supersedes TEXT"
             )
 
             # Issue #82: idempotent migration for existing databases: add
@@ -433,12 +427,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 "UPDATE sessions SET last_seen_at = started_at WHERE last_seen_at IS NULL"
             )
             await conn.execute(
-                "ALTER TABLE agent_executions "
-                "ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ"
+                "ALTER TABLE agent_executions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ"
             )
             await conn.execute(
-                "UPDATE agent_executions SET last_seen_at = started_at "
-                "WHERE last_seen_at IS NULL"
+                "UPDATE agent_executions SET last_seen_at = started_at WHERE last_seen_at IS NULL"
             )
 
         self._is_connected = True
@@ -1452,8 +1444,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         execution_id = execution_data.get("id") or execution_data.get("execution_id")
         if not execution_id:
             raise ValueError(
-                "save_agent_execution: execution_data missing both 'id' and "
-                "'execution_id'"
+                "save_agent_execution: execution_data missing both 'id' and 'execution_id'"
             )
 
         started_at = (
@@ -1624,18 +1615,18 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         for entry in stats_map.values():
             dur_count = entry["duration_ms_count"]
             avg_duration_ms = (
-                round(entry["duration_ms_total"] / dur_count, 1)
-                if dur_count > 0
-                else None
+                round(entry["duration_ms_total"] / dur_count, 1) if dur_count > 0 else None
             )
-            result.append({
-                "agent_type": entry["agent_type"],
-                "invocations": entry["invocations"],
-                "successes": entry["successes"],
-                "failures": entry["failures"],
-                "avg_duration_ms": avg_duration_ms,
-                "last_used": entry["last_used"],
-            })
+            result.append(
+                {
+                    "agent_type": entry["agent_type"],
+                    "invocations": entry["invocations"],
+                    "successes": entry["successes"],
+                    "failures": entry["failures"],
+                    "avg_duration_ms": avg_duration_ms,
+                    "last_used": entry["last_used"],
+                }
+            )
 
         result.sort(key=lambda x: x["invocations"], reverse=True)
         return {"total_sessions_scanned": total_sessions, "agents": result}

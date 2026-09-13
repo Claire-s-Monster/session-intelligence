@@ -25,9 +25,9 @@ import pytest
 from tests.persistence.builders import (
     make_agent_data,
     make_agent_decision_data,
+    make_agent_execution_data,
     make_agent_learning_data,
     make_agent_notebook_data,
-    make_agent_execution_data,
     make_decision_data,
     make_error_solution_data,
     make_file_operation_data,
@@ -39,10 +39,10 @@ from tests.persistence.builders import (
     make_summary_data,
 )
 
-
 # ---------------------------------------------------------------------------
 # Adapter helpers — normalise builder dicts to backend field names
 # ---------------------------------------------------------------------------
+
 
 def _session(session_id: str | None = None, **overrides) -> dict:
     """Return a session dict ready for ``save_session``."""
@@ -201,9 +201,33 @@ def _mcp_session(**overrides) -> dict:
     return make_mcp_session_data(**overrides)
 
 
+def _parse_timestamp(value: datetime | str) -> datetime:
+    """Normalize a backend-returned timestamp to a comparable aware datetime.
+
+    Backends are inconsistent about representation: some values are naive
+    (assumed to be local wall-clock time), others are timezone-aware ISO
+    strings. ``datetime.fromisoformat`` accepts both the "T" and space
+    separators, so this only needs to reconcile the naive/aware mismatch.
+
+    WORKAROUND for issue #112: `_get_timestamp()` in persistence/base.py returns
+    naive local time while PostgreSQL's `update_mcp_session_activity` uses
+    server-side NOW() (true UTC), so a single row's `last_activity` can be
+    written in two different time bases. This helper normalizes both for testing
+    so the assertion below measures what it should (that activity advanced) rather
+    than failing on format mismatch. `.astimezone()` on a naive value assumes
+    system local time, which is precisely the ambiguity #112 describes. DELETE
+    this helper and assert timezone-awareness directly once #112 is fixed.
+    """
+    dt = datetime.fromisoformat(value) if isinstance(value, str) else value
+    if dt.tzinfo is None:
+        dt = dt.astimezone()
+    return dt
+
+
 # ---------------------------------------------------------------------------
 # The Contract
 # ---------------------------------------------------------------------------
+
 
 class PersistenceContractTests:
     """
@@ -279,7 +303,10 @@ class PersistenceContractTests:
 
     async def test_decision_requires_valid_session_fk(self, backend):
         d = _decision(session_id="invalid-session-fk-xyz")
-        with pytest.raises(Exception):
+        # Concrete type is backend-specific (asyncpg ForeignKeyViolationError
+        # vs sqlite3 IntegrityError); the contract only guarantees that
+        # saving with a dangling FK raises.
+        with pytest.raises(Exception):  # noqa: B017
             await backend.save_decision(d)
 
     async def test_query_decisions_with_filters(self, backend):
@@ -395,7 +422,10 @@ class PersistenceContractTests:
 
     async def test_agent_decision_requires_valid_agent_fk(self, backend):
         d = _agent_decision(agent_id="invalid-agent-fk-xyz")
-        with pytest.raises(Exception):
+        # Concrete type is backend-specific (asyncpg ForeignKeyViolationError
+        # vs sqlite3 IntegrityError); the contract only guarantees that
+        # saving with a dangling FK raises.
+        with pytest.raises(Exception):  # noqa: B017
             await backend.save_agent_decision(d)
 
     async def test_query_agent_decisions_with_filters(self, backend):
@@ -610,8 +640,15 @@ class PersistenceContractTests:
         await backend.update_mcp_session_activity(m["mcp_session_id"])
         result = await backend.get_mcp_session(m["mcp_session_id"])
         assert result is not None
+        new_activity = result["last_activity"]
         # last_activity should be set (either same or newer — just must not be None)
-        assert result["last_activity"] is not None
+        assert new_activity is not None
+        # Backends may return naive or tz-aware timestamps (and as either
+        # datetime objects or ISO strings) — normalize before comparing.
+        # The two calls can land within the same clock tick, so use >= rather
+        # than a strict > to avoid flakiness.
+        # See #112: normalization reconciles mismatched time bases (naive vs UTC).
+        assert _parse_timestamp(new_activity) >= _parse_timestamp(old_activity)
 
     async def test_link_mcp_to_engine_session(self, backend):
         s = _session()

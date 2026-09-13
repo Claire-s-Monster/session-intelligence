@@ -17,7 +17,6 @@ import pytest
 from core.session_engine import ResolvedSessionContext, SessionIntelligenceEngine
 from persistence.sqlite import SQLiteBackend
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -86,9 +85,9 @@ async def test_log_learning_with_explicit_project_name_recalls_correctly(engine,
     recall = await engine.session_recall(project_name="proj-A")
     learnings = recall.get("learnings", [])
     contents = [lr.get("learning_content", "") for lr in learnings]
-    assert any(
-        "dataclasses" in c for c in contents
-    ), f"learning not found in recall; learnings={learnings}"
+    assert any("dataclasses" in c for c in contents), (
+        f"learning not found in recall; learnings={learnings}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -125,9 +124,9 @@ async def test_log_learning_with_session_id_uses_session_project_name(engine, db
     recall = await engine.session_recall(project_name="proj-B")
     learnings = recall.get("learnings", [])
     contents = [lr.get("learning_content", "") for lr in learnings]
-    assert any(
-        "commit" in c for c in contents
-    ), f"learning not found in recall; learnings={learnings}"
+    assert any("commit" in c for c in contents), (
+        f"learning not found in recall; learnings={learnings}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -135,9 +134,7 @@ async def test_log_learning_with_session_id_uses_session_project_name(engine, db
 # ---------------------------------------------------------------------------
 
 
-async def test_log_learning_explicit_project_name_overrides_session_project_name(
-    engine, db
-):
+async def test_log_learning_explicit_project_name_overrides_session_project_name(engine, db):
     """
     When session_id is bound to proj-A but caller passes project_name="proj-C",
     the persisted row's project_name must be "proj-C" (caller wins).
@@ -159,9 +156,7 @@ async def test_log_learning_explicit_project_name_overrides_session_project_name
     )
     row = await cursor.fetchone()
     assert row is not None
-    assert row["project_name"] == "proj-C", (
-        f"expected proj-C but got {row['project_name']}"
-    )
+    assert row["project_name"] == "proj-C", f"expected proj-C but got {row['project_name']}"
 
     # Recall via proj-C must find it
     recall_c = await engine.session_recall(project_name="proj-C")
@@ -230,9 +225,9 @@ async def test_recall_project_finds_legacy_rows_via_path_bridge(engine, db):
     recall = await engine.session_recall(project_name="legacy-proj")
     learnings = recall.get("learnings", [])
     contents = [lr.get("learning_content", "") for lr in learnings]
-    assert any(
-        "pin dependency" in c for c in contents
-    ), f"legacy learning not found via path-bridge; learnings={learnings}"
+    assert any("pin dependency" in c for c in contents), (
+        f"legacy learning not found via path-bridge; learnings={learnings}"
+    )
 
 
 # ---------------------------------------------------------------------------

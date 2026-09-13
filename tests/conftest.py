@@ -19,13 +19,14 @@ import pytest
 # Add tests/ first, then src — src must come first so that top-level
 # package names (e.g. `persistence`) resolve to src/ rather than to the
 # tests/persistence/ subdirectory which shadows it.
-sys.path.insert(0, str(Path(__file__).parent))       # tests/
+sys.path.insert(0, str(Path(__file__).parent))  # tests/
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))  # src/ — wins
 
 
 # ============================================================================
 # Path Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def project_root() -> Path:
@@ -58,6 +59,7 @@ def temp_session_dir(temp_dir: Path) -> Path:
 # Database Fixtures
 # ============================================================================
 
+
 @pytest.fixture
 def sqlite_db_path(temp_dir: Path) -> Path:
     """Create a temporary SQLite database path."""
@@ -79,6 +81,7 @@ async def sqlite_backend(sqlite_db_path: Path) -> AsyncGenerator:
 # Engine Fixtures
 # ============================================================================
 
+
 @pytest.fixture
 def session_engine(temp_dir: Path, monkeypatch):
     """Create a session engine for testing."""
@@ -95,6 +98,7 @@ def session_engine(temp_dir: Path, monkeypatch):
 # ============================================================================
 # Environment Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def clean_env() -> Generator[None, None, None]:
@@ -134,6 +138,7 @@ def postgresql_env() -> Generator[None, None, None]:
 # ============================================================================
 # Mock Data Fixtures
 # ============================================================================
+
 
 @pytest.fixture
 def sample_session_metadata() -> dict:

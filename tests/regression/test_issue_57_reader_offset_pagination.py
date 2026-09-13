@@ -28,7 +28,6 @@ from persistence.migration import MigrationManager
 from persistence.sqlite import SQLiteBackend
 from tests.persistence.contract_tests import _agent_execution, _decision, _session
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

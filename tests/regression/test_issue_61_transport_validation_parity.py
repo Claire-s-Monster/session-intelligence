@@ -135,9 +135,7 @@ async def _initialize_mcp(client: httpx.AsyncClient) -> str:
     return resp.headers["MCP-Session-Id"]
 
 
-async def _http_execute_tool(
-    client: httpx.AsyncClient, tool_name: str, parameters: dict
-) -> dict:
+async def _http_execute_tool(client: httpx.AsyncClient, tool_name: str, parameters: dict) -> dict:
     """Run execute_tool(tool_name, parameters) over the HTTP/MCP transport
     and return the decoded envelope."""
     session_id = await _initialize_mcp(client)
@@ -184,9 +182,7 @@ async def _count_decision_rows(db: SQLiteBackend) -> int:
 # ===========================================================================
 
 
-async def test_unknown_parameter_over_http_is_refused_and_writes_no_row(
-    asgi_client, db, tmp_path
-):
+async def test_unknown_parameter_over_http_is_refused_and_writes_no_row(asgi_client, db, tmp_path):
     """
     Verbatim repro of issue #61: session_log_decision does not declare a
     `category` parameter, yet a caller could pass one over HTTP and receive
@@ -248,12 +244,8 @@ async def test_unknown_parameter_is_refused_identically_over_both_transports(
         "project_path": str(tmp_path),
     }
 
-    stdio_result = await _stdio_execute_tool(
-        lean_interface, "session_log_decision", parameters
-    )
-    http_result = await _http_execute_tool(
-        asgi_client, "session_log_decision", parameters
-    )
+    stdio_result = await _stdio_execute_tool(lean_interface, "session_log_decision", parameters)
+    http_result = await _http_execute_tool(asgi_client, "session_log_decision", parameters)
 
     assert stdio_result["status"] == "error"
     assert http_result["status"] == "error"
@@ -331,9 +323,7 @@ async def test_transport_validation_parity_matrix(app, asgi_client, tool_name, p
 # ===========================================================================
 
 
-async def test_exception_inside_tool_is_not_reported_as_success_over_http(
-    tmp_path, monkeypatch
-):
+async def test_exception_inside_tool_is_not_reported_as_success_over_http(tmp_path, monkeypatch):
     """
     Guards the second half of #61 independently of parameter validation: if
     a tool implementation raises AFTER passing the schema-validation gate
@@ -366,9 +356,7 @@ async def test_exception_inside_tool_is_not_reported_as_success_over_http(
         lean = LeanMCPInterface(engine)
         mcp_mgr = MCPSessionManager(backend)
         notif_mgr = NotificationManager()
-        sc = SecurityConfig(
-            localhost_only=False, allowed_origins=["*"], require_api_key=False
-        )
+        sc = SecurityConfig(localhost_only=False, allowed_origins=["*"], require_api_key=False)
 
         server = HTTPSessionIntelligenceServer(
             host="127.0.0.1",

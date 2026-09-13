@@ -15,7 +15,6 @@ from core.session_engine import SessionIntelligenceEngine
 from lean_mcp_interface import LeanMCPInterface
 from persistence.sqlite import SQLiteBackend
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -293,11 +292,11 @@ class TestExecuteSessionTrackFileOperation:
         result = await execute(
             "session_track_file_operation",
             {
-                    "operation": "create",
-                    "file_path": "src/new_module.py",
-                    "lines_added": 10,
-                    "project_name": "test-project",
-                },
+                "operation": "create",
+                "file_path": "src/new_module.py",
+                "lines_added": 10,
+                "project_name": "test-project",
+            },
         )
         assert result["status"] == "success"
 

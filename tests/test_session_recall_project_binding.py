@@ -11,9 +11,7 @@ POSTGRES_DSN = os.environ.get("POSTGRES_DSN", "")
 
 pytestmark = [
     pytest.mark.postgresql,
-    pytest.mark.skipif(
-        not POSTGRES_DSN, reason="POSTGRES_DSN not set; PostgreSQL not available"
-    ),
+    pytest.mark.skipif(not POSTGRES_DSN, reason="POSTGRES_DSN not set; PostgreSQL not available"),
 ]
 
 
@@ -46,24 +44,18 @@ async def test_explicit_create_recall_finds_decision(db):
     pn = f"test-proj-{uuid.uuid4().hex[:8]}"
     engine = _make_engine(db)
     try:
-        create_result = engine._create_session(
-            mode="local", project_name=pn, metadata={}
-        )
+        create_result = engine._create_session(mode="local", project_name=pn, metadata={})
         assert create_result.status == "success"
         sid = create_result.session_id
 
         await db.save_session(create_result.session_data.model_dump(mode="python"))
 
-        result = await engine.session_log_decision(
-            decision="explicit-create-probe", session_id=sid
-        )
+        result = await engine.session_log_decision(decision="explicit-create-probe", session_id=sid)
         assert result.decision_id != "error"
 
         pool = db._ensure_connected()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT id FROM decisions WHERE session_id = $1", sid
-            )
+            row = await conn.fetchrow("SELECT id FROM decisions WHERE session_id = $1", sid)
         assert row is not None
     finally:
         await _cleanup(db, [pn])
@@ -73,9 +65,7 @@ async def test_explicit_create_recall_finds_decision(db):
 async def test_log_without_create_with_allow_unbound_uses_sentinel(db):
     engine = _make_engine(db)
     try:
-        result = await engine.session_log_decision(
-            decision="no-create-probe", allow_unbound=True
-        )
+        result = await engine.session_log_decision(decision="no-create-probe", allow_unbound=True)
         assert result.decision_id != "error"
 
         sid = engine._current_session_id
@@ -83,9 +73,7 @@ async def test_log_without_create_with_allow_unbound_uses_sentinel(db):
 
         pool = db._ensure_connected()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT project_name FROM sessions WHERE id = $1", sid
-            )
+            row = await conn.fetchrow("SELECT project_name FROM sessions WHERE id = $1", sid)
         assert row is not None
         assert row["project_name"] == "_unbound_"
         assert row["project_name"] != ".claude"
@@ -120,9 +108,7 @@ async def test_create_then_log_requires_explicit_scope(db):
     pn = f"test-proj-{uuid.uuid4().hex[:8]}"
     engine = _make_engine(db)
     try:
-        create_result = engine._create_session(
-            mode="local", project_name=pn, metadata={}
-        )
+        create_result = engine._create_session(mode="local", project_name=pn, metadata={})
         assert create_result.status == "success"
         sid = create_result.session_id
         assert engine._current_session_id == sid
@@ -134,25 +120,19 @@ async def test_create_then_log_requires_explicit_scope(db):
             await engine.session_log_decision(decision="create-then-log-probe")
 
         # Passing the id that create returned is the documented replacement.
-        result = await engine.session_log_decision(
-            decision="create-then-log-probe", session_id=sid
-        )
+        result = await engine.session_log_decision(decision="create-then-log-probe", session_id=sid)
         assert result.decision_id != "error"
 
         pool = db._ensure_connected()
         async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "SELECT session_id FROM decisions WHERE session_id = $1", sid
-            )
+            row = await conn.fetchrow("SELECT session_id FROM decisions WHERE session_id = $1", sid)
         assert row is not None
     finally:
         await _cleanup(db, [pn])
 
 
 @pytest.mark.asyncio
-async def test_log_learning_with_absolute_project_path_derives_project_name(
-    db, tmp_path
-):
+async def test_log_learning_with_absolute_project_path_derives_project_name(db, tmp_path):
     """No session identifier, but an absolute project_path: should derive a
     project_name instead of raising, and must not bind to '_unbound_'."""
     engine = _make_engine(db)
@@ -178,9 +158,7 @@ async def test_log_learning_with_absolute_project_path_derives_project_name(
     finally:
         pool = db._ensure_connected()
         async with pool.acquire() as conn:
-            await conn.execute(
-                "DELETE FROM project_learnings WHERE id = $1", result.id
-            )
+            await conn.execute("DELETE FROM project_learnings WHERE id = $1", result.id)
             if row and row["project_name"]:
                 await conn.execute(
                     "DELETE FROM sessions WHERE project_name = $1",
@@ -229,9 +207,7 @@ async def test_log_decision_with_project_name_param_creates_correct_session(db):
 
         pool = db._ensure_connected()
         async with pool.acquire() as conn:
-            session_row = await conn.fetchrow(
-                "SELECT id FROM sessions WHERE project_name = $1", pn
-            )
+            session_row = await conn.fetchrow("SELECT id FROM sessions WHERE project_name = $1", pn)
             assert session_row is not None, f"No session found for project_name={pn!r}"
 
             decision_row = await conn.fetchrow(

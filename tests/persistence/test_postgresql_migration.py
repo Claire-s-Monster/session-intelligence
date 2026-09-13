@@ -120,9 +120,7 @@ async def _seed_notes(backend, session_id: str, count: int) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-async def test_ordinary_save_note_succeeds_after_migration_preserved_ids(
-    sqlite_source, pg_backend
-):
+async def test_ordinary_save_note_succeeds_after_migration_preserved_ids(sqlite_source, pg_backend):
     """The acceptance criterion: a normal note write after a migration works.
 
     Without resync_notes_sequence() this raises UniqueViolationError -- see the

@@ -17,7 +17,6 @@ import pytest
 from core.session_engine import SessionContextRequiredError, SessionIntelligenceEngine
 from models.session_models import SessionHealthResult, SessionResult, SessionStatus
 
-
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
@@ -145,9 +144,7 @@ async def test_finalize_nonexistent_session_allow_unbound_still_completes(engine
     """The allow_unbound=True escape hatch preserves the pre-#77 ambient
     behavior: it auto-creates/uses the ambient session and finalizes it
     without raising."""
-    result = await engine.session_manage_lifecycle(
-        operation="finalize", allow_unbound=True
-    )
+    result = await engine.session_manage_lifecycle(operation="finalize", allow_unbound=True)
 
     assert isinstance(result, SessionResult)
     assert result.operation == "finalize"
@@ -197,9 +194,7 @@ async def test_session_health_includes_diagnostics(engine):
     create_result = await _create_session(engine)
     session_id = create_result.session_id
 
-    health = await engine.session_monitor_health(
-        session_id=session_id, include_diagnostics=True
-    )
+    health = await engine.session_monitor_health(session_id=session_id, include_diagnostics=True)
 
     assert isinstance(health.diagnostics, dict)
     # At minimum the age should be present
@@ -257,6 +252,4 @@ async def test_get_or_create_returns_cached_id(engine):
 
 def test_session_manage_lifecycle_is_async():
     """session_manage_lifecycle must be a coroutine function."""
-    assert inspect.iscoroutinefunction(
-        SessionIntelligenceEngine.session_manage_lifecycle
-    )
+    assert inspect.iscoroutinefunction(SessionIntelligenceEngine.session_manage_lifecycle)

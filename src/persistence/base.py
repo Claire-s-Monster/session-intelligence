@@ -118,10 +118,12 @@ try:
     try:
         import asyncpg
 
-        _retryable_exceptions.extend([
-            asyncpg.PostgresConnectionError,
-            asyncpg.InterfaceError,
-        ])
+        _retryable_exceptions.extend(
+            [
+                asyncpg.PostgresConnectionError,
+                asyncpg.InterfaceError,
+            ]
+        )
     except ImportError:
         pass
 
@@ -141,9 +143,11 @@ except ImportError:
 
     def db_retry(func: F) -> F:
         """No-op decorator when tenacity is not available."""
+
         @wraps(func)
         async def wrapper(*args: Any, **kwargs: Any) -> Any:
             return await func(*args, **kwargs)
+
         return wrapper  # type: ignore
 
 

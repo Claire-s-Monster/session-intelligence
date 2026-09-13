@@ -211,8 +211,7 @@ class TestValidatorTruncatesLongDescription:
 class TestValidatorCollapsesMultilineDescription:
     def test_block_scalar_description_collapsed(self, tmp_path: Path) -> None:
         frontmatter = (
-            "name: multi-agent\ndescription: |\n"
-            "  First line.\n  Second line.\n  Third line.\n"
+            "name: multi-agent\ndescription: |\n  First line.\n  Second line.\n  Third line.\n"
         )
         _write_agent(tmp_path, "domain", "multi-agent", frontmatter)
         validator = AgentValidator(agents_root=tmp_path, mode="strict")

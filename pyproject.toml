@@ -15,8 +15,8 @@ dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.0.0",
-    "black>=23.0.0",
     "ruff>=0.1.0",
+    "black>=23.0.0",
     "mypy>=1.5.0",
     "pre-commit>=3.0.0",
 ]
@@ -74,11 +74,16 @@ daemon-status = { cmd = "scripts/session-intelligence-daemon.sh status" }
 migrate-from-sqlite = { cmd = "python -m persistence.migration sqlite-to-postgres", env = { PYTHONPATH = "src" } }
 db-export = { cmd = "python -m persistence.migration export", env = { PYTHONPATH = "src" } }
 # Quality tasks
-lint = "ruff check src/ --fix"
-format = "black src/ tests/"
+# lint is deliberately NOT --fix: ruff exits 0 once it has repaired
+# everything, so a --fix gate passes on a checkout whose committed code
+# still has violations. Use lint-fix locally instead.
+lint = "ruff check src/ tests/"
+lint-fix = "ruff check src/ tests/ --fix"
+format = "ruff format src/ tests/"
+format-check = "ruff format --check src/ tests/"
 type-check = "mypy src/"
 dead-code = "vulture src/ --min-confidence 80"
-quality = { depends-on = ["lint", "type-check-lenient"] }
+quality = { depends-on = ["lint", "format-check", "type-check-lenient"] }
 type-check-lenient = "mypy src/ || echo 'mypy: warnings found (non-blocking)'"
 check-all = { depends-on = ["test", "quality"] }
 build = "python -m build"
@@ -130,10 +135,6 @@ select = [
     "C4", # flake8-comprehensions
     "UP", # pyupgrade
 ]
-
-[tool.black]
-target-version = ["py311"]
-line-length = 100
 
 [tool.mypy]
 python_version = "3.11"

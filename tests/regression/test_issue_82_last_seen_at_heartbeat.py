@@ -198,9 +198,7 @@ class TestFindRecentSessionByProjectHonorsLastSeenAt:
         )
         await backend.save_session(session)
 
-        result = await backend.find_recent_session_by_project(
-            "proj-frsbp-fresh", status="active"
-        )
+        result = await backend.find_recent_session_by_project("proj-frsbp-fresh", status="active")
 
         assert result is not None, (
             "find_recent_session_by_project must apply the same "
@@ -218,9 +216,7 @@ class TestFindRecentSessionByProjectHonorsLastSeenAt:
         )
         await backend.save_session(session)
 
-        result = await backend.find_recent_session_by_project(
-            "proj-frsbp-stale", status="active"
-        )
+        result = await backend.find_recent_session_by_project("proj-frsbp-stale", status="active")
 
         assert result is None
 
@@ -250,8 +246,7 @@ class TestReapAbandonedSessionsHonorsLastSeenAt:
         reaped = await backend.reap_abandoned_sessions()
 
         assert reaped == 0, (
-            "A session heartbeating recently must not be reaped just "
-            "because its started_at is old."
+            "A session heartbeating recently must not be reaped just because its started_at is old."
         )
         row = await backend.get_session(session["id"])
         assert row["status"] == "active"
@@ -341,7 +336,9 @@ class TestReapStaleExecutionsHonorsLastSeenAt:
 
         reaped = await backend.reap_stale_executions()
 
-        assert reaped == 1, "No regression of #70: a genuinely stale execution must still be reaped."
+        assert reaped == 1, (
+            "No regression of #70: a genuinely stale execution must still be reaped."
+        )
         rows = await backend.query_agent_executions(session_id=session_id)
         assert rows[0]["status"] == "abandoned"
 

@@ -30,7 +30,6 @@ from persistence.sqlite import SQLiteBackend
 
 @pytest.mark.regression
 class TestUnboundFileOperationIsRejected:
-
     @pytest.fixture
     async def engine(self, tmp_path):
         eng = SessionIntelligenceEngine(repository_path=str(tmp_path))
@@ -53,9 +52,7 @@ class TestUnboundFileOperationIsRejected:
         )
 
         with pytest.raises(SessionContextRequiredError) as exc_info:
-            await engine.session_track_file_operation(
-                operation="edit", file_path="/tmp/x.py"
-            )
+            await engine.session_track_file_operation(operation="edit", file_path="/tmp/x.py")
         assert "session_track_file_operation" in str(exc_info.value), (
             "The #74 regression message should identify "
             "session_track_file_operation as requiring an explicit scope, "
@@ -109,9 +106,7 @@ class TestSharedEngineDoesNotBleedAcrossProjects:
         yield eng
         await eng.database.close()
 
-    async def test_file_operation_binds_to_named_project_not_last_cache_key(
-        self, engine, tmp_path
-    ):
+    async def test_file_operation_binds_to_named_project_not_last_cache_key(self, engine, tmp_path):
         proj_a_path = str(tmp_path / "proj-a")
         proj_b_path = str(tmp_path / "proj-b")
 
@@ -154,9 +149,7 @@ class TestSharedEngineDoesNotBleedAcrossProjects:
             "created more recently, it was never named by the caller."
         )
 
-    async def test_file_operation_binds_by_absolute_project_path(
-        self, engine, tmp_path
-    ):
+    async def test_file_operation_binds_by_absolute_project_path(self, engine, tmp_path):
         # derive_project_name() probes path.is_dir() and otherwise falls
         # back to path.parent (both proj-a and proj-b would then resolve
         # to tmp_path's own basename, collapsing the two projects into the
@@ -196,9 +189,7 @@ class TestSharedEngineDoesNotBleedAcrossProjects:
         )
         assert result["session_id"] != proj_b_create.session_id
 
-    async def test_explicit_session_id_wins_over_last_cache_key(
-        self, engine, tmp_path
-    ):
+    async def test_explicit_session_id_wins_over_last_cache_key(self, engine, tmp_path):
         proj_a_path = str(tmp_path / "proj-a")
         proj_b_path = str(tmp_path / "proj-b")
 
@@ -230,7 +221,6 @@ class TestSharedEngineDoesNotBleedAcrossProjects:
 
 @pytest.mark.regression
 class TestFileOperationIsPersistedUnderResolvedSession:
-
     @pytest.fixture
     async def engine(self, tmp_path):
         eng = SessionIntelligenceEngine(repository_path=str(tmp_path))
@@ -239,9 +229,7 @@ class TestFileOperationIsPersistedUnderResolvedSession:
         yield eng
         await eng.database.close()
 
-    async def test_row_is_written_under_the_resolved_session(
-        self, engine, tmp_path
-    ):
+    async def test_row_is_written_under_the_resolved_session(self, engine, tmp_path):
         """SQLiteBackend.query_file_operations_by_session() exists (see
         src/persistence/sqlite.py), so this test uses that getter directly
         rather than a raw SQL SELECT."""
@@ -294,9 +282,7 @@ class TestFileOperationIsPersistedUnderResolvedSession:
         db_path = str(tmp_path / "test.db")
         conn = sqlite3.connect(db_path)
         try:
-            cursor = conn.execute(
-                "SELECT session_id, file_path FROM file_operations"
-            )
+            cursor = conn.execute("SELECT session_id, file_path FROM file_operations")
             raw_rows = cursor.fetchall()
         finally:
             conn.close()

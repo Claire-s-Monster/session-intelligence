@@ -13,8 +13,6 @@ SQLite-backed engine (one fresh DB per test).
 asyncio_mode = "auto" is set project-wide — do NOT add @pytest.mark.asyncio.
 """
 
-import pytest
-
 
 # ============================================================================
 # Helper: register an agent and return its registration result
@@ -163,9 +161,7 @@ async def test_agent_query_decisions_filtered_by_type(engine):
         decision="use SQLite",
     )
 
-    arch_decisions = await engine.agent_query_decisions(
-        "test-agent", decision_type="architecture"
-    )
+    arch_decisions = await engine.agent_query_decisions("test-agent", decision_type="architecture")
 
     assert len(arch_decisions) >= 1
     for d in arch_decisions:
@@ -242,7 +238,7 @@ async def test_agent_query_learnings(engine):
     learnings = await engine.agent_query_learnings("test-agent")
 
     assert len(learnings) >= 1
-    ids = [l.id for l in learnings]
+    ids = [learning.id for learning in learnings]
     assert log_result.learning_id in ids
 
 

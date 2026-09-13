@@ -133,9 +133,7 @@ def safe_parse_datetime(value: Any) -> datetime | None:
         except ValueError:
             debug_logger.warning(f"Failed to parse datetime string: {value}")
             return None
-    debug_logger.warning(
-        f"Unexpected datetime type: {type(value)} - {value}"
-    )
+    debug_logger.warning(f"Unexpected datetime type: {type(value)} - {value}")
     return None
 
 
@@ -238,31 +236,23 @@ class SessionIntelligenceEngine:
         if repository_path:
             claude_path = Path(repository_path) / ".claude" / "session-intelligence"
             self.claude_sessions_path = claude_path
-            debug_logger.info(
-                f"Using provided repository_path: {repository_path}"
-            )
+            debug_logger.info(f"Using provided repository_path: {repository_path}")
         else:
             self.claude_sessions_path = self._get_project_session_path()
             debug_logger.info(
-                "Auto-detected project path, "
-                f"claude_sessions_path: {self.claude_sessions_path}"
+                f"Auto-detected project path, claude_sessions_path: {self.claude_sessions_path}"
             )
 
-        debug_logger.info(
-            f"Final claude_sessions_path: {self.claude_sessions_path}"
-        )
+        debug_logger.info(f"Final claude_sessions_path: {self.claude_sessions_path}")
 
         # Only create filesystem directories if filesystem persistence enabled
         if self.use_filesystem:
             self.claude_sessions_path.mkdir(parents=True, exist_ok=True)
             debug_logger.info(
-                "Created/ensured session directory exists at: "
-                f"{self.claude_sessions_path}"
+                f"Created/ensured session directory exists at: {self.claude_sessions_path}"
             )
         else:
-            debug_logger.info(
-                "Filesystem persistence disabled - using memory only"
-            )
+            debug_logger.info("Filesystem persistence disabled - using memory only")
 
         self._agent_validator = AgentValidator()  # env-driven config, defaults to strict
 
@@ -317,9 +307,7 @@ class SessionIntelligenceEngine:
                 )
             existing = await self.database.get_session(session_id)
             if existing is None:
-                raise ValueError(
-                    f"session_id={session_id!r} not found in database"
-                )
+                raise ValueError(f"session_id={session_id!r} not found in database")
             # Cache for back-compat
             self._current_session_id = session_id
             return ResolvedSessionContext(
@@ -331,9 +319,7 @@ class SessionIntelligenceEngine:
         # 2. session_name (optionally scoped to project_name)
         if session_name is not None:
             if not self.database:
-                raise ValueError(
-                    "session_name resolution requires a database backend"
-                )
+                raise ValueError("session_name resolution requires a database backend")
             # Caller-controlled label; query by name (and optionally project)
             match = await self.database.find_session_by_name(
                 session_name, project_name=project_name
@@ -347,8 +333,7 @@ class SessionIntelligenceEngine:
                 )
             if not create_if_missing:
                 raise ValueError(
-                    f"session_name={session_name!r} not found "
-                    f"(project_name={project_name!r})"
+                    f"session_name={session_name!r} not found (project_name={project_name!r})"
                 )
             # Create with the given name + project
             result = self._create_session(
@@ -378,9 +363,7 @@ class SessionIntelligenceEngine:
                         project_path=match.get("project_path"),
                     )
             if not create_if_missing:
-                raise ValueError(
-                    f"no active session for project_name={project_name!r}"
-                )
+                raise ValueError(f"no active session for project_name={project_name!r}")
             result = self._create_session(
                 mode="explicit",
                 project_name=project_name,
@@ -413,19 +396,13 @@ class SessionIntelligenceEngine:
         """Get current session ID from cache/file, or create new session if needed."""
         # Check in-memory cache first
         if self._current_session_id and self._current_session_id in self.session_cache:
-            debug_logger.info(
-                f"Using cached current session ID: {self._current_session_id}"
-            )
+            debug_logger.info(f"Using cached current session ID: {self._current_session_id}")
             return self._current_session_id
 
         # If filesystem enabled, try to read from file
         if self.use_filesystem:
-            current_session_file = (
-                self.claude_sessions_path.parent / "current-session-id"
-            )
-            debug_logger.info(
-                f"Looking for current session ID in: {current_session_file}"
-            )
+            current_session_file = self.claude_sessions_path.parent / "current-session-id"
+            debug_logger.info(f"Looking for current session ID in: {current_session_file}")
 
             if current_session_file.exists():
                 try:
@@ -433,9 +410,7 @@ class SessionIntelligenceEngine:
                     debug_logger.info(f"Found existing session ID: {session_id}")
 
                     if session_id in self.session_cache:
-                        debug_logger.info(
-                            f"Session {session_id} found in cache"
-                        )
+                        debug_logger.info(f"Session {session_id} found in cache")
                         self._current_session_id = session_id
                         return session_id
 
@@ -444,10 +419,7 @@ class SessionIntelligenceEngine:
                     metadata_file = session_dir / "session-metadata.json"
 
                     if session_dir.exists() and metadata_file.exists():
-                        debug_logger.info(
-                            f"Session {session_id} found on disk, "
-                            "loading to cache"
-                        )
+                        debug_logger.info(f"Session {session_id} found on disk, loading to cache")
                         with open(metadata_file) as f:
                             session_data = json.load(f)
                         from models.session_models import Session
@@ -465,23 +437,18 @@ class SessionIntelligenceEngine:
                             try:
                                 current_session_file.unlink()
                             except Exception as e:
-                                debug_logger.error(
-                                    f"Error removing stale current-session-id: {e}"
-                                )
+                                debug_logger.error(f"Error removing stale current-session-id: {e}")
                         else:
                             self.session_cache[session_id] = session
                             self._current_session_id = session_id
                             return session_id
                     else:
                         debug_logger.warning(
-                            f"Session {session_id} not found on disk, "
-                            "creating new session"
+                            f"Session {session_id} not found on disk, creating new session"
                         )
 
                 except Exception as e:
-                    debug_logger.error(
-                        f"Error reading current session ID: {e}"
-                    )
+                    debug_logger.error(f"Error reading current session ID: {e}")
 
         # Create new session if none exists or is valid
         debug_logger.info("Creating new session")
@@ -504,17 +471,11 @@ class SessionIntelligenceEngine:
             self._current_session_id = result.session_id
             # Only write to file if filesystem is enabled
             if self.use_filesystem:
-                current_session_file = (
-                    self.claude_sessions_path.parent / "current-session-id"
-                )
+                current_session_file = self.claude_sessions_path.parent / "current-session-id"
                 current_session_file.write_text(result.session_id + "\n")
-                debug_logger.info(
-                    f"Saved new session ID to file: {result.session_id}"
-                )
+                debug_logger.info(f"Saved new session ID to file: {result.session_id}")
             else:
-                debug_logger.info(
-                    f"New session ID (memory only): {result.session_id}"
-                )
+                debug_logger.info(f"New session ID (memory only): {result.session_id}")
             return result.session_id
 
         debug_logger.error(f"Failed to create session: {result.message}")
@@ -630,19 +591,13 @@ class SessionIntelligenceEngine:
                 # caller's, so only an absolute path is recorded (issue #72).
                 if Path(project_path).is_absolute():
                     create_metadata["project_path"] = project_path
-            result = self._create_session(
-                mode, project_name, create_metadata, session_name=None
-            )
+            result = self._create_session(mode, project_name, create_metadata, session_name=None)
             # Persist session to DB so FK references work
             if result.status == "success" and self.database:
                 try:
-                    await self.database.save_session(
-                        result.session_data.model_dump(mode="python")
-                    )
+                    await self.database.save_session(result.session_data.model_dump(mode="python"))
                 except Exception as e:
-                    debug_logger.error(
-                        f"Error persisting session to DB: {e}"
-                    )
+                    debug_logger.error(f"Error persisting session to DB: {e}")
             return result
         elif operation == "resume":
             return await self._resume_session(
@@ -737,9 +692,7 @@ class SessionIntelligenceEngine:
                 json.dump(session.model_dump(), f, indent=2, default=str)
             debug_logger.info(f"Saved session to filesystem: {session_dir}")
         else:
-            debug_logger.info(
-                f"Session {session_id} created in memory only"
-            )
+            debug_logger.info(f"Session {session_id} created in memory only")
 
         return SessionResult(
             session_id=session_id,
@@ -807,30 +760,18 @@ class SessionIntelligenceEngine:
                 operation="resume",
                 status="success",
                 message=f"Resumed session {resumed_id} from cache",
-                recovery_options=(
-                    ["Validate continuity", "Check health"]
-                    if auto_recovery
-                    else []
-                ),
+                recovery_options=(["Validate continuity", "Check health"] if auto_recovery else []),
             )
 
         # If filesystem enabled, try to load from disk
         if self.use_filesystem:
             try:
-                session_dirs = [
-                    d
-                    for d in self.claude_sessions_path.iterdir()
-                    if d.is_dir()
-                ]
+                session_dirs = [d for d in self.claude_sessions_path.iterdir() if d.is_dir()]
                 if session_dirs:
-                    latest_session_dir = max(
-                        session_dirs, key=lambda x: x.stat().st_mtime
-                    )
+                    latest_session_dir = max(session_dirs, key=lambda x: x.stat().st_mtime)
                     session_id = latest_session_dir.name
 
-                    metadata_file = (
-                        latest_session_dir / "session-metadata.json"
-                    )
+                    metadata_file = latest_session_dir / "session-metadata.json"
                     if metadata_file.exists():
                         with open(metadata_file) as f:
                             session_data = json.load(f)
@@ -844,9 +785,7 @@ class SessionIntelligenceEngine:
                         status="success",
                         message=f"Resumed session {session_id} from filesystem",
                         recovery_options=(
-                            ["Validate continuity", "Check health"]
-                            if auto_recovery
-                            else []
+                            ["Validate continuity", "Check health"] if auto_recovery else []
                         ),
                     )
             except Exception as e:
@@ -967,13 +906,9 @@ class SessionIntelligenceEngine:
         # matching find_recent_session_by_project lookups.
         if self.database:
             try:
-                await self.database.save_session(
-                    session.model_dump(mode="python")
-                )
+                await self.database.save_session(session.model_dump(mode="python"))
             except Exception as e:
-                debug_logger.error(
-                    f"Error persisting finalized session to DB: {e}"
-                )
+                debug_logger.error(f"Error persisting finalized session to DB: {e}")
 
         # Only do filesystem operations if enabled
         if self.use_filesystem:
@@ -982,21 +917,15 @@ class SessionIntelligenceEngine:
             with open(metadata_file, "w") as f:
                 json.dump(session.model_dump(), f, indent=2, default=str)
 
-            current_session_file = (
-                self.claude_sessions_path.parent / "current-session-id"
-            )
+            current_session_file = self.claude_sessions_path.parent / "current-session-id"
             try:
                 if current_session_file.exists():
                     current_session_file.unlink()
-                    debug_logger.info(
-                        f"Removed current-session-id file: {current_session_file}"
-                    )
+                    debug_logger.info(f"Removed current-session-id file: {current_session_file}")
             except Exception as e:
                 debug_logger.error(f"Error removing current-session-id file: {e}")
         else:
-            debug_logger.info(
-                f"Session {session_id} finalized in memory only"
-            )
+            debug_logger.info(f"Session {session_id} finalized in memory only")
 
         # Clear in-memory current session and drop from cache so disk
         # reloads can't resurrect this completed session (issue #25 Bug 2).
@@ -1086,9 +1015,7 @@ class SessionIntelligenceEngine:
 
         status = "success" if not issues else "warning"
         message = (
-            "Session validation passed"
-            if not issues
-            else f"Validation issues: {', '.join(issues)}"
+            "Session validation passed" if not issues else f"Validation issues: {', '.join(issues)}"
         )
 
         return SessionResult(
@@ -1131,9 +1058,15 @@ class SessionIntelligenceEngine:
         """
         try:
             return await self._track_execution_sync(
-                session_id, agent_name, step_data, track_patterns,
-                suggest_optimizations, session_name, project_name,
-                project_path, allow_unbound,
+                session_id,
+                agent_name,
+                step_data,
+                track_patterns,
+                suggest_optimizations,
+                session_name,
+                project_name,
+                project_path,
+                allow_unbound,
             )
         except SessionContextRequiredError:
             raise
@@ -1168,9 +1101,7 @@ class SessionIntelligenceEngine:
         debug_logger.info(f"agent_name: {agent_name}")
         debug_logger.info(f"step_data: {step_data}")
         debug_logger.info(f"claude_sessions_path: {self.claude_sessions_path}")
-        debug_logger.info(
-            f"session_cache keys: {list(self.session_cache.keys())}"
-        )
+        debug_logger.info(f"session_cache keys: {list(self.session_cache.keys())}")
 
         # No explicit session_id: resolve scope instead of falling back to
         # ambient `_current_session_id` state, which is shared across every
@@ -1205,9 +1136,7 @@ class SessionIntelligenceEngine:
             debug_logger.info(f"Resolved session_id: {session_id}")
 
         if not session_id:
-            debug_logger.error(
-                "ERROR: No session_id available after auto-detection"
-            )
+            debug_logger.error("ERROR: No session_id available after auto-detection")
             return ExecutionTrackingResult(
                 step_id="error",
                 session_id="unknown",
@@ -1223,9 +1152,7 @@ class SessionIntelligenceEngine:
                 "binding a session-intelligence session to it (likely a "
                 "hook-supplied Claude Code native session id)"
             )
-            hook_cwd = step_data.get(
-                "working_directory", str(Path.cwd().resolve())
-            )
+            hook_cwd = step_data.get("working_directory", str(Path.cwd().resolve()))
             create_result = self._create_session(
                 mode="auto",
                 project_name=derive_project_name(hook_cwd),
@@ -1241,9 +1168,7 @@ class SessionIntelligenceEngine:
                     f"ERROR: failed to auto-create session for {session_id}: "
                     f"{create_result.message}"
                 )
-                debug_logger.error(
-                    f"Available sessions: {list(self.session_cache.keys())}"
-                )
+                debug_logger.error(f"Available sessions: {list(self.session_cache.keys())}")
                 return ExecutionTrackingResult(
                     step_id="error",
                     session_id=session_id,
@@ -1256,9 +1181,7 @@ class SessionIntelligenceEngine:
         session = self.session_cache[session_id]
         debug_logger.info(f"Found session in cache: {session.id}")
         debug_logger.info(f"Session project_path: {session.project_path}")
-        debug_logger.info(
-            f"Session agents_executed count: {len(session.agents_executed)}"
-        )
+        debug_logger.info(f"Session agents_executed count: {len(session.agents_executed)}")
 
         # Issue #82: an execution step is session activity; bump the
         # heartbeat on the in-memory session object. No extra DB write is
@@ -1269,9 +1192,7 @@ class SessionIntelligenceEngine:
         session.last_seen_at = datetime.now(UTC)
 
         # Create execution step
-        step_id = (
-            f"{agent_name}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        )
+        step_id = f"{agent_name}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
         debug_logger.info(f"Created step_id: {step_id}")
 
         # The SubagentStop hook reports phase="agent_stop" with a "success"
@@ -1279,9 +1200,7 @@ class SessionIntelligenceEngine:
         # transition an execution out of RUNNING into a terminal state.
         is_agent_stop = step_data.get("phase") == "agent_stop"
         terminal_status = (
-            ExecutionStatus.SUCCESS
-            if step_data.get("success")
-            else ExecutionStatus.ERROR
+            ExecutionStatus.SUCCESS if step_data.get("success") else ExecutionStatus.ERROR
         )
         completed_at = datetime.now(UTC) if is_agent_stop else None
 
@@ -1306,9 +1225,7 @@ class SessionIntelligenceEngine:
         # Optimization suggestions
         optimizations = []
         if suggest_optimizations:
-            optimizations = self._suggest_optimizations(
-                agent_name, step_data
-            )
+            optimizations = self._suggest_optimizations(agent_name, step_data)
 
         execution_step.patterns_detected = patterns
         execution_step.optimizations_available = optimizations
@@ -1330,8 +1247,7 @@ class SessionIntelligenceEngine:
         # Find or create agent execution
         agent_execution = None
         for agent_exec in session.agents_executed:
-            if (agent_exec.agent_name == agent_name and
-                    agent_exec.status == ExecutionStatus.RUNNING):
+            if agent_exec.agent_name == agent_name and agent_exec.status == ExecutionStatus.RUNNING:
                 agent_execution = agent_exec
                 break
 
@@ -1346,9 +1262,7 @@ class SessionIntelligenceEngine:
                 context=AgentContext(
                     session_id=session_id,
                     project_path=session.project_path,
-                    working_directory=step_data.get(
-                        "working_directory", session.project_path
-                    ),
+                    working_directory=step_data.get("working_directory", session.project_path),
                 ),
                 performance=AgentPerformance(),
             )
@@ -1364,22 +1278,17 @@ class SessionIntelligenceEngine:
             agent_execution.status = terminal_status
             agent_execution.completed = completed_at
             if resolved_agent_type != "unknown" and not (
-                agent_execution.agent_type
-                and agent_execution.agent_type != "unknown"
+                agent_execution.agent_type and agent_execution.agent_type != "unknown"
             ):
                 agent_execution.agent_type = resolved_agent_type
 
         # Add step to agent execution
         agent_execution.execution_steps.append(execution_step)
         debug_logger.info("Added execution_step to agent_execution")
-        debug_logger.info(
-            f"Agent execution steps count: {len(agent_execution.execution_steps)}"
-        )
+        debug_logger.info(f"Agent execution steps count: {len(agent_execution.execution_steps)}")
 
         # Update performance metrics
-        session.performance_metrics.agents_executed = (
-            len(session.agents_executed)
-        )
+        session.performance_metrics.agents_executed = len(session.agents_executed)
         debug_logger.info(
             "Updated performance metrics - agents executed: "
             f"{session.performance_metrics.agents_executed}"
@@ -1390,46 +1299,29 @@ class SessionIntelligenceEngine:
             try:
                 session_dir = self.claude_sessions_path / session_id
                 session_dir.mkdir(parents=True, exist_ok=True)
-                debug_logger.info(
-                    f"Ensured session directory exists: {session_dir}"
-                )
+                debug_logger.info(f"Ensured session directory exists: {session_dir}")
 
                 # Save session metadata
                 metadata_file = session_dir / "session-metadata.json"
                 with open(metadata_file, "w") as f:
-                    json.dump(
-                        session.model_dump(), f, indent=2, default=str
-                    )
-                debug_logger.info(
-                    f"Saved session metadata to: {metadata_file}"
-                )
+                    json.dump(session.model_dump(), f, indent=2, default=str)
+                debug_logger.info(f"Saved session metadata to: {metadata_file}")
 
                 # Save individual agent execution log
                 agent_dir = session_dir / "agents" / agent_name
                 agent_dir.mkdir(parents=True, exist_ok=True)
                 agent_log_file = agent_dir / "execution-log.json"
                 with open(agent_log_file, "w") as f:
-                    json.dump(
-                        agent_execution.model_dump(), f, indent=2, default=str
-                    )
-                debug_logger.info(
-                    f"Saved agent execution log to: {agent_log_file}"
-                )
+                    json.dump(agent_execution.model_dump(), f, indent=2, default=str)
+                debug_logger.info(f"Saved agent execution log to: {agent_log_file}")
 
             except Exception as save_error:
-                debug_logger.error(
-                    f"ERROR saving session/agent data: {save_error}"
-                )
+                debug_logger.error(f"ERROR saving session/agent data: {save_error}")
                 import traceback
 
-                debug_logger.error(
-                    f"Save error traceback: {traceback.format_exc()}"
-                )
+                debug_logger.error(f"Save error traceback: {traceback.format_exc()}")
         else:
-            debug_logger.info(
-                "Execution tracking updated in memory only "
-                "(filesystem disabled)"
-            )
+            debug_logger.info("Execution tracking updated in memory only (filesystem disabled)")
 
         result = ExecutionTrackingResult(
             step_id=step_id,
@@ -1442,9 +1334,7 @@ class SessionIntelligenceEngine:
         debug_logger.info(f"Returning ExecutionTrackingResult: {result}")
         return result
 
-    def _detect_patterns(
-        self, agent_name: str, step_data: dict[str, Any]
-    ) -> list[Pattern]:
+    def _detect_patterns(self, agent_name: str, step_data: dict[str, Any]) -> list[Pattern]:
         """Detect execution patterns for optimization."""
         patterns = []
 
@@ -1464,9 +1354,7 @@ class SessionIntelligenceEngine:
         if step_data.get("duration_ms", 0) > 30000:  # >30 seconds
             patterns.append(
                 Pattern(
-                    pattern_id=(
-                        f"performance-pattern-{uuid.uuid4().hex[:8]}"
-                    ),
+                    pattern_id=(f"performance-pattern-{uuid.uuid4().hex[:8]}"),
                     pattern_type=PatternType.PERFORMANCE,
                     description="Long execution time detected",
                     frequency=1,
@@ -1484,15 +1372,11 @@ class SessionIntelligenceEngine:
         optimizations = []
 
         # Simple optimization suggestions
-        if step_data.get("tools_used") and len(
-            step_data["tools_used"]
-        ) > 5:
+        if step_data.get("tools_used") and len(step_data["tools_used"]) > 5:
             optimizations.append(
                 Optimization(
                     optimization_id=f"tool-opt-{uuid.uuid4().hex[:8]}",
-                    description=(
-                        "Consider batching tool calls to reduce overhead"
-                    ),
+                    description=("Consider batching tool calls to reduce overhead"),
                     potential_impact="Reduce execution time by 20-30%",
                     effort_level="low",
                     confidence=0.7,
@@ -1523,8 +1407,7 @@ class SessionIntelligenceEngine:
         """
         try:
             return self._coordinate_agents_sync(
-                session_id, agents, execution_mode, dependency_graph,
-                optimization_level
+                session_id, agents, execution_mode, dependency_graph, optimization_level
             )
         except Exception as e:
             return CoordinationResult(
@@ -1557,20 +1440,14 @@ class SessionIntelligenceEngine:
         # Dependency resolution
         dependency_resolution = []
         if dependency_graph:
-            dependency_resolution = self._resolve_dependencies(
-                agents, dependency_graph
-            )
+            dependency_resolution = self._resolve_dependencies(agents, dependency_graph)
 
         # Parallel execution grouping
         parallel_groups = []
         if execution_mode == ExecutionMode.PARALLEL:
-            parallel_groups = [
-                agent.get("name", "unknown") for agent in agents
-            ]
+            parallel_groups = [agent.get("name", "unknown") for agent in agents]
         elif execution_mode == ExecutionMode.SEQUENTIAL:
-            parallel_groups = [
-                [agent.get("name", "unknown")] for agent in agents
-            ]
+            parallel_groups = [[agent.get("name", "unknown")] for agent in agents]
 
         # Estimate timing
         timing_estimate = len(agents) * 5000  # 5 seconds per agent estimate
@@ -1583,9 +1460,7 @@ class SessionIntelligenceEngine:
             execution_plan=execution_plan,
             timing_estimate=timing_estimate,
             dependency_resolution=dependency_resolution,
-            parallel_execution_groups=(
-                [parallel_groups] if parallel_groups else []
-            ),
+            parallel_execution_groups=([parallel_groups] if parallel_groups else []),
         )
 
     def _resolve_dependencies(
@@ -1700,9 +1575,7 @@ class SessionIntelligenceEngine:
                         # this save carries the fresh heartbeat instead of
                         # whatever last_seen_at the object already had.
                         cached.last_seen_at = datetime.now(UTC)
-                        await self.database.save_session(
-                            cached.model_dump(mode="python")
-                        )
+                        await self.database.save_session(cached.model_dump(mode="python"))
                     except Exception:
                         pass  # Best-effort
             session_id = resolved_id
@@ -1908,9 +1781,15 @@ class SessionIntelligenceEngine:
 
         try:
             return await self._monitor_health_sync(
-                session_id, health_checks, auto_recover,
-                alert_thresholds, include_diagnostics,
-                session_name, project_name, project_path, allow_unbound,
+                session_id,
+                health_checks,
+                auto_recover,
+                alert_thresholds,
+                include_diagnostics,
+                session_name,
+                project_name,
+                project_path,
+                allow_unbound,
             )
         except SessionContextRequiredError:
             raise
@@ -2011,8 +1890,7 @@ class SessionIntelligenceEngine:
         # Agents check
         if "agents" in health_checks:
             failed_agents = [
-                agent for agent in session.agents_executed
-                if agent.status == ExecutionStatus.ERROR
+                agent for agent in session.agents_executed if agent.status == ExecutionStatus.ERROR
             ]
             if failed_agents:
                 issues.append(f"Failed agents: {len(failed_agents)}")
@@ -2029,14 +1907,10 @@ class SessionIntelligenceEngine:
         diagnostics = {}
         if include_diagnostics:
             diagnostics = {
-                "session_age_minutes": (
-                    (datetime.now(UTC) - session.started).total_seconds() / 60
-                ),
+                "session_age_minutes": ((datetime.now(UTC) - session.started).total_seconds() / 60),
                 "agents_count": len(session.agents_executed),
                 "decisions_count": len(session.decisions),
-                "performance_score": (
-                    session.performance_metrics.efficiency_score
-                ),
+                "performance_score": (session.performance_metrics.efficiency_score),
             }
 
         return SessionHealthResult(
@@ -2113,9 +1987,7 @@ class SessionIntelligenceEngine:
 
     # ===== SESSION HYDRATION =====
 
-    def _decision_from_row(
-        self, row: dict[str, Any], session_id: str
-    ) -> Decision:
+    def _decision_from_row(self, row: dict[str, Any], session_id: str) -> Decision:
         """Rebuild a Decision from a persisted row.
 
         Single conversion site for every path that reads decisions back out of
@@ -2129,9 +2001,7 @@ class SessionIntelligenceEngine:
 
         return Decision(
             decision_id=row.get("id") or row.get("decision_id") or "",
-            timestamp=(
-                safe_parse_datetime(row.get("timestamp")) or datetime.now(UTC)
-            ),
+            timestamp=(safe_parse_datetime(row.get("timestamp")) or datetime.now(UTC)),
             description=row.get("description", ""),
             context=DecisionContext(
                 session_id=session_id,
@@ -2168,9 +2038,7 @@ class SessionIntelligenceEngine:
                 try:
                     steps.append(ExecutionStep(**step_raw))
                 except Exception as e:
-                    debug_logger.warning(
-                        f"Skipping unreadable execution step: {e}"
-                    )
+                    debug_logger.warning(f"Skipping unreadable execution step: {e}")
 
         errors: list[AgentError] = []
         if isinstance(errors_raw, list):
@@ -2178,9 +2046,7 @@ class SessionIntelligenceEngine:
                 try:
                     errors.append(AgentError(**err_raw))
                 except Exception as e:
-                    debug_logger.warning(
-                        f"Skipping unreadable agent error: {e}"
-                    )
+                    debug_logger.warning(f"Skipping unreadable agent error: {e}")
 
         try:
             status = ExecutionStatus(row.get("status") or "running")
@@ -2191,10 +2057,7 @@ class SessionIntelligenceEngine:
             agent_name=row.get("agent_name") or "",
             agent_type=row.get("agent_type") or "",
             execution_id=row.get("id") or row.get("execution_id") or "",
-            started=(
-                safe_parse_datetime(row.get("started_at"))
-                or datetime.now(UTC)
-            ),
+            started=(safe_parse_datetime(row.get("started_at")) or datetime.now(UTC)),
             completed=safe_parse_datetime(row.get("completed_at")),
             last_seen_at=safe_parse_datetime(row.get("last_seen_at")),
             status=status,
@@ -2231,23 +2094,15 @@ class SessionIntelligenceEngine:
                     offset=offset,
                 )
             except Exception as e:
-                debug_logger.error(
-                    f"Error loading agent executions for {session_id}: {e}"
-                )
+                debug_logger.error(f"Error loading agent executions for {session_id}: {e}")
                 break
             if not rows:
                 break
             for row in rows:
                 try:
-                    executions.append(
-                        self._agent_execution_from_row(
-                            row, session_id, project_path
-                        )
-                    )
+                    executions.append(self._agent_execution_from_row(row, session_id, project_path))
                 except Exception as e:
-                    debug_logger.warning(
-                        f"Skipping unreadable agent execution row: {e}"
-                    )
+                    debug_logger.warning(f"Skipping unreadable agent execution row: {e}")
             if len(rows) < AGENT_EXECUTION_PAGE_SIZE:
                 break
             offset += len(rows)
@@ -2292,9 +2147,7 @@ class SessionIntelligenceEngine:
         try:
             session = Session(
                 id=row["id"],
-                started=(
-                    safe_parse_datetime(row.get("started")) or datetime.now(UTC)
-                ),
+                started=(safe_parse_datetime(row.get("started")) or datetime.now(UTC)),
                 completed=safe_parse_datetime(row.get("completed")),
                 last_seen_at=safe_parse_datetime(row.get("last_seen_at")),
                 mode=row.get("mode") or "local",
@@ -2324,27 +2177,17 @@ class SessionIntelligenceEngine:
                 ),
             )
         except Exception as e:
-            debug_logger.error(
-                f"Error reconstructing session {session_id}: {e}"
-            )
+            debug_logger.error(f"Error reconstructing session {session_id}: {e}")
             return None
 
         try:
-            for dec_row in await self.database.query_decisions_by_session(
-                session_id
-            ):
+            for dec_row in await self.database.query_decisions_by_session(session_id):
                 try:
-                    session.decisions.append(
-                        self._decision_from_row(dec_row, session_id)
-                    )
+                    session.decisions.append(self._decision_from_row(dec_row, session_id))
                 except Exception as e:
-                    debug_logger.warning(
-                        f"Skipping unreadable decision row: {e}"
-                    )
+                    debug_logger.warning(f"Skipping unreadable decision row: {e}")
         except Exception as e:
-            debug_logger.error(
-                f"Error loading decisions for {session_id}: {e}"
-            )
+            debug_logger.error(f"Error loading decisions for {session_id}: {e}")
 
         # Without this the notebook's "Agents Executed" section is silently
         # omitted for a cold-loaded session, because _generate_agents_section
@@ -2472,10 +2315,8 @@ class SessionIntelligenceEngine:
 
             # Merge decisions from database
             if self.database:
-                db_decisions = (
-                    await self.database.query_decisions_by_session(
-                        session_id, exclude_superseded=True
-                    )
+                db_decisions = await self.database.query_decisions_by_session(
+                    session_id, exclude_superseded=True
                 )
                 # _hydrate_session loads the full, unfiltered decision
                 # history (issue #103), so a cached/hydrated session still
@@ -2484,8 +2325,7 @@ class SessionIntelligenceEngine:
                 # missing ones, or the exclude_superseded flag has no
                 # effect on an already-hydrated session (issue #106).
                 keep_ids = {
-                    (db_dec.get("id") or db_dec.get("decision_id"))
-                    for db_dec in db_decisions
+                    (db_dec.get("id") or db_dec.get("decision_id")) for db_dec in db_decisions
                 }
                 # `session` may be the exact object cached in
                 # self.session_cache (see _hydrate_session's cache-hit
@@ -2495,22 +2335,16 @@ class SessionIntelligenceEngine:
                 # Shallow-copy first so the rebind below lands on a
                 # per-call object instead.
                 session = copy.copy(session)
-                session.decisions = [
-                    d for d in session.decisions if d.decision_id in keep_ids
-                ]
+                session.decisions = [d for d in session.decisions if d.decision_id in keep_ids]
                 existing_ids = {d.decision_id for d in session.decisions}
                 for db_dec in db_decisions:
                     dec_id = db_dec.get("id") or db_dec.get("decision_id")
                     if dec_id and dec_id not in existing_ids:
-                        session.decisions.append(
-                            self._decision_from_row(db_dec, session_id)
-                        )
+                        session.decisions.append(self._decision_from_row(db_dec, session_id))
 
             # Build sections
             end_time = session.completed or datetime.now(UTC)
-            duration_minutes = (
-                (end_time - session.started).total_seconds() / 60
-            )
+            duration_minutes = (end_time - session.started).total_seconds() / 60
             if not title:
                 title = (
                     f"Session: {session.project_name} - "
@@ -2521,9 +2355,7 @@ class SessionIntelligenceEngine:
             sections.append(
                 NotebookSection(
                     heading="Overview",
-                    content=self._generate_overview_section(
-                        session, duration_minutes
-                    ),
+                    content=self._generate_overview_section(session, duration_minutes),
                     level=2,
                 )
             )
@@ -2531,9 +2363,7 @@ class SessionIntelligenceEngine:
             # File operations from database (async)
             files_changed: list[str] = []
             if self.database:
-                files_content, files_changed = (
-                    await self._generate_files_section_async(session_id)
-                )
+                files_content, files_changed = await self._generate_files_section_async(session_id)
                 if files_content:
                     sections.append(
                         NotebookSection(
@@ -2546,9 +2376,7 @@ class SessionIntelligenceEngine:
             # Agents
             agents_used: list[str] = []
             if include_agents and session.agents_executed:
-                agents_content, agents_used = (
-                    self._generate_agents_section(session)
-                )
+                agents_content, agents_used = self._generate_agents_section(session)
                 sections.append(
                     NotebookSection(
                         heading="Agents Executed",
@@ -2560,9 +2388,7 @@ class SessionIntelligenceEngine:
             # Decisions
             decisions_made: list[str] = []
             if include_decisions and session.decisions:
-                decisions_content, decisions_made = (
-                    self._generate_decisions_section(session)
-                )
+                decisions_content, decisions_made = self._generate_decisions_section(session)
                 sections.append(
                     NotebookSection(
                         heading="Decisions Made",
@@ -2583,10 +2409,8 @@ class SessionIntelligenceEngine:
 
             # Learnings from database (async)
             if self.database:
-                learnings_content = (
-                    await self._generate_learnings_section_async(
-                        session.project_path
-                    )
+                learnings_content = await self._generate_learnings_section_async(
+                    session.project_path
                 )
                 if learnings_content:
                     sections.append(
@@ -2597,16 +2421,9 @@ class SessionIntelligenceEngine:
                         )
                     )
 
-            key_changes = (
-                list(
-                    set(self._extract_key_changes(session))
-                    | set(files_changed)
-                )[:20]
-            )
+            key_changes = list(set(self._extract_key_changes(session)) | set(files_changed))[:20]
             if tags is None:
-                tags = self._auto_generate_tags(
-                    session, agents_used, key_changes
-                )
+                tags = self._auto_generate_tags(session, agents_used, key_changes)
 
             summary_markdown = self._generate_summary_markdown(
                 title, sections, session, duration_minutes
@@ -2628,9 +2445,7 @@ class SessionIntelligenceEngine:
 
             file_path = None
             if save_to_file and self.use_filesystem:
-                file_path = self._save_notebook_to_file(
-                    session_id, notebook
-                )
+                file_path = self._save_notebook_to_file(session_id, notebook)
 
             # Save to database
             if save_to_database and self.database:
@@ -2705,10 +2520,8 @@ class SessionIntelligenceEngine:
         # Merge decisions from database if available
         if self.database:
             try:
-                db_decisions_list = (
-                    await self.database.query_decisions_by_session(
-                        session_id, exclude_superseded=True
-                    )
+                db_decisions_list = await self.database.query_decisions_by_session(
+                    session_id, exclude_superseded=True
                 )
                 # _hydrate_session loads the full, unfiltered decision
                 # history (issue #103), so a cached/hydrated session still
@@ -2717,8 +2530,7 @@ class SessionIntelligenceEngine:
                 # missing ones, or the exclude_superseded flag has no
                 # effect on an already-hydrated session (issue #106).
                 keep_ids = {
-                    (db_dec.get("id") or db_dec.get("decision_id"))
-                    for db_dec in db_decisions_list
+                    (db_dec.get("id") or db_dec.get("decision_id")) for db_dec in db_decisions_list
                 }
                 # `session` may be the exact object cached in
                 # self.session_cache (see _hydrate_session's cache-hit
@@ -2728,79 +2540,53 @@ class SessionIntelligenceEngine:
                 # Shallow-copy first so the rebind below lands on a
                 # per-call object instead.
                 session = copy.copy(session)
-                session.decisions = [
-                    d for d in session.decisions if d.decision_id in keep_ids
-                ]
-                existing_ids = {
-                    d.decision_id for d in session.decisions
-                }
+                session.decisions = [d for d in session.decisions if d.decision_id in keep_ids]
+                existing_ids = {d.decision_id for d in session.decisions}
                 for db_dec in db_decisions_list:
-                    dec_id = (
-                        db_dec.get("id")
-                        or db_dec.get("decision_id")
-                    )
+                    dec_id = db_dec.get("id") or db_dec.get("decision_id")
                     if dec_id and dec_id not in existing_ids:
-                        session.decisions.append(
-                            self._decision_from_row(db_dec, session_id)
-                        )
+                        session.decisions.append(self._decision_from_row(db_dec, session_id))
             except Exception as e:
                 debug_logger.error(f"Error merging DB decisions: {e}")
 
         # Calculate duration
         end_time = session.completed or datetime.now(UTC)
-        duration_minutes = (
-            (end_time - session.started).total_seconds() / 60
-        )
+        duration_minutes = (end_time - session.started).total_seconds() / 60
 
         # Generate title if not provided
         if not title:
             title = (
-                f"Session: {session.project_name} - "
-                f"{session.started.strftime('%Y-%m-%d %H:%M')}"
+                f"Session: {session.project_name} - {session.started.strftime('%Y-%m-%d %H:%M')}"
             )
 
         # Build notebook sections
         sections: list[NotebookSection] = []
 
         # Overview section
-        overview_content = self._generate_overview_section(
-            session, duration_minutes
-        )
-        sections.append(
-            NotebookSection(heading="Overview", content=overview_content, level=2)
-        )
+        overview_content = self._generate_overview_section(session, duration_minutes)
+        sections.append(NotebookSection(heading="Overview", content=overview_content, level=2))
 
         # Work Completed section (file operations)
         files_content, files_changed = self._generate_files_section(session)
         if files_content:
             sections.append(
-                NotebookSection(
-                    heading="Work Completed", content=files_content, level=2
-                )
+                NotebookSection(heading="Work Completed", content=files_content, level=2)
             )
 
         # Agents section
         agents_used: list[str] = []
         if include_agents and session.agents_executed:
-            agents_content, agents_used = (
-                self._generate_agents_section(session)
-            )
+            agents_content, agents_used = self._generate_agents_section(session)
             sections.append(
-                NotebookSection(
-                    heading="Agents Executed", content=agents_content, level=2
-                )
+                NotebookSection(heading="Agents Executed", content=agents_content, level=2)
             )
 
         # Decisions section
         decisions_made: list[str] = []
         if include_decisions and session.decisions:
-            decisions_content, decisions_made = (
-                self._generate_decisions_section(session)
-            )
+            decisions_content, decisions_made = self._generate_decisions_section(session)
             sections.append(
-                NotebookSection(
-                    heading="Decisions Made", content=decisions_content, level=2
-                )
+                NotebookSection(heading="Decisions Made", content=decisions_content, level=2)
             )
 
         # Metrics section
@@ -2815,9 +2601,7 @@ class SessionIntelligenceEngine:
             )
 
         # Learnings section (from database)
-        learnings_content = self._generate_learnings_section(
-            session.project_path
-        )
+        learnings_content = self._generate_learnings_section(session.project_path)
         if learnings_content:
             sections.append(
                 NotebookSection(
@@ -2834,9 +2618,7 @@ class SessionIntelligenceEngine:
 
         # Auto-generate tags if not provided
         if tags is None:
-            tags = self._auto_generate_tags(
-                session, agents_used, key_changes
-            )
+            tags = self._auto_generate_tags(session, agents_used, key_changes)
 
         # Generate summary markdown
         summary_markdown = self._generate_summary_markdown(
@@ -2862,9 +2644,7 @@ class SessionIntelligenceEngine:
         # Save to file if requested
         file_path = None
         if save_to_file and self.use_filesystem:
-            file_path = self._save_notebook_to_file(
-                session_id, notebook
-            )
+            file_path = self._save_notebook_to_file(session_id, notebook)
 
         # Save to database if requested (for search indexing)
         search_indexed = False
@@ -2872,9 +2652,7 @@ class SessionIntelligenceEngine:
             # This would be async in the HTTP server context
             # For now, just mark as not indexed
             search_indexed = False
-            debug_logger.info(
-                "Database persistence requires async context"
-            )
+            debug_logger.info("Database persistence requires async context")
 
         return NotebookResult(
             session_id=session_id,
@@ -2883,33 +2661,26 @@ class SessionIntelligenceEngine:
             markdown_output=summary_markdown,
             file_path=file_path,
             search_indexed=search_indexed,
-            message=(
-                f"Notebook created successfully with {len(sections)} "
-                "sections"
-            ),
+            message=(f"Notebook created successfully with {len(sections)} sections"),
         )
 
-    def _generate_overview_section(
-        self, session: Session, duration_minutes: float
-    ) -> str:
+    def _generate_overview_section(self, session: Session, duration_minutes: float) -> str:
         """Generate the overview section content."""
         return f"""
 **Project**: {session.project_name}
 **Path**: `{session.project_path}`
-**Started**: {session.started.strftime('%Y-%m-%d %H:%M:%S')}
+**Started**: {session.started.strftime("%Y-%m-%d %H:%M:%S")}
 **Duration**: {duration_minutes:.1f} minutes
 **Status**: {session.status.value}
 **Mode**: {session.mode}
 
 ### Session Health
 - Overall Score: {session.health_status.overall_score:.0f}%
-- Continuity Valid: {'Yes' if session.health_status.continuity_valid else 'No'}
-- Files Valid: {'Yes' if session.health_status.files_valid else 'No'}
+- Continuity Valid: {"Yes" if session.health_status.continuity_valid else "No"}
+- Files Valid: {"Yes" if session.health_status.files_valid else "No"}
 """.strip()
 
-    def _generate_agents_section(
-        self, session: Session
-    ) -> tuple[str, list[str]]:
+    def _generate_agents_section(self, session: Session) -> tuple[str, list[str]]:
         """Generate agents section and return agent names."""
         agents_used = []
         lines = []
@@ -2923,24 +2694,16 @@ class SessionIntelligenceEngine:
                 if agent.status == ExecutionStatus.RUNNING
                 else "❌"
             )
-            lines.append(
-                f"- {status_emoji} **{agent.agent_name}** "
-                f"({agent.agent_type})"
-            )
+            lines.append(f"- {status_emoji} **{agent.agent_name}** ({agent.agent_type})")
 
             if agent.execution_steps:
                 lines.append(f"  - Steps: {len(agent.execution_steps)}")
                 for step in agent.execution_steps[:3]:  # Show first 3 steps
-                    lines.append(
-                        f"    - {step.operation}: "
-                        f"{step.description[:50]}..."
-                    )
+                    lines.append(f"    - {step.operation}: {step.description[:50]}...")
 
         return "\n".join(lines), agents_used
 
-    def _generate_decisions_section(
-        self, session: Session
-    ) -> tuple[str, list[str]]:
+    def _generate_decisions_section(self, session: Session) -> tuple[str, list[str]]:
         """Generate decisions section and return decision descriptions."""
         decisions_made = []
         lines = []
@@ -2958,9 +2721,7 @@ class SessionIntelligenceEngine:
             if decision.rationale:
                 lines.append(f"  - Rationale: {decision.rationale}")
             if decision.artifacts:
-                lines.append(
-                    f"  - Artifacts: {', '.join(decision.artifacts[:3])}"
-                )
+                lines.append(f"  - Artifacts: {', '.join(decision.artifacts[:3])}")
 
         return "\n".join(lines), decisions_made
 
@@ -2985,14 +2746,10 @@ class SessionIntelligenceEngine:
         metrics = session.performance_metrics
 
         successful = sum(
-            1
-            for agent in session.agents_executed
-            if agent.status == ExecutionStatus.SUCCESS
+            1 for agent in session.agents_executed if agent.status == ExecutionStatus.SUCCESS
         )
         failed = sum(
-            1
-            for agent in session.agents_executed
-            if agent.status == ExecutionStatus.ERROR
+            1 for agent in session.agents_executed if agent.status == ExecutionStatus.ERROR
         )
         commands = sum(
             len(step.commands_executed)
@@ -3012,9 +2769,7 @@ class SessionIntelligenceEngine:
 | Efficiency Score | {metrics.efficiency_score:.1f}% |
 """.strip()
 
-    def _generate_files_section(
-        self, session: Session
-    ) -> tuple[str | None, list[str]]:
+    def _generate_files_section(self, session: Session) -> tuple[str | None, list[str]]:
         """
         Generate files section from database.
 
@@ -3037,18 +2792,14 @@ class SessionIntelligenceEngine:
 
         return None, changed_files
 
-    async def _generate_files_section_async(
-        self, session_id: str
-    ) -> tuple[str | None, list[str]]:
+    async def _generate_files_section_async(self, session_id: str) -> tuple[str | None, list[str]]:
         """Async version: Generate files section from database."""
         changed_files: list[str] = []
 
         if not self.database:
             return None, changed_files
 
-        file_ops = await self.database.query_file_operations_by_session(
-            session_id
-        )
+        file_ops = await self.database.query_file_operations_by_session(session_id)
         if not file_ops:
             return None, changed_files
 
@@ -3074,15 +2825,9 @@ class SessionIntelligenceEngine:
             ops = by_type.get(op_type, [])
             for op in ops:
                 file_path = op.get("file_path", "")
-                lines_info = (
-                    f"+{op.get('lines_added', 0)}"
-                    f"/-{op.get('lines_removed', 0)}"
-                )
+                lines_info = f"+{op.get('lines_added', 0)}/-{op.get('lines_removed', 0)}"
                 summary = (op.get("summary") or "")[:50]
-                lines.append(
-                    f"| {op_type} | `{file_path}` | {lines_info} | "
-                    f"{summary} |"
-                )
+                lines.append(f"| {op_type} | `{file_path}` | {lines_info} | {summary} |")
 
         if len(lines) == 2:  # Only header
             return None, changed_files
@@ -3112,9 +2857,7 @@ class SessionIntelligenceEngine:
         # For sync context, we return None and let HTTP server handle it
         return None
 
-    async def _generate_learnings_section_async(
-        self, project_path: str
-    ) -> str | None:
+    async def _generate_learnings_section_async(self, project_path: str) -> str | None:
         """Async version: Generate learnings section from database."""
         if not self.database:
             return None
@@ -3140,21 +2883,13 @@ class SessionIntelligenceEngine:
                 "workflow": "🔄",
             }.get(category, "💡")
 
-            content_preview = (
-                content[:100] + ("..." if len(content) > 100 else "")
-            )
-            lines.append(
-                f"- {category_emoji} **{category}**: {content_preview}"
-            )
+            content_preview = content[:100] + ("..." if len(content) > 100 else "")
+            lines.append(f"- {category_emoji} **{category}**: {content_preview}")
             if trigger:
-                trigger_preview = (
-                    trigger[:80] + ("..." if len(trigger) > 80 else "")
-                )
+                trigger_preview = trigger[:80] + ("..." if len(trigger) > 80 else "")
                 lines.append(f"  - *Trigger*: {trigger_preview}")
             if success_count > 1:
-                lines.append(
-                    f"  - *Used successfully*: {success_count} times"
-                )
+                lines.append(f"  - *Used successfully*: {success_count} times")
 
         return "\n".join(lines)
 
@@ -3167,17 +2902,14 @@ class SessionIntelligenceEngine:
                 # Extract tools that typically modify files
                 for tool in step.tools_used:
                     if any(
-                        action in tool.lower()
-                        for action in ["write", "edit", "create", "modify"]
+                        action in tool.lower() for action in ["write", "edit", "create", "modify"]
                     ):
                         changes.add(tool)
 
         # Also check decision artifacts
         for decision in session.decisions:
             for artifact in decision.artifacts:
-                if artifact.endswith(
-                    (".py", ".js", ".ts", ".toml", ".yaml", ".yml", ".md")
-                ):
+                if artifact.endswith((".py", ".js", ".ts", ".toml", ".yaml", ".yml", ".md")):
                     changes.add(artifact)
 
         return list(changes)[:20]  # Limit to 20 changes
@@ -3256,9 +2988,7 @@ class SessionIntelligenceEngine:
 
         return "\n".join(lines)
 
-    def _save_notebook_to_file(
-        self, session_id: str, notebook: SessionNotebook
-    ) -> str:
+    def _save_notebook_to_file(self, session_id: str, notebook: SessionNotebook) -> str:
         """Save notebook markdown to file."""
         session_dir = self.claude_sessions_path / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
@@ -3336,13 +3066,8 @@ class SessionIntelligenceEngine:
                     )
                 )
 
-            debug_logger.info(
-                f"Session search for '{query}' returned {len(results)} "
-                "results"
-            )
-            return SearchResults(
-                query=query, total_results=len(results), results=results
-            )
+            debug_logger.info(f"Session search for '{query}' returned {len(results)} results")
+            return SearchResults(query=query, total_results=len(results), results=results)
 
         except Exception as e:
             debug_logger.error(f"Error in session_search: {e}")
@@ -3379,9 +3104,7 @@ class SessionIntelligenceEngine:
             to an unfiltered query across every project's notebooks.
         """
         if not self.database:
-            debug_logger.warning(
-                "No database configured for session_query_notebooks"
-            )
+            debug_logger.warning("No database configured for session_query_notebooks")
             return []
 
         effective_project_name = project_name
@@ -3397,10 +3120,7 @@ class SessionIntelligenceEngine:
         # silently return every project's notebooks for a call the caller
         # explicitly scoped to one project.
         if not effective_project_name and project_path:
-            if (
-                project_path != UNKNOWN_PROJECT_PATH
-                and Path(project_path).is_absolute()
-            ):
+            if project_path != UNKNOWN_PROJECT_PATH and Path(project_path).is_absolute():
                 derived_name = derive_project_name(project_path)
                 if derived_name != UNBOUND:
                     effective_project_name = derived_name
@@ -3433,9 +3153,7 @@ class SessionIntelligenceEngine:
                     if key in result and hasattr(result[key], "isoformat"):
                         result[key] = result[key].isoformat()
 
-            debug_logger.info(
-                f"session_query_notebooks returned {len(results)} results"
-            )
+            debug_logger.info(f"session_query_notebooks returned {len(results)} results")
             return results
 
         except Exception as e:
@@ -3488,10 +3206,7 @@ class SessionIntelligenceEngine:
                 days=days,
             )
 
-            debug_logger.info(
-                f"Recall for '{project_name}': "
-                f"{result.get('counts', {})}"
-            )
+            debug_logger.info(f"Recall for '{project_name}': {result.get('counts', {})}")
             return result
 
         except Exception as e:
@@ -3543,9 +3258,7 @@ class SessionIntelligenceEngine:
         Returns:
             LearningResult with saved learning
         """
-        _reject_tool_result_envelope(
-            "session_log_learning", "learning_content", learning_content
-        )
+        _reject_tool_result_envelope("session_log_learning", "learning_content", learning_content)
         import uuid
 
         learning_id = f"learn_{uuid.uuid4().hex[:12]}"
@@ -3599,9 +3312,7 @@ class SessionIntelligenceEngine:
                     try:
                         # Issue #82: bump before persisting (see session_log_decision).
                         cached.last_seen_at = datetime.now(UTC)
-                        await self.database.save_session(
-                            cached.model_dump(mode="python")
-                        )
+                        await self.database.save_session(cached.model_dump(mode="python"))
                     except Exception:
                         pass  # Best-effort
         elif allow_unbound:
@@ -3631,9 +3342,7 @@ class SessionIntelligenceEngine:
 
         source_session = resolved_session_id
 
-        debug_logger.info(
-            f"Logging learning: {category} for {effective_project}"
-        )
+        debug_logger.info(f"Logging learning: {category} for {effective_project}")
 
         # Issue #87: supersedes is intentionally NOT validated against
         # existing IDs (and there is no cycle guard: IDs are generated fresh
@@ -3661,20 +3370,14 @@ class SessionIntelligenceEngine:
                 # Validate source_session_id exists before FK insert
                 sid = None
                 if source_session:
-                    existing = await self.database.get_session(
-                        source_session
-                    )
+                    existing = await self.database.get_session(source_session)
                     sid = source_session if existing else None
 
                 await self.database.save_project_learning(
                     learning_id=learning_id,
                     project_path=effective_project,
                     project_name=effective_project_name,
-                    category=(
-                        category.value
-                        if hasattr(category, "value")
-                        else category
-                    ),
+                    category=(category.value if hasattr(category, "value") else category),
                     learning_content=learning_content,
                     trigger_context=trigger_context,
                     source_session_id=sid,
@@ -3713,13 +3416,9 @@ class SessionIntelligenceEngine:
         Returns:
             SolutionSearchResult with matching solutions
         """
-        debug_logger.info(
-            f"Finding solutions for error: {error_text[:100]}..."
-        )
+        debug_logger.info(f"Finding solutions for error: {error_text[:100]}...")
 
-        effective_project = (
-            project_path or str(self.claude_sessions_path.parent)
-        )
+        effective_project = project_path or str(self.claude_sessions_path.parent)
 
         if not self.database:
             return SolutionSearchResult(
@@ -3757,17 +3456,13 @@ class SessionIntelligenceEngine:
 
             # Filter learnings by text match and count them
             matching_count = sum(
-                1 for lr in learnings
-                if error_text.lower() in (
-                    lr.get("learning_content", "")
-                    + lr.get("trigger_context", "")
-                ).lower()
+                1
+                for lr in learnings
+                if error_text.lower()
+                in (lr.get("learning_content", "") + lr.get("trigger_context", "")).lower()
             )
 
-            project_count = sum(
-                1 for s in solutions
-                if s.project_path == effective_project
-            )
+            project_count = sum(1 for s in solutions if s.project_path == effective_project)
             total = len(solutions) + matching_count
 
             return SolutionSearchResult(
@@ -3803,8 +3498,7 @@ class SessionIntelligenceEngine:
             SolutionResult with updated status
         """
         debug_logger.info(
-            f"Updating solution outcome: {solution_id} -> "
-            f"{'success' if success else 'failure'}"
+            f"Updating solution outcome: {solution_id} -> {'success' if success else 'failure'}"
         )
 
         status = "pending_update"
@@ -3816,14 +3510,9 @@ class SessionIntelligenceEngine:
                     success=success,
                 )
                 status = "updated"
-                message = (
-                    f"Solution outcome updated: "
-                    f"{'success' if success else 'failure'}."
-                )
+                message = f"Solution outcome updated: {'success' if success else 'failure'}."
             except Exception as e:
-                debug_logger.error(
-                    f"Error updating solution outcome: {e}"
-                )
+                debug_logger.error(f"Error updating solution outcome: {e}")
                 message += f" Database update failed: {e}"
 
         return SolutionResult(
@@ -3886,9 +3575,7 @@ class SessionIntelligenceEngine:
                 agent_id="",
                 name=agent_name,
                 status="error",
-                message=(
-                    "Database not available for agent registration"
-                ),
+                message=("Database not available for agent registration"),
             )
 
         try:
@@ -3904,36 +3591,16 @@ class SessionIntelligenceEngine:
                     "id": agent_id,
                     "name": agent_name,
                     "agent_type": agent_type,
-                    "display_name": (
-                        display_name or
-                        existing_agent.get("display_name")
-                    ),
-                    "description": (
-                        description or existing_agent.get("description")
-                    ),
-                    "metadata": (
-                        metadata or existing_agent.get("metadata", {})
-                    ),
-                    "capabilities": (
-                        capabilities or
-                        existing_agent.get("capabilities", [])
-                    ),
-                    "first_seen_at": (
-                        existing_agent.get("first_seen_at", now)
-                    ),
+                    "display_name": (display_name or existing_agent.get("display_name")),
+                    "description": (description or existing_agent.get("description")),
+                    "metadata": (metadata or existing_agent.get("metadata", {})),
+                    "capabilities": (capabilities or existing_agent.get("capabilities", [])),
+                    "first_seen_at": (existing_agent.get("first_seen_at", now)),
                     "last_active_at": now,
-                    "total_executions": (
-                        existing_agent.get("total_executions", 0)
-                    ),
-                    "total_decisions": (
-                        existing_agent.get("total_decisions", 0)
-                    ),
-                    "total_learnings": (
-                        existing_agent.get("total_learnings", 0)
-                    ),
-                    "total_notebooks": (
-                        existing_agent.get("total_notebooks", 0)
-                    ),
+                    "total_executions": (existing_agent.get("total_executions", 0)),
+                    "total_decisions": (existing_agent.get("total_decisions", 0)),
+                    "total_learnings": (existing_agent.get("total_learnings", 0)),
+                    "total_notebooks": (existing_agent.get("total_notebooks", 0)),
                     "is_active": True,
                 }
                 await self.database.save_agent(agent_data)
@@ -4012,9 +3679,7 @@ class SessionIntelligenceEngine:
             if is_uuid:
                 agent_data = await self.database.get_agent(agent_name)
             else:
-                agent_data = await self.database.get_agent_by_name(
-                    agent_name
-                )
+                agent_data = await self.database.get_agent_by_name(agent_name)
 
             if not agent_data:
                 debug_logger.info(f"Agent not found: {agent_name}")
@@ -4098,9 +3763,7 @@ class SessionIntelligenceEngine:
         self._agent_validator.validate(agent_name)  # raises AgentNotFoundError in strict mode
 
         if not self.database:
-            debug_logger.warning(
-                "agent_log_decision called without database"
-            )
+            debug_logger.warning("agent_log_decision called without database")
             return AgentDecisionResult(
                 decision_id="",
                 agent_id="",
@@ -4116,10 +3779,7 @@ class SessionIntelligenceEngine:
                     decision_id="",
                     agent_id="",
                     status="error",
-                    message=(
-                        f"Agent '{agent_name}' not found. "
-                        "Register the agent first."
-                    ),
+                    message=(f"Agent '{agent_name}' not found. Register the agent first."),
                 )
 
             agent_id = agent_data["id"]
@@ -4142,9 +3802,7 @@ class SessionIntelligenceEngine:
                 "artifacts": tags or [],
                 "source_session_id": self._current_session_id,
                 "source_project_path": (
-                    str(self.claude_sessions_path.parent)
-                    if self.use_filesystem
-                    else None
+                    str(self.claude_sessions_path.parent) if self.use_filesystem else None
                 ),
             }
 
@@ -4153,23 +3811,16 @@ class SessionIntelligenceEngine:
             # Update agent stats
             await self.database.update_agent_stats(agent_id, "decisions")
 
-            debug_logger.info(
-                f"Logged decision {decision_id} for agent {agent_name}"
-            )
+            debug_logger.info(f"Logged decision {decision_id} for agent {agent_name}")
             return AgentDecisionResult(
                 decision_id=decision_id,
                 agent_id=agent_id,
                 status="success",
-                message=(
-                    f"Decision logged successfully for agent "
-                    f"'{agent_name}'"
-                ),
+                message=(f"Decision logged successfully for agent '{agent_name}'"),
             )
 
         except Exception as e:
-            debug_logger.error(
-                f"Error logging decision for {agent_name}: {e}"
-            )
+            debug_logger.error(f"Error logging decision for {agent_name}: {e}")
             return AgentDecisionResult(
                 decision_id="",
                 agent_id="",
@@ -4197,18 +3848,14 @@ class SessionIntelligenceEngine:
             List of AgentDecision models
         """
         if not self.database:
-            debug_logger.warning(
-                "agent_query_decisions called without database"
-            )
+            debug_logger.warning("agent_query_decisions called without database")
             return []
 
         try:
             # Look up agent by name
             agent_data = await self.database.get_agent_by_name(agent_name)
             if not agent_data:
-                debug_logger.info(
-                    f"Agent '{agent_name}' not found for decision query"
-                )
+                debug_logger.info(f"Agent '{agent_name}' not found for decision query")
                 return []
 
             agent_id = agent_data["id"]
@@ -4231,9 +3878,7 @@ class SessionIntelligenceEngine:
                     except (json.JSONDecodeError, TypeError):
                         context_data = {"situation": context_raw}
                 else:
-                    context_data = (
-                        context_raw if isinstance(context_raw, dict) else {}
-                    )
+                    context_data = context_raw if isinstance(context_raw, dict) else {}
 
                 # Parse artifacts - may be JSON string from PostgreSQL
                 artifacts_raw = row.get("artifacts", [])
@@ -4243,11 +3888,7 @@ class SessionIntelligenceEngine:
                     except (json.JSONDecodeError, TypeError):
                         artifacts = []
                 else:
-                    artifacts = (
-                        artifacts_raw
-                        if isinstance(artifacts_raw, list)
-                        else []
-                    )
+                    artifacts = artifacts_raw if isinstance(artifacts_raw, list) else []
 
                 # Convert datetime to ISO string if needed
                 created_at = row.get("timestamp")
@@ -4286,9 +3927,7 @@ class SessionIntelligenceEngine:
             return decisions
 
         except Exception as e:
-            debug_logger.error(
-                f"Error querying decisions for {agent_name}: {e}"
-            )
+            debug_logger.error(f"Error querying decisions for {agent_name}: {e}")
             return []
 
     async def agent_update_decision_outcome(
@@ -4309,16 +3948,12 @@ class SessionIntelligenceEngine:
             Dict with status and message
         """
         if not self.database:
-            debug_logger.warning(
-                "agent_update_decision_outcome called without database"
-            )
+            debug_logger.warning("agent_update_decision_outcome called without database")
             return {"status": "error", "message": "Database not available"}
 
         try:
             notes = f"Success: {success}"
-            await self.database.update_agent_decision_outcome(
-                decision_id, outcome, notes
-            )
+            await self.database.update_agent_decision_outcome(decision_id, outcome, notes)
             debug_logger.info(f"Updated decision outcome: {decision_id}")
             return {
                 "status": "success",
@@ -4328,9 +3963,7 @@ class SessionIntelligenceEngine:
             }
 
         except Exception as e:
-            debug_logger.error(
-                f"Error updating decision outcome {decision_id}: {e}"
-            )
+            debug_logger.error(f"Error updating decision outcome {decision_id}: {e}")
             return {"status": "error", "message": str(e)}
 
     async def agent_log_learning(
@@ -4367,9 +4000,7 @@ class SessionIntelligenceEngine:
         self._agent_validator.validate(agent_name)  # raises AgentNotFoundError in strict mode
 
         if not self.database:
-            debug_logger.warning(
-                "agent_log_learning called without database"
-            )
+            debug_logger.warning("agent_log_learning called without database")
             return AgentLearningResult(
                 learning_id="",
                 agent_id="",
@@ -4385,10 +4016,7 @@ class SessionIntelligenceEngine:
                     learning_id="",
                     agent_id="",
                     status="error",
-                    message=(
-                        f"Agent '{agent_name}' not found. "
-                        "Register the agent first."
-                    ),
+                    message=(f"Agent '{agent_name}' not found. Register the agent first."),
                 )
 
             agent_id = agent_data["id"]
@@ -4411,9 +4039,7 @@ class SessionIntelligenceEngine:
                 "failure_count": 0,
                 "source_session_id": self._current_session_id,
                 "source_project_path": (
-                    str(self.claude_sessions_path.parent)
-                    if self.use_filesystem
-                    else None
+                    str(self.claude_sessions_path.parent) if self.use_filesystem else None
                 ),
                 "created_at": now,
                 "updated_at": now,
@@ -4424,23 +4050,16 @@ class SessionIntelligenceEngine:
             # Update agent stats
             await self.database.update_agent_stats(agent_id, "learnings")
 
-            debug_logger.info(
-                f"Logged learning {learning_id} for agent {agent_name}"
-            )
+            debug_logger.info(f"Logged learning {learning_id} for agent {agent_name}")
             return AgentLearningResult(
                 learning_id=learning_id,
                 agent_id=agent_id,
                 status="success",
-                message=(
-                    f"Learning logged successfully for agent "
-                    f"'{agent_name}'"
-                ),
+                message=(f"Learning logged successfully for agent '{agent_name}'"),
             )
 
         except Exception as e:
-            debug_logger.error(
-                f"Error logging learning for {agent_name}: {e}"
-            )
+            debug_logger.error(f"Error logging learning for {agent_name}: {e}")
             return AgentLearningResult(
                 learning_id="",
                 agent_id="",
@@ -4468,18 +4087,14 @@ class SessionIntelligenceEngine:
             List of AgentLearning models
         """
         if not self.database:
-            debug_logger.warning(
-                "agent_query_learnings called without database"
-            )
+            debug_logger.warning("agent_query_learnings called without database")
             return []
 
         try:
             # Look up agent by name
             agent_data = await self.database.get_agent_by_name(agent_name)
             if not agent_data:
-                debug_logger.info(
-                    f"Agent '{agent_name}' not found for learning query"
-                )
+                debug_logger.info(f"Agent '{agent_name}' not found for learning query")
                 return []
 
             agent_id = agent_data["id"]
@@ -4502,11 +4117,7 @@ class SessionIntelligenceEngine:
                     except (json.JSONDecodeError, TypeError):
                         applies_to = {}
                 else:
-                    applies_to = (
-                        applies_to_raw
-                        if isinstance(applies_to_raw, dict)
-                        else {}
-                    )
+                    applies_to = applies_to_raw if isinstance(applies_to_raw, dict) else {}
 
                 content = row.get("learning_content", "")
 
@@ -4515,17 +4126,13 @@ class SessionIntelligenceEngine:
                 if content.startswith("# "):
                     lines = content.split("\n", 1)
                     title = lines[0][2:].strip()
-                    content = (
-                        lines[1].strip() if len(lines) > 1 else ""
-                    )
+                    content = lines[1].strip() if len(lines) > 1 else ""
 
                 # Calculate success rate
                 success_count = row.get("success_count", 1)
                 failure_count = row.get("failure_count", 0)
                 total = success_count + failure_count
-                success_rate = (
-                    success_count / total if total > 0 else 0.0
-                )
+                success_rate = success_count / total if total > 0 else 0.0
 
                 # Convert datetime to ISO string if needed
                 created_at = row.get("created_at")
@@ -4544,9 +4151,7 @@ class SessionIntelligenceEngine:
                         content=content,
                         source_context=row.get("trigger_context"),
                         applicability=(
-                            applies_to.get("contexts", [])
-                            if isinstance(applies_to, dict)
-                            else []
+                            applies_to.get("contexts", []) if isinstance(applies_to, dict) else []
                         ),
                         confidence=(
                             applies_to.get("confidence", 0.8)
@@ -4555,11 +4160,7 @@ class SessionIntelligenceEngine:
                         ),
                         times_applied=success_count + failure_count,
                         success_rate=success_rate,
-                        tags=(
-                            applies_to.get("tags", [])
-                            if isinstance(applies_to, dict)
-                            else []
-                        ),
+                        tags=(applies_to.get("tags", []) if isinstance(applies_to, dict) else []),
                         created_at=created_at,
                         updated_at=updated_at,
                     )
@@ -4568,9 +4169,7 @@ class SessionIntelligenceEngine:
             return learnings
 
         except Exception as e:
-            debug_logger.error(
-                f"Error querying learnings for {agent_name}: {e}"
-            )
+            debug_logger.error(f"Error querying learnings for {agent_name}: {e}")
             return []
 
     async def agent_update_learning_outcome(
@@ -4593,28 +4192,22 @@ class SessionIntelligenceEngine:
             Dict with status and message
         """
         if not self.database:
-            debug_logger.warning(
-                "agent_update_learning_outcome called without database"
-            )
+            debug_logger.warning("agent_update_learning_outcome called without database")
             return {"status": "error", "message": "Database not available"}
 
         try:
             # Determine success based on new_success_rate
             # If new_success_rate is provided and > 0.5, consider success
-            success = (
-                new_success_rate is None
-                or (new_success_rate is not None and new_success_rate > 0.5)
+            success = new_success_rate is None or (
+                new_success_rate is not None and new_success_rate > 0.5
             )
 
             # Apply updates for each increment
             for _ in range(times_applied_increment):
-                await self.database.update_agent_learning_outcome(
-                    learning_id, success
-                )
+                await self.database.update_agent_learning_outcome(learning_id, success)
 
             debug_logger.info(
-                f"Updated learning outcome: {learning_id}, "
-                f"increments: {times_applied_increment}"
+                f"Updated learning outcome: {learning_id}, increments: {times_applied_increment}"
             )
             return {
                 "status": "success",
@@ -4624,9 +4217,7 @@ class SessionIntelligenceEngine:
             }
 
         except Exception as e:
-            debug_logger.error(
-                f"Error updating learning outcome {learning_id}: {e}"
-            )
+            debug_logger.error(f"Error updating learning outcome {learning_id}: {e}")
             return {"status": "error", "message": str(e)}
 
     async def agent_create_notebook(
@@ -4665,17 +4256,13 @@ class SessionIntelligenceEngine:
         self._agent_validator.validate(agent_name)  # raises AgentNotFoundError in strict mode
 
         if not self.database:
-            debug_logger.warning(
-                "agent_create_notebook called without database"
-            )
+            debug_logger.warning("agent_create_notebook called without database")
             return AgentNotebookResult(
                 notebook_id="",
                 agent_id="",
                 title=title,
                 status="error",
-                message=(
-                    "Database not available for creating notebook"
-                ),
+                message=("Database not available for creating notebook"),
             )
 
         try:
@@ -4687,10 +4274,7 @@ class SessionIntelligenceEngine:
                     agent_id="",
                     title=title,
                     status="error",
-                    message=(
-                        f"Agent '{agent_name}' not found. "
-                        "Register the agent first."
-                    ),
+                    message=(f"Agent '{agent_name}' not found. Register the agent first."),
                 )
 
             agent_id = agent_data["id"]
@@ -4707,9 +4291,7 @@ class SessionIntelligenceEngine:
                 "tags": tags or [],
                 "key_insights": [],  # Could extract from content
                 "related_sessions": (
-                    [self._current_session_id]
-                    if self._current_session_id
-                    else []
+                    [self._current_session_id] if self._current_session_id else []
                 ),
                 "decisions_referenced": decisions_referenced or [],
                 "learnings_referenced": learnings_referenced or [],
@@ -4722,24 +4304,17 @@ class SessionIntelligenceEngine:
             # Update agent stats
             await self.database.update_agent_stats(agent_id, "notebooks")
 
-            debug_logger.info(
-                f"Created notebook {notebook_id} for agent {agent_name}"
-            )
+            debug_logger.info(f"Created notebook {notebook_id} for agent {agent_name}")
             return AgentNotebookResult(
                 notebook_id=notebook_id,
                 agent_id=agent_id,
                 title=title,
                 status="success",
-                message=(
-                    f"Notebook '{title}' created successfully for agent "
-                    f"'{agent_name}'"
-                ),
+                message=(f"Notebook '{title}' created successfully for agent '{agent_name}'"),
             )
 
         except Exception as e:
-            debug_logger.error(
-                f"Error creating notebook for {agent_name}: {e}"
-            )
+            debug_logger.error(f"Error creating notebook for {agent_name}: {e}")
             return AgentNotebookResult(
                 notebook_id="",
                 agent_id="",
@@ -4768,18 +4343,14 @@ class SessionIntelligenceEngine:
             List of AgentNotebook models
         """
         if not self.database:
-            debug_logger.warning(
-                "agent_query_notebooks called without database"
-            )
+            debug_logger.warning("agent_query_notebooks called without database")
             return []
 
         try:
             # Look up agent by name
             agent_data = await self.database.get_agent_by_name(agent_name)
             if not agent_data:
-                debug_logger.info(
-                    f"Agent '{agent_name}' not found for notebook query"
-                )
+                debug_logger.info(f"Agent '{agent_name}' not found for notebook query")
                 return []
 
             agent_id = agent_data["id"]
@@ -4801,17 +4372,11 @@ class SessionIntelligenceEngine:
                         title=row.get("title", "Untitled"),
                         summary=None,  # Not stored separately
                         content=row.get("summary_markdown", ""),
-                        notebook_type=row.get(
-                            "notebook_type", "execution"
-                        ),
+                        notebook_type=row.get("notebook_type", "execution"),
                         context={},
                         decisions_referenced=[],  # Not in current schema
                         learnings_referenced=[],  # Not in current schema
-                        tags=(
-                            row.get("tags", [])
-                            if isinstance(row.get("tags"), list)
-                            else []
-                        ),
+                        tags=(row.get("tags", []) if isinstance(row.get("tags"), list) else []),
                         created_at=row.get("created_at"),
                         updated_at=row.get("updated_at"),
                     )
@@ -4820,9 +4385,7 @@ class SessionIntelligenceEngine:
             return notebooks
 
         except Exception as e:
-            debug_logger.error(
-                f"Error querying notebooks for {agent_name}: {e}"
-            )
+            debug_logger.error(f"Error querying notebooks for {agent_name}: {e}")
             return []
 
     async def agent_search_all(
@@ -4845,9 +4408,7 @@ class SessionIntelligenceEngine:
             Dict with 'decisions', 'learnings', and 'notebooks' lists
         """
         if not self.database:
-            debug_logger.warning(
-                "agent_search_all called without database"
-            )
+            debug_logger.warning("agent_search_all called without database")
             return {
                 "decisions": [],
                 "learnings": [],
@@ -4873,11 +4434,7 @@ class SessionIntelligenceEngine:
             # Note: This is simple in-memory filter; production uses FTS
 
             # Search decisions
-            all_decisions = (
-                await self.database.query_agent_decisions(
-                    agent_id=agent_id, limit=100
-                )
-            )
+            all_decisions = await self.database.query_agent_decisions(agent_id=agent_id, limit=100)
             matching_decisions = []
             for decision in all_decisions:
                 desc = (decision.get("description") or "").lower()
@@ -4888,11 +4445,7 @@ class SessionIntelligenceEngine:
                         break
 
             # Search learnings
-            all_learnings = (
-                await self.database.query_agent_learnings(
-                    agent_id=agent_id, limit=100
-                )
-            )
+            all_learnings = await self.database.query_agent_learnings(agent_id=agent_id, limit=100)
             matching_learnings = []
             for learning in all_learnings:
                 content = (learning.get("learning_content") or "").lower()
@@ -4903,11 +4456,7 @@ class SessionIntelligenceEngine:
                         break
 
             # Search notebooks
-            all_notebooks = (
-                await self.database.query_agent_notebooks(
-                    agent_id=agent_id, limit=100
-                )
-            )
+            all_notebooks = await self.database.query_agent_notebooks(agent_id=agent_id, limit=100)
             matching_notebooks = []
             for notebook in all_notebooks:
                 title = (notebook.get("title") or "").lower()
@@ -4932,9 +4481,7 @@ class SessionIntelligenceEngine:
                 "learnings": matching_learnings,
                 "notebooks": matching_notebooks,
                 "total_matches": (
-                    len(matching_decisions)
-                    + len(matching_learnings)
-                    + len(matching_notebooks)
+                    len(matching_decisions) + len(matching_learnings) + len(matching_notebooks)
                 ),
             }
 

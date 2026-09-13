@@ -119,9 +119,7 @@ class AgentValidator:
 
         if len(matches) > 1:
             paths_str = ", ".join(str(p) for p in matches)
-            raise AmbiguousAgentNameError(
-                f"Multiple agent files named {agent_name!r}: {paths_str}"
-            )
+            raise AmbiguousAgentNameError(f"Multiple agent files named {agent_name!r}: {paths_str}")
 
         if len(matches) == 1:
             path = matches[0]
@@ -141,8 +139,7 @@ class AgentValidator:
         closest = self.find_closest(agent_name)
         if self._mode == "strict":
             raise AgentNotFoundError(
-                f"Agent {agent_name!r} not found in {self._agents_root}. "
-                f"Closest matches: {closest}"
+                f"Agent {agent_name!r} not found in {self._agents_root}. Closest matches: {closest}"
             )
         logger.warning(
             "Agent %r not found in %s (closest: %s)",

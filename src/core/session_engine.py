@@ -2215,6 +2215,8 @@ class SessionIntelligenceEngine:
         session_name: str | None = None,
         project_name: str | None = None,
         allow_unbound: bool = False,
+        body: str | None = None,
+        include_derived_sections: bool | None = None,
     ) -> NotebookResult:
         """
         Generate a comprehensive markdown notebook/summary for a session.
@@ -2235,6 +2237,15 @@ class SessionIntelligenceEngine:
             project_name: Project whose most-recent active session to use
             allow_unbound: If True, fall back to legacy unbound session
                 (deprecated)
+            body: Caller-authored narrative, stored verbatim and never
+                regenerated. When supplied, the compiled sections become
+                opt-in (see include_derived_sections).
+            include_derived_sections: Whether to render the compiled
+                sections (agents, decisions, metrics, learnings, files).
+                Defaults to True when no body is given (unchanged
+                behaviour) and False when a body is given, so an authored
+                narrative is the primary artifact rather than a preamble
+                to a 68k-character rollup (issue #106).
 
         Pass at least one of session_id, session_name, or project_name, or
         set allow_unbound=True to opt into the legacy fallback.
@@ -2260,6 +2271,8 @@ class SessionIntelligenceEngine:
                 tags,
                 save_to_file,
                 save_to_database,
+                body=body,
+                include_derived_sections=include_derived_sections,
             )
         except SessionContextRequiredError:
             raise
@@ -2284,8 +2297,22 @@ class SessionIntelligenceEngine:
         session_name: str | None = None,
         project_name: str | None = None,
         allow_unbound: bool = False,
+        body: str | None = None,
+        include_derived_sections: bool | None = None,
     ) -> NotebookResult:
-        """Async version: Generate notebook with full database queries."""
+        """Async version: Generate notebook with full database queries.
+
+        Args:
+            body: Caller-authored narrative, stored verbatim and never
+                regenerated. When supplied, the compiled sections become
+                opt-in (see include_derived_sections).
+            include_derived_sections: Whether to render the compiled
+                sections (agents, decisions, metrics, learnings, files).
+                Defaults to True when no body is given (unchanged
+                behaviour) and False when a body is given, so an authored
+                narrative is the primary artifact rather than a preamble
+                to a 68k-character rollup (issue #106).
+        """
         try:
             # Resolve session via the flexible resolver
             if session_id is None:
@@ -2425,8 +2452,16 @@ class SessionIntelligenceEngine:
             if tags is None:
                 tags = self._auto_generate_tags(session, agents_used, key_changes)
 
+            render_sections = (
+                include_derived_sections if include_derived_sections is not None else body is None
+            )
             summary_markdown = self._generate_summary_markdown(
-                title, sections, session, duration_minutes
+                title,
+                sections,
+                session,
+                duration_minutes,
+                body=body,
+                render_sections=render_sections,
             )
             notebook = SessionNotebook(
                 session_id=session_id,
@@ -2437,6 +2472,7 @@ class SessionIntelligenceEngine:
                 duration_minutes=round(duration_minutes, 2),
                 sections=sections,
                 summary_markdown=summary_markdown,
+                authored_body=body,
                 key_changes=key_changes,
                 agents_used=agents_used,
                 decisions_made=decisions_made,
@@ -2454,6 +2490,7 @@ class SessionIntelligenceEngine:
                         "session_id": session_id,
                         "title": title,
                         "summary_markdown": summary_markdown,
+                        "authored_body": body,
                         "key_changes": key_changes,
                         "tags": tags,
                         "created_at": datetime.now(UTC),
@@ -2489,8 +2526,22 @@ class SessionIntelligenceEngine:
         tags: list[str] | None,
         save_to_file: bool,
         save_to_database: bool,
+        body: str | None = None,
+        include_derived_sections: bool | None = None,
     ) -> NotebookResult:
-        """Notebook creation with proper async database access."""
+        """Notebook creation with proper async database access.
+
+        Args:
+            body: Caller-authored narrative, stored verbatim and never
+                regenerated. When supplied, the compiled sections become
+                opt-in (see include_derived_sections).
+            include_derived_sections: Whether to render the compiled
+                sections (agents, decisions, metrics, learnings, files).
+                Defaults to True when no body is given (unchanged
+                behaviour) and False when a body is given, so an authored
+                narrative is the primary artifact rather than a preamble
+                to a 68k-character rollup (issue #106).
+        """
 
         # Both callers (session_create_notebook / session_create_notebook_async)
         # already resolve session_id via _resolve_session_context() before
@@ -2621,8 +2672,16 @@ class SessionIntelligenceEngine:
             tags = self._auto_generate_tags(session, agents_used, key_changes)
 
         # Generate summary markdown
+        render_sections = (
+            include_derived_sections if include_derived_sections is not None else body is None
+        )
         summary_markdown = self._generate_summary_markdown(
-            title, sections, session, duration_minutes
+            title,
+            sections,
+            session,
+            duration_minutes,
+            body=body,
+            render_sections=render_sections,
         )
 
         # Create notebook object
@@ -2635,6 +2694,7 @@ class SessionIntelligenceEngine:
             duration_minutes=round(duration_minutes, 2),
             sections=sections,
             summary_markdown=summary_markdown,
+            authored_body=body,
             key_changes=key_changes,
             agents_used=agents_used,
             decisions_made=decisions_made,
@@ -2959,8 +3019,18 @@ class SessionIntelligenceEngine:
         sections: list[NotebookSection],
         session: Session,
         duration_minutes: float,
+        body: str | None = None,
+        render_sections: bool = True,
     ) -> str:
-        """Generate the complete markdown document."""
+        """Generate the complete markdown document.
+
+        Args:
+            body: Caller-authored narrative, emitted verbatim right after
+                the header when supplied.
+            render_sections: Whether to render the compiled sections
+                (agents, decisions, metrics, learnings, files) below the
+                body. See session_create_notebook for the default logic.
+        """
         lines = [
             f"# {title}",
             "",
@@ -2969,12 +3039,17 @@ class SessionIntelligenceEngine:
             "",
         ]
 
-        for section in sections:
-            heading_prefix = "#" * section.level
-            lines.append(f"{heading_prefix} {section.heading}")
+        if body is not None:
+            lines.append(body)
             lines.append("")
-            lines.append(section.content)
-            lines.append("")
+
+        if render_sections:
+            for section in sections:
+                heading_prefix = "#" * section.level
+                lines.append(f"{heading_prefix} {section.heading}")
+                lines.append("")
+                lines.append(section.content)
+                lines.append("")
 
         # Add footer
         lines.extend(
@@ -3159,6 +3234,82 @@ class SessionIntelligenceEngine:
         except Exception as e:
             debug_logger.error(f"Error in session_query_notebooks: {e}")
             return []
+
+    async def session_update_notebook(
+        self,
+        session_id: str | None = None,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        body: str | None = None,
+        title: str | None = None,
+        allow_unbound: bool = False,
+    ) -> dict[str, Any]:
+        """
+        Update the caller-authored body and/or title of an existing notebook.
+
+        Args:
+            session_id: Explicit session ID whose notebook to update
+            session_name: Named session whose notebook to update
+            project_name: Project whose most-recent active session's
+                notebook to update
+            body: New caller-authored narrative, stored verbatim
+            title: New title for the notebook
+            allow_unbound: If True, fall back to legacy unbound session
+                (deprecated)
+
+        Pass at least one of session_id, session_name, or project_name, or
+        set allow_unbound=True to opt into the legacy fallback.
+
+        Returns:
+            Dict with status and message
+        """
+        try:
+            if session_id is None:
+                resolved = await self._resolve_session_context(
+                    session_id=None,
+                    session_name=session_name,
+                    project_name=project_name,
+                    allow_unbound=allow_unbound,
+                )
+                session_id = resolved.session_id
+
+            if self.database is None:
+                return {"status": "error", "message": "No database configured"}
+
+            if body is None and title is None:
+                return {
+                    "status": "error",
+                    "message": "Nothing to update: pass body and/or title",
+                }
+
+            updated = await self.database.update_session_summary_body(
+                session_id, authored_body=body, title=title
+            )
+
+            if not updated:
+                return {
+                    "status": "error",
+                    "session_id": session_id,
+                    "message": (
+                        "No notebook exists for this session; call session_create_notebook first"
+                    ),
+                }
+
+            updated_fields = [
+                name for name, value in (("body", body), ("title", title)) if value is not None
+            ]
+            debug_logger.info(f"session_update_notebook updated {session_id}: {updated_fields}")
+            return {
+                "status": "success",
+                "session_id": session_id,
+                "updated_fields": updated_fields,
+                "message": "Notebook updated successfully",
+            }
+        except SessionContextRequiredError:
+            raise
+        except Exception as e:
+            debug_logger.error(f"Error updating notebook: {e}")
+            return {"status": "error", "message": f"Failed to update notebook: {str(e)}"}
 
     async def session_recall(
         self,

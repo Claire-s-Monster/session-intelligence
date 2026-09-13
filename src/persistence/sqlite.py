@@ -162,6 +162,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         session_id TEXT PRIMARY KEY,
         title TEXT,
         summary_markdown TEXT,
+        authored_body TEXT,
         key_changes TEXT,
         tags TEXT,
         created_at TEXT NOT NULL,
@@ -443,6 +444,18 @@ class SQLiteBackend(BaseDatabaseBackend):
             "UPDATE agent_executions SET last_seen_at = started_at WHERE last_seen_at IS NULL"
         )
         await self._connection.commit()
+
+        # Issue #106: idempotent migration for existing databases: add the
+        # caller-authored notebook body. Distinct from summary_markdown,
+        # which is a regenerated snapshot.
+        try:
+            await self._connection.execute(
+                "ALTER TABLE session_summaries ADD COLUMN authored_body TEXT"
+            )
+            await self._connection.commit()
+        except Exception as e:
+            if "duplicate column" not in str(e).lower():
+                raise
 
         self._is_connected = True
         logger.info(f"SQLite database initialized: {self.db_path}")
@@ -996,22 +1009,66 @@ class SQLiteBackend(BaseDatabaseBackend):
         """Save or update a session summary/notebook."""
         conn = self._ensure_connected()
 
+        # INSERT OR REPLACE deletes and re-inserts the whole row, which would
+        # null authored_body on every regeneration since it is absent from
+        # callers that only refresh the derived snapshot. Use a real upsert
+        # instead so authored_body survives regeneration.
         await conn.execute(
             """
-            INSERT OR REPLACE INTO session_summaries
-            (session_id, title, summary_markdown, key_changes, tags, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO session_summaries
+            (session_id, title, summary_markdown, authored_body, key_changes, tags, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                title = excluded.title,
+                summary_markdown = excluded.summary_markdown,
+                authored_body = COALESCE(excluded.authored_body, session_summaries.authored_body),
+                key_changes = excluded.key_changes,
+                tags = excluded.tags,
+                created_at = excluded.created_at
             """,
             (
                 summary_data["session_id"],
                 summary_data.get("title"),
                 summary_data.get("summary_markdown"),
+                summary_data.get("authored_body"),
                 json.dumps(summary_data.get("key_changes", [])),
                 json.dumps(summary_data.get("tags", [])),
                 summary_data.get("created_at", self._get_timestamp()),
             ),
         )
         await conn.commit()
+
+    async def update_session_summary_body(
+        self, session_id: str, authored_body: str | None = None, title: str | None = None
+    ) -> bool:
+        """Update only the caller-authored fields of an existing notebook row.
+
+        Returns False when no row exists for session_id, so callers can
+        distinguish "updated" from "nothing to update" rather than silently
+        succeeding. Never touches summary_markdown, key_changes or tags --
+        those are regenerated, not authored.
+        """
+        if authored_body is None and title is None:
+            return False
+
+        conn = self._ensure_connected()
+
+        set_clauses = []
+        params: list[Any] = []
+        if authored_body is not None:
+            set_clauses.append("authored_body = ?")
+            params.append(authored_body)
+        if title is not None:
+            set_clauses.append("title = ?")
+            params.append(title)
+        params.append(session_id)
+
+        cursor = await conn.execute(
+            f"UPDATE session_summaries SET {', '.join(set_clauses)} WHERE session_id = ?",
+            tuple(params),
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
 
     async def get_session_summary(self, session_id: str) -> dict[str, Any] | None:
         """Retrieve a session summary by session ID."""

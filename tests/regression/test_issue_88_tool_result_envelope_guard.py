@@ -30,7 +30,6 @@ from persistence.sqlite import SQLiteBackend
 
 @pytest.mark.regression
 class TestToolResultEnvelopeRejected:
-
     @pytest.fixture
     async def engine(self, tmp_path):
         eng = SessionIntelligenceEngine(repository_path=str(tmp_path))
@@ -42,7 +41,7 @@ class TestToolResultEnvelopeRejected:
     async def test_session_log_learning_rejects_real_poison_string(self, engine):
         """The actual envelope that motivated issue #88."""
         poison = (
-            "Tool 'Write' failed: \"\"\"\n"
+            'Tool \'Write\' failed: """\n'
             "Regression tests for issue #82: sessions and agent_executions gain a\n"
             "last_seen_at heartbeat col"
         )
@@ -142,9 +141,7 @@ class TestToolResultEnvelopeRejected:
                 project_name="proj-a",
             )
         except InvalidEntryContentError:
-            pytest.fail(
-                "Guard incorrectly raised InvalidEntryContentError for None content."
-            )
+            pytest.fail("Guard incorrectly raised InvalidEntryContentError for None content.")
         except TypeError as e:
             pytest.fail(f"Guard must not raise TypeError for None content: {e}")
         except Exception:
@@ -158,9 +155,7 @@ class TestToolResultEnvelopeRejected:
                 project_name="proj-a",
             )
         except InvalidEntryContentError:
-            pytest.fail(
-                "Guard incorrectly raised InvalidEntryContentError for None content."
-            )
+            pytest.fail("Guard incorrectly raised InvalidEntryContentError for None content.")
         except TypeError as e:
             pytest.fail(f"Guard must not raise TypeError for None content: {e}")
         except Exception:
@@ -169,7 +164,6 @@ class TestToolResultEnvelopeRejected:
 
 @pytest.mark.regression
 class TestLegitimateContentIsNotRejected:
-
     @pytest.fixture
     async def engine(self, tmp_path):
         eng = SessionIntelligenceEngine(repository_path=str(tmp_path))
@@ -223,10 +217,7 @@ class TestLegitimateContentIsNotRejected:
         assert result.learning is not None
 
     async def test_lowercase_the_tool_prefix_is_not_rejected(self, engine):
-        content = (
-            "the tool 'foo' failed because the path was wrong; fix is to "
-            "quote it"
-        )
+        content = "the tool 'foo' failed because the path was wrong; fix is to quote it"
         result = await engine.session_log_learning(
             category="error_fix",
             learning_content=content,

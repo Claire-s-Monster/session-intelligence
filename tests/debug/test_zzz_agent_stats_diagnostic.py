@@ -44,9 +44,7 @@ async def _run_end_to_end():
 
     # Grab a real, recent session id to attach the throwaway execution to.
     async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT id FROM sessions ORDER BY started_at DESC LIMIT 1"
-        )
+        row = await conn.fetchrow("SELECT id FROM sessions ORDER BY started_at DESC LIMIT 1")
     session_id = row["id"]
 
     diagnostic_agent_type = "META-function-manager-diagnostic-DELETE-ME"

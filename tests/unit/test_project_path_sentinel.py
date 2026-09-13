@@ -81,9 +81,7 @@ class TestCreateSessionProjectPathSentinel:
 
 
 class TestSessionLogLearningProjectPathSentinel:
-    async def test_session_log_learning_unresolvable_context_uses_sentinel(
-        self, engine, db
-    ):
+    async def test_session_log_learning_unresolvable_context_uses_sentinel(self, engine, db):
         """No project_path and no resolvable session context -> sentinel stored."""
         result = await engine.session_log_learning(
             category="pattern",

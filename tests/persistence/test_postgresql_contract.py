@@ -1,4 +1,5 @@
 """Run persistence contract tests against PostgreSQL backend."""
+
 import os
 import pytest
 from tests.persistence.conftest import POSTGRES_AVAILABLE
@@ -38,7 +39,5 @@ class TestPostgreSQLContract(PersistenceContractTests):
 
         s = _session(project_name="searchable-project")
         await backend.save_session(s)
-        results = await backend.search_sessions(
-            "searchable", search_type="project", limit=10
-        )
+        results = await backend.search_sessions("searchable", search_type="project", limit=10)
         assert isinstance(results, list)

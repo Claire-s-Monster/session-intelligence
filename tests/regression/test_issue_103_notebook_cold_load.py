@@ -171,9 +171,7 @@ async def test_cached_session_is_not_refetched(engine, db):
         started=datetime.now(UTC),
         project_name="cached-project",
         project_path="/tmp/cached-project",
-        metadata=SessionMetadata(
-            session_type="development", environment="local", user="user"
-        ),
+        metadata=SessionMetadata(session_type="development", environment="local", user="user"),
     )
     engine.session_cache[sid] = cached_session
 

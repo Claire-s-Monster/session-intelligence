@@ -70,12 +70,14 @@ async def test_note_older_than_365_days_is_migrated(source, target, manager):
     await source.save_session(_session(session_id=sid))
 
     old_date = (date.today() - timedelta(days=400)).isoformat()
-    await source.save_note({
-        "session_id": sid,
-        "date": old_date,
-        "content": "ancient note",
-        "tags": [],
-    })
+    await source.save_note(
+        {
+            "session_id": sid,
+            "date": old_date,
+            "content": "ancient note",
+            "tags": [],
+        }
+    )
 
     result = await manager.migrate_all()
 
@@ -98,12 +100,14 @@ async def test_more_than_1000_notes_in_a_day_migrated_in_full(source, target, ma
     total = 1005
     same_date = "2026-01-01"
     for i in range(total):
-        await source.save_note({
-            "session_id": sid,
-            "date": same_date,
-            "content": f"note-{i}",
-            "tags": [],
-        })
+        await source.save_note(
+            {
+                "session_id": sid,
+                "date": same_date,
+                "content": f"note-{i}",
+                "tags": [],
+            }
+        )
 
     result = await manager.migrate_all(batch_size=500)
 
@@ -124,12 +128,14 @@ async def test_rerunning_migrate_all_does_not_duplicate_notes(source, target, ma
     sid = "sess-rerun-notes-001"
     await source.save_session(_session(session_id=sid))
     for i in range(5):
-        await source.save_note({
-            "session_id": sid,
-            "date": "2026-08-01",
-            "content": f"note-{i}",
-            "tags": [],
-        })
+        await source.save_note(
+            {
+                "session_id": sid,
+                "date": "2026-08-01",
+                "content": f"note-{i}",
+                "tags": [],
+            }
+        )
 
     await manager.migrate_all()
     first_count = len(await target.query_notes(limit=100))
@@ -165,12 +171,14 @@ async def test_orphaned_note_surfaced_and_attempted(source, target, manager):
     """
     sid = "sess-orphan-001"
     await source.save_session(_session(session_id=sid))
-    await source.save_note({
-        "session_id": sid,
-        "date": "2026-05-01",
-        "content": "orphan note",
-        "tags": [],
-    })
+    await source.save_note(
+        {
+            "session_id": sid,
+            "date": "2026-05-01",
+            "content": "orphan note",
+            "tags": [],
+        }
+    )
 
     # Break referential integrity in the source on purpose: disable FK
     # enforcement just long enough to delete the session directly (bypassing
@@ -238,12 +246,14 @@ async def test_batch_size_does_not_cap_total_records_migrated(source, target, ma
     for i in range(total):
         sid = f"sess-batch-cap-{i:03d}"
         await source.save_session(_session(session_id=sid))
-        await source.save_note({
-            "session_id": sid,
-            "date": "2026-08-01",
-            "content": f"note-{i}",
-            "tags": [],
-        })
+        await source.save_note(
+            {
+                "session_id": sid,
+                "date": "2026-08-01",
+                "content": f"note-{i}",
+                "tags": [],
+            }
+        )
 
     result = await manager.migrate_all()
 

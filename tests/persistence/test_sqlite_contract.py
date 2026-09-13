@@ -1,4 +1,5 @@
 """Run persistence contract tests against SQLite backend."""
+
 import pytest
 from tests.persistence.contract_tests import PersistenceContractTests
 

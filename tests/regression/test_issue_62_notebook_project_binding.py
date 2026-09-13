@@ -153,8 +153,7 @@ async def test_unusable_project_path_returns_empty_not_every_project(engine, tmp
 
         session_ids = {r["session_id"] for r in results}
         assert results == [], (
-            f"expected empty result for unusable project_path {unusable_path!r}, "
-            f"got {results!r}"
+            f"expected empty result for unusable project_path {unusable_path!r}, got {results!r}"
         )
         assert session_a not in session_ids, (
             f"project_path={unusable_path!r} leaked proj_a's notebook"

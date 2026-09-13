@@ -97,13 +97,9 @@ def _decision_row(decision_id: str, session_id: str, description: str) -> dict:
 
 async def test_agents_row_counts_the_list_not_the_stored_counter(engine, db):
     sid = "metrics-agents-row-list-not-counter"
-    await db.save_session(
-        _session_row(sid, performance_metrics={"agents_executed": 3})
-    )
+    await db.save_session(_session_row(sid, performance_metrics={"agents_executed": 3}))
     for i in range(7):
-        await db.save_agent_execution(
-            _execution_row(f"exec-{i}", sid, agent_name=f"agent-{i}")
-        )
+        await db.save_agent_execution(_execution_row(f"exec-{i}", sid, agent_name=f"agent-{i}"))
     engine.session_cache.clear()
 
     session = await engine._hydrate_session(sid)
@@ -144,15 +140,9 @@ async def test_successful_and_failed_are_derived_from_statuses(engine, db):
 
 async def test_decisions_row_counts_the_decisions_list(engine, db):
     sid = "metrics-decisions-row-list"
-    await db.save_session(
-        _session_row(sid, performance_metrics={"decisions_made": 0})
-    )
-    await db.save_decision(
-        _decision_row("dec-1", sid, "First decision made in this session")
-    )
-    await db.save_decision(
-        _decision_row("dec-2", sid, "Second decision made in this session")
-    )
+    await db.save_session(_session_row(sid, performance_metrics={"decisions_made": 0}))
+    await db.save_decision(_decision_row("dec-1", sid, "First decision made in this session"))
+    await db.save_decision(_decision_row("dec-2", sid, "Second decision made in this session"))
     engine.session_cache.clear()
 
     session = await engine._hydrate_session(sid)
@@ -163,13 +153,9 @@ async def test_decisions_row_counts_the_decisions_list(engine, db):
 
 async def test_notebook_sections_agree_end_to_end(engine, db):
     sid = "metrics-notebook-sections-agree"
-    await db.save_session(
-        _session_row(sid, performance_metrics={"agents_executed": 1})
-    )
+    await db.save_session(_session_row(sid, performance_metrics={"agents_executed": 1}))
     for i in range(4):
-        await db.save_agent_execution(
-            _execution_row(f"exec-{i}", sid, agent_name=f"agent-{i}")
-        )
+        await db.save_agent_execution(_execution_row(f"exec-{i}", sid, agent_name=f"agent-{i}"))
     engine.session_cache.clear()
 
     result = await engine.session_create_notebook(

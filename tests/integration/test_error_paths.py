@@ -60,6 +60,7 @@ async def _call(lean: LeanMCPInterface, tool_name: str, **params):
     tool_info = lean.tool_registry[tool_name]
     impl = tool_info["implementation"]
     import inspect
+
     if inspect.iscoroutinefunction(impl):
         return await impl(**params)
     return impl(**params)
@@ -109,7 +110,13 @@ async def test_log_decision_empty_string_is_accepted(lean):
 async def test_log_decision_none_context_is_handled(lean):
     """session_log_decision with context=None does not crash."""
     await _call(lean, "session_manage_lifecycle", operation="create", project_name="ctx-test")
-    result = await _call(lean, "session_log_decision", decision="test decision", context=None, project_name="ctx-test")
+    result = await _call(
+        lean,
+        "session_log_decision",
+        decision="test decision",
+        context=None,
+        project_name="ctx-test",
+    )
     assert result is not None
 
 

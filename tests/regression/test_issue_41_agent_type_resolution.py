@@ -85,9 +85,7 @@ async def test_agent_stop_empty_agent_type_backfilled_from_cache(engine):
     session_id = start_result.session_id
 
     session = engine.session_cache[session_id]
-    agent_execution = next(
-        a for a in session.agents_executed if a.agent_name == AGENT_NAME
-    )
+    agent_execution = next(a for a in session.agents_executed if a.agent_name == AGENT_NAME)
     assert agent_execution.agent_type == "focused-code-modifier"
 
     stop_result = await engine.session_track_execution(
@@ -101,9 +99,7 @@ async def test_agent_stop_empty_agent_type_backfilled_from_cache(engine):
     )
     assert stop_result.status == "success"
 
-    agent_execution = next(
-        a for a in session.agents_executed if a.agent_name == AGENT_NAME
-    )
+    agent_execution = next(a for a in session.agents_executed if a.agent_name == AGENT_NAME)
     assert agent_execution.agent_type == "focused-code-modifier", (
         "AgentExecution.agent_type was overwritten with an empty string "
         "reported by the SubagentStop hook instead of being backfilled "
@@ -132,9 +128,7 @@ async def test_no_prior_cache_falls_back_to_unknown(engine):
 
     session = engine.session_cache[session_id]
     agent_execution = next(
-        a
-        for a in session.agents_executed
-        if a.agent_name == "brand-new-agent-hexid"
+        a for a in session.agents_executed if a.agent_name == "brand-new-agent-hexid"
     )
     assert agent_execution.agent_type == "unknown"
 
@@ -184,8 +178,7 @@ async def test_later_real_agent_type_updates_stale_cached_value(engine):
     second_execution = next(
         a
         for a in session.agents_executed
-        if a.agent_name == AGENT_NAME
-        and a.agent_type == "focused-quality-resolver"
+        if a.agent_name == AGENT_NAME and a.agent_type == "focused-quality-resolver"
     )
     assert second_execution.agent_type == "focused-quality-resolver"
 
@@ -198,6 +191,5 @@ async def test_later_real_agent_type_updates_stale_cached_value(engine):
 
     assert engine._agent_type_cache[AGENT_NAME] == "focused-quality-resolver"
     assert second_execution.agent_type == "focused-quality-resolver", (
-        "Stale first-seen cached agent_type leaked into a later, "
-        "unrelated invocation's backfill."
+        "Stale first-seen cached agent_type leaked into a later, unrelated invocation's backfill."
     )

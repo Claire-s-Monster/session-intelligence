@@ -405,9 +405,7 @@ async def test_persist_sessions_survives_cache_mutation_during_iteration(tmp_pat
         persisted_ids.append(session_data["id"])
         if call_count["n"] == 1:
             # Simulate a concurrent request adding a new session mid-iteration.
-            engine.session_cache["s3-concurrent"] = _make_session(
-                "s3-concurrent", str(tmp_path)
-            )
+            engine.session_cache["s3-concurrent"] = _make_session("s3-concurrent", str(tmp_path))
         await original_save_session(session_data)
 
     db.save_session = racy_save_session

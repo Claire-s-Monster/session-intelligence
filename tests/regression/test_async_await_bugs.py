@@ -24,10 +24,11 @@ async def engine(tmp_path):
 
 @pytest.mark.regression
 class TestAsyncAwaitBugs:
-
     async def test_session_log_decision_persists_data(self, engine):
         """Verify decision data actually reaches the database (not fire-and-forget)."""
-        result = await engine.session_manage_lifecycle(operation="create", mode="local", project_name="test")
+        result = await engine.session_manage_lifecycle(
+            operation="create", mode="local", project_name="test"
+        )
         session_id = result.session_id
 
         await engine.session_log_decision(
@@ -51,9 +52,7 @@ class TestAsyncAwaitBugs:
             allow_unbound=True,
         )
 
-        learnings = await engine.database.query_project_learnings(
-            project_path=UNKNOWN_PROJECT_PATH
-        )
+        learnings = await engine.database.query_project_learnings(project_path=UNKNOWN_PROJECT_PATH)
         assert len(learnings) >= 1
 
     async def test_no_coroutine_objects_from_mcp_tools(self, engine):

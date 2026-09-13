@@ -228,9 +228,9 @@ class TestPersistSessionsToDatabase:
         database.reset()
         await server._persist_sessions_to_database(request)
 
-        assert database.decisions == [
-            "d1"
-        ], "A decision whose write failed must not have its digest committed"
+        assert database.decisions == ["d1"], (
+            "A decision whose write failed must not have its digest committed"
+        )
 
     async def test_evicted_session_is_rewritten_when_it_returns(self):
         session = StubSession("s1", decisions=[StubEntity("d1")])

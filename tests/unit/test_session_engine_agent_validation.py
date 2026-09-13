@@ -22,11 +22,7 @@ def _write_agent(base: Path, subdir: str, stem: str, frontmatter: str = "") -> P
     """Write a minimal agent .md file under base/subdir/stem.md."""
     target_dir = base / subdir
     target_dir.mkdir(parents=True, exist_ok=True)
-    content = (
-        f"---\n{frontmatter}\n---\n# Agent\nBody.\n"
-        if frontmatter
-        else "# Agent\nBody.\n"
-    )
+    content = f"---\n{frontmatter}\n---\n# Agent\nBody.\n" if frontmatter else "# Agent\nBody.\n"
     path = target_dir / f"{stem}.md"
     path.write_text(content, encoding="utf-8")
     return path

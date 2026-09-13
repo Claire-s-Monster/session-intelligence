@@ -163,9 +163,7 @@ async def test_agent_query_decisions_filtered_by_type(engine):
         decision="use SQLite",
     )
 
-    arch_decisions = await engine.agent_query_decisions(
-        "test-agent", decision_type="architecture"
-    )
+    arch_decisions = await engine.agent_query_decisions("test-agent", decision_type="architecture")
 
     assert len(arch_decisions) >= 1
     for d in arch_decisions:

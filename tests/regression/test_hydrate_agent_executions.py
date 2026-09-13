@@ -75,12 +75,8 @@ def _execution_row(
 async def test_cold_session_loads_its_agent_executions(engine, db):
     sid = "hydrate-two-executions"
     await db.save_session(_session_row(sid))
-    await db.save_agent_execution(
-        _execution_row("exec-1", sid, agent_name="agent-alpha")
-    )
-    await db.save_agent_execution(
-        _execution_row("exec-2", sid, agent_name="agent-beta")
-    )
+    await db.save_agent_execution(_execution_row("exec-1", sid, agent_name="agent-alpha"))
+    await db.save_agent_execution(_execution_row("exec-2", sid, agent_name="agent-beta"))
     engine.session_cache.clear()
 
     session = await engine._hydrate_session(sid)
@@ -98,9 +94,7 @@ async def test_notebook_for_cold_session_includes_agents_section(engine, db):
     )
     engine.session_cache.clear()
 
-    result = await engine.session_create_notebook(
-        session_id=sid, save_to_file=False
-    )
+    result = await engine.session_create_notebook(session_id=sid, save_to_file=False)
 
     assert result.status == "success"
     assert "Agents Executed" in result.markdown_output
@@ -112,9 +106,7 @@ async def test_all_executions_load_when_count_exceeds_page_size(engine, db):
     await db.save_session(_session_row(sid))
     total = AGENT_EXECUTION_PAGE_SIZE + 5
     for i in range(total):
-        await db.save_agent_execution(
-            _execution_row(f"exec-{i}", sid, agent_name=f"agent-{i}")
-        )
+        await db.save_agent_execution(_execution_row(f"exec-{i}", sid, agent_name=f"agent-{i}"))
     engine.session_cache.clear()
 
     session = await engine._hydrate_session(sid)
@@ -125,13 +117,9 @@ async def test_all_executions_load_when_count_exceeds_page_size(engine, db):
 async def test_partial_load_cannot_shrink_the_stored_agent_count(engine, db):
     sid = "hydrate-stored-count-no-shrink"
     total = AGENT_EXECUTION_PAGE_SIZE + 5
-    await db.save_session(
-        _session_row(sid, performance_metrics={"agents_executed": total})
-    )
+    await db.save_session(_session_row(sid, performance_metrics={"agents_executed": total}))
     for i in range(total):
-        await db.save_agent_execution(
-            _execution_row(f"exec-{i}", sid, agent_name=f"agent-{i}")
-        )
+        await db.save_agent_execution(_execution_row(f"exec-{i}", sid, agent_name=f"agent-{i}"))
     engine.session_cache.clear()
 
     session = await engine._hydrate_session(sid)
@@ -142,17 +130,11 @@ async def test_partial_load_cannot_shrink_the_stored_agent_count(engine, db):
 async def test_unreadable_execution_row_is_skipped_not_fatal(engine, db):
     sid = "hydrate-unreadable-row-skipped"
     await db.save_session(_session_row(sid))
+    await db.save_agent_execution(_execution_row("exec-good-1", sid, agent_name="agent-good-1"))
     await db.save_agent_execution(
-        _execution_row("exec-good-1", sid, agent_name="agent-good-1")
+        _execution_row("exec-bad", sid, agent_name="agent-bad", status="not-a-real-status")
     )
-    await db.save_agent_execution(
-        _execution_row(
-            "exec-bad", sid, agent_name="agent-bad", status="not-a-real-status"
-        )
-    )
-    await db.save_agent_execution(
-        _execution_row("exec-good-2", sid, agent_name="agent-good-2")
-    )
+    await db.save_agent_execution(_execution_row("exec-good-2", sid, agent_name="agent-good-2"))
     engine.session_cache.clear()
 
     session = await engine._hydrate_session(sid)

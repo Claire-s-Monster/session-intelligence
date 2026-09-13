@@ -16,7 +16,6 @@ from persistence.sqlite import SQLiteBackend
 
 @pytest.mark.regression
 class TestSessionPersistenceBugs:
-
     @pytest.fixture
     async def engine(self, tmp_path):
         eng = SessionIntelligenceEngine(repository_path=str(tmp_path))
@@ -34,8 +33,7 @@ class TestSessionPersistenceBugs:
 
         db_session = await engine.database.get_session(session_id)
         assert db_session is not None, (
-            "Session was created in memory but not persisted to database. "
-            "This is the PR #14 bug."
+            "Session was created in memory but not persisted to database. This is the PR #14 bug."
         )
         assert db_session["project_name"] == "persist-test"
 

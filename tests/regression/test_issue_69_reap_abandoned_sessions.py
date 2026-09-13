@@ -98,9 +98,7 @@ class TestFindRecentSessionByProjectExcludesStale:
         await db.close()
 
     async def test_stale_active_session_excluded(self, backend):
-        stale = _session_dict(
-            age_hours=DEFAULT_SESSION_MAX_AGE_HOURS + 1, project_name="proj-x"
-        )
+        stale = _session_dict(age_hours=DEFAULT_SESSION_MAX_AGE_HOURS + 1, project_name="proj-x")
         await backend.save_session(stale)
 
         result = await backend.find_recent_session_by_project("proj-x", status="active")

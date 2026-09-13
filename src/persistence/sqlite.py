@@ -361,9 +361,7 @@ class SQLiteBackend(BaseDatabaseBackend):
 
         # Idempotent migration for existing databases: add session_name column
         try:
-            await self._connection.execute(
-                "ALTER TABLE sessions ADD COLUMN session_name TEXT"
-            )
+            await self._connection.execute("ALTER TABLE sessions ADD COLUMN session_name TEXT")
             await self._connection.commit()
         except Exception as e:
             if "duplicate column" not in str(e).lower():
@@ -372,8 +370,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         # Add index for session_name (safe if already exists via SCHEMA)
         try:
             await self._connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_sessions_session_name "
-                "ON sessions(session_name)"
+                "CREATE INDEX IF NOT EXISTS idx_sessions_session_name ON sessions(session_name)"
             )
             await self._connection.commit()
         except Exception as e:
@@ -392,9 +389,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         # Issue #87: idempotent migration for existing databases: add the
         # supersedes pointer used to retire corrected entries.
         try:
-            await self._connection.execute(
-                "ALTER TABLE decisions ADD COLUMN supersedes TEXT"
-            )
+            await self._connection.execute("ALTER TABLE decisions ADD COLUMN supersedes TEXT")
             await self._connection.commit()
         except Exception as e:
             if "duplicate column" not in str(e).lower():
@@ -424,9 +419,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         # Immediately backfilled from the start-time column so existing rows
         # do not become more reap-able than they are today.
         try:
-            await self._connection.execute(
-                "ALTER TABLE sessions ADD COLUMN last_seen_at TEXT"
-            )
+            await self._connection.execute("ALTER TABLE sessions ADD COLUMN last_seen_at TEXT")
             await self._connection.commit()
         except Exception as e:
             if "duplicate column" not in str(e).lower():
@@ -517,9 +510,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         """Get a session by ID."""
         conn = self._ensure_connected()
 
-        cursor = await conn.execute(
-            "SELECT * FROM sessions WHERE id = ?", (session_id,)
-        )
+        cursor = await conn.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
         row = await cursor.fetchone()
         if row:
             return self._normalize_session_data(dict(row))
@@ -636,12 +627,8 @@ class SQLiteBackend(BaseDatabaseBackend):
         await conn.execute("DELETE FROM decisions WHERE session_id = ?", (session_id,))
         await conn.execute("DELETE FROM metrics WHERE session_id = ?", (session_id,))
         await conn.execute("DELETE FROM notes WHERE session_id = ?", (session_id,))
-        await conn.execute(
-            "DELETE FROM file_operations WHERE session_id = ?", (session_id,)
-        )
-        await conn.execute(
-            "DELETE FROM agent_executions WHERE session_id = ?", (session_id,)
-        )
+        await conn.execute("DELETE FROM file_operations WHERE session_id = ?", (session_id,))
+        await conn.execute("DELETE FROM agent_executions WHERE session_id = ?", (session_id,))
 
         cursor = await conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
         await conn.commit()
@@ -701,9 +688,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         conn = self._ensure_connected()
 
         if status == "active":
-            cutoff = (
-                datetime.now(UTC) - timedelta(hours=get_session_max_age_hours())
-            ).isoformat()
+            cutoff = (datetime.now(UTC) - timedelta(hours=get_session_max_age_hours())).isoformat()
             cursor = await conn.execute(
                 """
                 SELECT * FROM sessions
@@ -1112,8 +1097,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         execution_id = execution_data.get("id") or execution_data.get("execution_id")
         if not execution_id:
             raise ValueError(
-                "save_agent_execution: execution_data missing both 'id' and "
-                "'execution_id'"
+                "save_agent_execution: execution_data missing both 'id' and 'execution_id'"
             )
 
         started_at = (
@@ -1263,18 +1247,18 @@ class SQLiteBackend(BaseDatabaseBackend):
             invocations = entry["invocations"]
             dur_count = entry["duration_ms_count"]
             avg_duration_ms = (
-                round(entry["duration_ms_total"] / dur_count, 1)
-                if dur_count > 0
-                else None
+                round(entry["duration_ms_total"] / dur_count, 1) if dur_count > 0 else None
             )
-            result.append({
-                "agent_type": entry["agent_type"],
-                "invocations": invocations,
-                "successes": entry["successes"],
-                "failures": entry["failures"],
-                "avg_duration_ms": avg_duration_ms,
-                "last_used": entry["last_used"],
-            })
+            result.append(
+                {
+                    "agent_type": entry["agent_type"],
+                    "invocations": invocations,
+                    "successes": entry["successes"],
+                    "failures": entry["failures"],
+                    "avg_duration_ms": avg_duration_ms,
+                    "last_used": entry["last_used"],
+                }
+            )
 
         result.sort(key=lambda x: x["invocations"], reverse=True)
         return {"total_sessions_scanned": total_sessions, "agents": result}
@@ -1731,18 +1715,14 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
 
         # Get notes for this session
-        cursor = await conn.execute(
-            "SELECT content FROM notes WHERE session_id = ?", (session_id,)
-        )
+        cursor = await conn.execute("SELECT content FROM notes WHERE session_id = ?", (session_id,))
         notes_rows = await cursor.fetchall()
         notes_text = " ".join([row[0] for row in notes_rows])
 
         tags_text = " ".join(summary.get("tags", [])) if summary else ""
 
         # Delete existing entry and insert new one
-        await conn.execute(
-            "DELETE FROM session_search WHERE session_id = ?", (session_id,)
-        )
+        await conn.execute("DELETE FROM session_search WHERE session_id = ?", (session_id,))
         await conn.execute(
             """
             INSERT INTO session_search (session_id, title, summary, decisions, notes, tags)

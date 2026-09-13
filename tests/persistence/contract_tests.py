@@ -44,6 +44,7 @@ from tests.persistence.builders import (
 # Adapter helpers — normalise builder dicts to backend field names
 # ---------------------------------------------------------------------------
 
+
 def _session(session_id: str | None = None, **overrides) -> dict:
     """Return a session dict ready for ``save_session``."""
     raw = make_session_data(**overrides)
@@ -204,6 +205,7 @@ def _mcp_session(**overrides) -> dict:
 # ---------------------------------------------------------------------------
 # The Contract
 # ---------------------------------------------------------------------------
+
 
 class PersistenceContractTests:
     """

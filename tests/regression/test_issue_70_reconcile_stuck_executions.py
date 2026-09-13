@@ -138,9 +138,7 @@ class TestFinalizeReconcilesRunningExecutions:
         session_id = await self._start_agent(engine)
 
         session = engine.session_cache[session_id]
-        agent_execution = next(
-            a for a in session.agents_executed if a.agent_name == AGENT_NAME
-        )
+        agent_execution = next(a for a in session.agents_executed if a.agent_name == AGENT_NAME)
         assert agent_execution.status == ExecutionStatus.RUNNING
 
         finalize_result = await engine.session_manage_lifecycle(
@@ -172,9 +170,7 @@ class TestFinalizeReconcilesRunningExecutions:
             step_data={"phase": "agent_stop", "agent_type": "focused", "success": True},
         )
         session = engine.session_cache[session_id]
-        agent_execution = next(
-            a for a in session.agents_executed if a.agent_name == AGENT_NAME
-        )
+        agent_execution = next(a for a in session.agents_executed if a.agent_name == AGENT_NAME)
         assert agent_execution.status == ExecutionStatus.SUCCESS
         completed_before = agent_execution.completed
 
@@ -199,9 +195,7 @@ class TestFinalizeReconcilesRunningExecutions:
             step_data={"phase": "agent_stop", "agent_type": "focused", "success": False},
         )
         session = engine.session_cache[session_id]
-        agent_execution = next(
-            a for a in session.agents_executed if a.agent_name == AGENT_NAME
-        )
+        agent_execution = next(a for a in session.agents_executed if a.agent_name == AGENT_NAME)
         assert agent_execution.status == ExecutionStatus.ERROR
         completed_before = agent_execution.completed
 
@@ -252,8 +246,7 @@ class TestReapStaleExecutions:
         assert reaped == 1, "Only the stale 'running' row should be reaped."
 
         rows = {
-            row["id"]: row
-            for row in await backend.query_agent_executions(session_id=session["id"])
+            row["id"]: row for row in await backend.query_agent_executions(session_id=session["id"])
         }
         assert rows[stale["id"]]["status"] == "abandoned"
         assert rows[fresh["id"]]["status"] == "running"

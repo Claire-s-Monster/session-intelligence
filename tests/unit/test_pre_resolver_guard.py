@@ -95,9 +95,7 @@ class TestPreResolverGuard:
 
         # ... but it is no longer sufficient to bind a decision.
         with pytest.raises(SessionContextRequiredError):
-            await engine.session_log_decision(
-                decision="a decision without explicit identifier"
-            )
+            await engine.session_log_decision(decision="a decision without explicit identifier")
 
         # The documented replacement: pass the id the create returned.
         decision_result = await engine.session_log_decision(

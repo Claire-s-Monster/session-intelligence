@@ -80,6 +80,7 @@ class DataclassJSONEncoder(json.JSONEncoder):
             return obj.__dict__
         return super().default(obj)
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -99,9 +100,7 @@ class NotificationManager:
         try:
             while True:
                 try:
-                    notification = await asyncio.wait_for(
-                        queue.get(), timeout=idle_timeout
-                    )
+                    notification = await asyncio.wait_for(queue.get(), timeout=idle_timeout)
                     yield notification
                 except TimeoutError:
                     break
@@ -712,15 +711,12 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             session_id = session_data["id"]
             session = await session_engine._hydrate_session(session_id)
             if session is None:
-                logger.warning(
-                    f"Could not reconstruct session {session_id} from database"
-                )
+                logger.warning(f"Could not reconstruct session {session_id} from database")
                 return
 
             session_engine._current_session_id = session_id
             logger.info(
-                f"Loaded session {session_id} from database with "
-                f"{len(session.decisions)} decisions"
+                f"Loaded session {session_id} from database with {len(session.decisions)} decisions"
             )
 
         except Exception as e:

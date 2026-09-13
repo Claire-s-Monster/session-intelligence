@@ -27,7 +27,6 @@ from persistence.sqlite import SQLiteBackend
 
 @pytest.mark.regression
 class TestSupersedesRollupDecisions:
-
     @pytest.fixture
     async def engine(self, tmp_path):
         eng = SessionIntelligenceEngine(repository_path=str(tmp_path))
@@ -36,9 +35,7 @@ class TestSupersedesRollupDecisions:
         yield eng
         await eng.database.close()
 
-    async def test_rollup_excludes_superseded_decision_but_keeps_superseder(
-        self, engine
-    ):
+    async def test_rollup_excludes_superseded_decision_but_keeps_superseder(self, engine):
         first = await engine.session_log_decision(
             decision="Old, wrong decision",
             project_name="proj-rollup-a",
@@ -57,9 +54,7 @@ class TestSupersedesRollupDecisions:
         assert "Corrected decision" in descriptions
         assert "Old, wrong decision" not in descriptions
 
-    async def test_chain_of_three_rollup_returns_only_the_latest(
-        self, engine
-    ):
+    async def test_chain_of_three_rollup_returns_only_the_latest(self, engine):
         a = await engine.session_log_decision(
             decision="A: first attempt",
             project_name="proj-rollup-a",
@@ -101,17 +96,13 @@ class TestSupersedesRollupDecisions:
             supersedes=first.decision_id,
         )
 
-        rows = await engine.database.query_decisions_by_session(
-            first.session_id
-        )
+        rows = await engine.database.query_decisions_by_session(first.session_id)
         descriptions = [row["description"] for row in rows]
 
         assert "Corrected decision" in descriptions
         assert "Old, wrong decision" in descriptions
 
-    async def test_dangling_supersedes_is_accepted_and_retires_nothing(
-        self, engine
-    ):
+    async def test_dangling_supersedes_is_accepted_and_retires_nothing(self, engine):
         unrelated = await engine.session_log_decision(
             decision="Unrelated decision that must survive",
             project_name="proj-rollup-a",
@@ -123,33 +114,26 @@ class TestSupersedesRollupDecisions:
         )
         assert dangling.supersedes == "decision-doesnotexist"
 
-        rows = await engine.database.query_decisions_by_session(
-            unrelated.session_id
-        )
+        rows = await engine.database.query_decisions_by_session(unrelated.session_id)
         descriptions = [row["description"] for row in rows]
 
         assert "Unrelated decision that must survive" in descriptions
         assert "Corrects a decision that never existed" in descriptions
 
-    async def test_supersedes_defaults_to_none_and_is_still_in_rollup(
-        self, engine
-    ):
+    async def test_supersedes_defaults_to_none_and_is_still_in_rollup(self, engine):
         result = await engine.session_log_decision(
             decision="Plain decision, no correction involved",
             project_name="proj-rollup-a",
         )
         assert result.supersedes is None
 
-        rows = await engine.database.query_decisions_by_session(
-            result.session_id
-        )
+        rows = await engine.database.query_decisions_by_session(result.session_id)
         descriptions = [row["description"] for row in rows]
         assert "Plain decision, no correction involved" in descriptions
 
 
 @pytest.mark.regression
 class TestSupersedesRollupLearnings:
-
     @pytest.fixture
     async def engine(self, tmp_path):
         eng = SessionIntelligenceEngine(repository_path=str(tmp_path))
@@ -158,9 +142,7 @@ class TestSupersedesRollupLearnings:
         yield eng
         await eng.database.close()
 
-    async def test_rollup_excludes_superseded_learning_but_keeps_superseder(
-        self, engine
-    ):
+    async def test_rollup_excludes_superseded_learning_but_keeps_superseder(self, engine):
         project_path = "/tmp/proj-rollup-b"
         first = await engine.session_log_learning(
             category="error_fix",
@@ -176,17 +158,13 @@ class TestSupersedesRollupLearnings:
             supersedes=first.id,
         )
 
-        rows = await engine.database.query_project_learnings(
-            project_path, exclude_superseded=True
-        )
+        rows = await engine.database.query_project_learnings(project_path, exclude_superseded=True)
         contents = [row["learning_content"] for row in rows]
 
         assert "Corrected fix" in contents
         assert "Old, wrong fix" not in contents
 
-    async def test_chain_of_three_rollup_returns_only_the_latest(
-        self, engine
-    ):
+    async def test_chain_of_three_rollup_returns_only_the_latest(self, engine):
         project_path = "/tmp/proj-rollup-b"
         a = await engine.session_log_learning(
             category="error_fix",
@@ -209,9 +187,7 @@ class TestSupersedesRollupLearnings:
             supersedes=b.id,
         )
 
-        rows = await engine.database.query_project_learnings(
-            project_path, exclude_superseded=True
-        )
+        rows = await engine.database.query_project_learnings(project_path, exclude_superseded=True)
         contents = [row["learning_content"] for row in rows]
 
         assert "C: final answer" in contents
@@ -245,9 +221,7 @@ class TestSupersedesRollupLearnings:
         assert "Corrected fix" in contents
         assert "Old, wrong fix" in contents
 
-    async def test_dangling_supersedes_is_accepted_and_retires_nothing(
-        self, engine
-    ):
+    async def test_dangling_supersedes_is_accepted_and_retires_nothing(self, engine):
         project_path = "/tmp/proj-rollup-b"
         unrelated = await engine.session_log_learning(
             category="pattern",
@@ -271,9 +245,7 @@ class TestSupersedesRollupLearnings:
         assert "Corrects a learning that never existed" in contents
         assert unrelated.id  # sanity: the earlier entry really was saved
 
-    async def test_supersedes_defaults_to_none_and_is_still_in_rollup(
-        self, engine
-    ):
+    async def test_supersedes_defaults_to_none_and_is_still_in_rollup(self, engine):
         project_path = "/tmp/proj-rollup-b"
         result = await engine.session_log_learning(
             category="pattern",
@@ -331,9 +303,7 @@ class TestSupersedesRollupEndToEndNotebook:
         assert "Corrected decision" in result.markdown_output
         assert "Old, wrong decision" not in result.markdown_output
 
-    async def test_notebook_excludes_superseded_learning(
-        self, engine, tmp_path
-    ):
+    async def test_notebook_excludes_superseded_learning(self, engine, tmp_path):
         project_path = str(tmp_path / "e2e-learnings-project")
         first = await engine.session_log_decision(
             decision="Anchor decision to create a session",
@@ -366,9 +336,7 @@ class TestSupersedesRollupEndToEndNotebook:
         assert "Corrected fix" in result.markdown_output
         assert "Old, wrong fix" not in result.markdown_output
 
-    async def test_notebook_generation_does_not_mutate_cached_session(
-        self, engine
-    ):
+    async def test_notebook_generation_does_not_mutate_cached_session(self, engine):
         """Pins issue #106's follow-up: rendering a notebook must not
         prune superseded decisions off the shared, cached Session object.
 

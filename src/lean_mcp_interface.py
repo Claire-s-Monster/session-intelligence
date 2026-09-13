@@ -1454,9 +1454,7 @@ class LeanMCPInterface:
         }
 
         registry["session_agent_stats"] = {
-            "implementation": self._wrap_async_tool(
-                self._session_agent_stats_handler
-            ),
+            "implementation": self._wrap_async_tool(self._session_agent_stats_handler),
             "description": (
                 "Return per-agent-type usage statistics over a configurable time window. "
                 "Aggregates invocations, successes, failures, and average duration from "
@@ -1527,8 +1525,7 @@ class LeanMCPInterface:
 
         if "agent_stats" in result and min_invocations > 1:
             result["agent_stats"] = [
-                s for s in result["agent_stats"]
-                if s["invocations"] >= min_invocations
+                s for s in result["agent_stats"] if s["invocations"] >= min_invocations
             ]
 
         return result

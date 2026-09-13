@@ -24,7 +24,6 @@ from tests.persistence.builders import (
 
 @pytest.mark.regression
 class TestDatetimeTypeBugs:
-
     @pytest.fixture
     async def backend(self, tmp_path):
         db = SQLiteBackend(str(tmp_path / "test.db"))

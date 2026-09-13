@@ -38,15 +38,11 @@ def engine(tmp_path):
 def mock_database():
     """Mock database with async methods."""
     db = AsyncMock()
-    db.save_project_learning = AsyncMock(
-        return_value={"id": "test", "status": "saved"}
-    )
+    db.save_project_learning = AsyncMock(return_value={"id": "test", "status": "saved"})
     db.get_session = AsyncMock(return_value=None)
     db.find_error_solutions = AsyncMock(return_value=[])
     db.query_project_learnings = AsyncMock(return_value=[])
-    db.update_solution_outcome = AsyncMock(
-        return_value={"id": "test", "status": "updated"}
-    )
+    db.update_solution_outcome = AsyncMock(return_value={"id": "test", "status": "updated"})
     return db
 
 
@@ -94,9 +90,7 @@ class TestSessionLogLearning:
         assert result.status == "pending_save"
 
     @pytest.mark.asyncio
-    async def test_with_database_saves_and_returns_saved(
-        self, engine_with_db, mock_database
-    ):
+    async def test_with_database_saves_and_returns_saved(self, engine_with_db, mock_database):
         """With a database and running event loop, status is 'saved'."""
         result = await engine_with_db.session_log_learning(
             category="workflow",
@@ -183,9 +177,7 @@ class TestSessionLogLearning:
         assert len(ids) == 10
 
     @pytest.mark.asyncio
-    async def test_no_source_session_saves_with_null_session(
-        self, engine_with_db, mock_database
-    ):
+    async def test_no_source_session_saves_with_null_session(self, engine_with_db, mock_database):
         """Without active session, source_session_id is None in save call."""
         assert engine_with_db._current_session_id is None
 
@@ -204,9 +196,7 @@ class TestSessionLogLearning:
         assert call_kwargs["source_session_id"] is None
 
     @pytest.mark.asyncio
-    async def test_with_source_session_validates_fk(
-        self, engine_with_db, mock_database
-    ):
+    async def test_with_source_session_validates_fk(self, engine_with_db, mock_database):
         """With active session, validates session exists before FK insert."""
         engine_with_db._current_session_id = "sess_123"
         mock_database.get_session = AsyncMock(return_value={"id": "sess_123"})
@@ -227,9 +217,7 @@ class TestSessionLogLearning:
         assert call_kwargs["source_session_id"] == "sess_123"
 
     @pytest.mark.asyncio
-    async def test_invalid_source_session_saves_with_null(
-        self, engine_with_db, mock_database
-    ):
+    async def test_invalid_source_session_saves_with_null(self, engine_with_db, mock_database):
         """If source session doesn't exist in DB, saves with None."""
         engine_with_db._current_session_id = "nonexistent_session"
         mock_database.get_session = AsyncMock(return_value=None)
@@ -248,9 +236,7 @@ class TestSessionLogLearning:
         assert call_kwargs["source_session_id"] is None
 
     @pytest.mark.asyncio
-    async def test_category_value_extracted_for_db(
-        self, engine_with_db, mock_database
-    ):
+    async def test_category_value_extracted_for_db(self, engine_with_db, mock_database):
         """Category enum value (not enum object) is passed to database."""
         await engine_with_db.session_log_learning(
             category="error_fix",
@@ -275,9 +261,7 @@ class TestSessionFindSolution:
     @pytest.mark.asyncio
     async def test_without_database_returns_empty(self, engine):
         """Without database, returns empty results."""
-        result = await engine.session_find_solution(
-            error_text="ImportError: No module named 'foo'"
-        )
+        result = await engine.session_find_solution(error_text="ImportError: No module named 'foo'")
 
         assert isinstance(result, SolutionSearchResult)
         assert result.total_found == 0
@@ -285,9 +269,7 @@ class TestSessionFindSolution:
         assert result.error_text == "ImportError: No module named 'foo'"
 
     @pytest.mark.asyncio
-    async def test_with_database_queries_solutions(
-        self, engine_with_db, mock_database
-    ):
+    async def test_with_database_queries_solutions(self, engine_with_db, mock_database):
         """With database, queries error_solutions table."""
         mock_database.find_error_solutions = AsyncMock(
             return_value=[
@@ -328,9 +310,7 @@ class TestSessionFindSolution:
             ]
         )
 
-        result = await engine_with_db.session_find_solution(
-            error_text="ImportError"
-        )
+        result = await engine_with_db.session_find_solution(error_text="ImportError")
 
         # Learning matches because "ImportError" is in both fields
         assert result.total_found == 1
@@ -357,9 +337,7 @@ class TestSessionFindSolution:
             ]
         )
 
-        result = await engine_with_db.session_find_solution(
-            error_text="ImportError"
-        )
+        result = await engine_with_db.session_find_solution(error_text="ImportError")
 
         # Only learn_1 matches
         assert result.total_found == 1
@@ -392,26 +370,18 @@ class TestSessionFindSolution:
         )
         mock_database.query_project_learnings = AsyncMock(return_value=[])
 
-        result = await engine_with_db.session_find_solution(
-            error_text="TypeError"
-        )
+        result = await engine_with_db.session_find_solution(error_text="TypeError")
 
         assert result.total_found == 2
         assert result.project_specific_count == 1
         assert result.universal_count == 1
 
     @pytest.mark.asyncio
-    async def test_handles_database_error_gracefully(
-        self, engine_with_db, mock_database
-    ):
+    async def test_handles_database_error_gracefully(self, engine_with_db, mock_database):
         """Database errors return empty results, not exceptions."""
-        mock_database.find_error_solutions = AsyncMock(
-            side_effect=Exception("Connection refused")
-        )
+        mock_database.find_error_solutions = AsyncMock(side_effect=Exception("Connection refused"))
 
-        result = await engine_with_db.session_find_solution(
-            error_text="some error"
-        )
+        result = await engine_with_db.session_find_solution(error_text="some error")
 
         assert result.total_found == 0
         assert result.solutions == []
@@ -541,9 +511,7 @@ class TestOriginalBugDetection:
         )
 
     @pytest.mark.asyncio
-    async def test_find_solution_not_always_empty(
-        self, engine_with_db, mock_database
-    ):
+    async def test_find_solution_not_always_empty(self, engine_with_db, mock_database):
         """find_solution must return results when database has matches."""
         mock_database.find_error_solutions = AsyncMock(
             return_value=[
@@ -560,9 +528,7 @@ class TestOriginalBugDetection:
         )
         mock_database.query_project_learnings = AsyncMock(return_value=[])
 
-        result = await engine_with_db.session_find_solution(
-            error_text="TestError"
-        )
+        result = await engine_with_db.session_find_solution(error_text="TestError")
 
         assert result.total_found > 0, (
             "REGRESSION: session_find_solution returns 0 results even "

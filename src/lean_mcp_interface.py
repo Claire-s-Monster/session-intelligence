@@ -668,6 +668,28 @@ class LeanMCPInterface:
                             "and false when a body is given."
                         ),
                     },
+                    "max_decisions": {
+                        "type": "integer",
+                        "description": (
+                            "Caps the number of decisions included in the rollup. "
+                            "Omit to keep the existing default (100)."
+                        ),
+                    },
+                    "since_days": {
+                        "type": "integer",
+                        "description": (
+                            "Restricts decisions and learnings in the rollup to the "
+                            "last N days. Omit to keep the existing unbounded window."
+                        ),
+                    },
+                    "exclude_superseded": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": (
+                            "Drops decisions/learnings retired by a newer `supersedes` "
+                            "entry from the rollup."
+                        ),
+                    },
                 },
             },
             "examples": [

@@ -860,43 +860,55 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         offset: int = 0,
         *,
         exclude_superseded: bool = False,
+        since_days: int | None = None,
     ) -> list[dict[str, Any]]:
         """Query decisions for a specific session.
 
         exclude_superseded defaults to False because migration/export paths
         (migration.py) must preserve retired rows; callers that render
         rollups (e.g. notebooks) opt in explicitly.
+
+        since_days, when set, restricts results to decisions timestamped
+        within the last N days (rollup-wide time window, issue #106).
         """
+        if since_days is not None and since_days < 1:
+            raise ValueError("since_days must be >= 1")
+
         pool = self._ensure_connected()
 
+        supersede_clause = (
+            """
+                  AND id NOT IN (
+                      SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
+                  )
+            """
+            if exclude_superseded
+            else ""
+        )
+
+        args: list[Any] = [session_id]
+        since_clause = ""
+        if since_days is not None:
+            args.append(since_days)
+            since_clause = f"AND timestamp >= now() - make_interval(days => ${len(args)})"
+
+        args.append(limit)
+        limit_placeholder = f"${len(args)}"
+        args.append(offset)
+        offset_placeholder = f"${len(args)}"
+
         async with pool.acquire() as conn:
-            if exclude_superseded:
-                rows = await conn.fetch(
-                    """
-                    SELECT * FROM decisions
-                    WHERE session_id = $1
-                      AND id NOT IN (
-                          SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
-                      )
-                    ORDER BY timestamp DESC, id DESC
-                    LIMIT $2 OFFSET $3
-                    """,
-                    session_id,
-                    limit,
-                    offset,
-                )
-            else:
-                rows = await conn.fetch(
-                    """
-                    SELECT * FROM decisions
-                    WHERE session_id = $1
-                    ORDER BY timestamp DESC, id DESC
-                    LIMIT $2 OFFSET $3
-                    """,
-                    session_id,
-                    limit,
-                    offset,
-                )
+            rows = await conn.fetch(
+                f"""
+                SELECT * FROM decisions
+                WHERE session_id = $1
+                  {supersede_clause}
+                  {since_clause}
+                ORDER BY timestamp DESC, id DESC
+                LIMIT {limit_placeholder} OFFSET {offset_placeholder}
+                """,
+                *args,
+            )
             return [self._from_record(row) for row in rows]
 
     # Metrics operations
@@ -1917,13 +1929,20 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         limit: int = 20,
         *,
         exclude_superseded: bool = False,
+        since_days: int | None = None,
     ) -> list[dict[str, Any]]:
         """Query learnings for a project.
 
         exclude_superseded defaults to False because migration/export paths
         (migration.py) must preserve retired rows; callers that render
         rollups (e.g. notebooks) opt in explicitly.
+
+        since_days, when set, restricts results to learnings created
+        within the last N days (rollup-wide time window, issue #106).
         """
+        if since_days is not None and since_days < 1:
+            raise ValueError("since_days must be >= 1")
+
         pool = self._ensure_connected()
 
         supersede_clause = (
@@ -1937,32 +1956,33 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             else ""
         )
 
+        args: list[Any] = [project_path]
+        where_category = ""
+        if category:
+            args.append(category)
+            where_category = f"AND category = ${len(args)}"
+
+        since_clause = ""
+        if since_days is not None:
+            args.append(since_days)
+            since_clause = f"AND created_at >= now() - make_interval(days => ${len(args)})"
+
+        args.append(limit)
+        limit_placeholder = f"${len(args)}"
+
         async with pool.acquire() as conn:
-            if category:
-                rows = await conn.fetch(
-                    f"""
-                    SELECT * FROM project_learnings
-                    WHERE project_path = $1 AND category = $2
-                    {supersede_clause}
-                    ORDER BY success_count DESC, last_used DESC
-                    LIMIT $3
-                    """,
-                    project_path,
-                    category,
-                    limit,
-                )
-            else:
-                rows = await conn.fetch(
-                    f"""
-                    SELECT * FROM project_learnings
-                    WHERE project_path = $1
-                    {supersede_clause}
-                    ORDER BY success_count DESC, last_used DESC
-                    LIMIT $2
-                    """,
-                    project_path,
-                    limit,
-                )
+            rows = await conn.fetch(
+                f"""
+                SELECT * FROM project_learnings
+                WHERE project_path = $1
+                {where_category}
+                {supersede_clause}
+                {since_clause}
+                ORDER BY success_count DESC, last_used DESC
+                LIMIT {limit_placeholder}
+                """,
+                *args,
+            )
             return [self._from_record(row) for row in rows]
 
     async def update_learning_usage(self, learning_id: str, success: bool) -> dict[str, Any]:

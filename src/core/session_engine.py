@@ -2217,6 +2217,9 @@ class SessionIntelligenceEngine:
         allow_unbound: bool = False,
         body: str | None = None,
         include_derived_sections: bool | None = None,
+        max_decisions: int | None = None,
+        since_days: int | None = None,
+        exclude_superseded: bool = True,
     ) -> NotebookResult:
         """
         Generate a comprehensive markdown notebook/summary for a session.
@@ -2246,6 +2249,13 @@ class SessionIntelligenceEngine:
                 behaviour) and False when a body is given, so an authored
                 narrative is the primary artifact rather than a preamble
                 to a 68k-character rollup (issue #106).
+            max_decisions: Caps the number of decisions included in the
+                rollup. None keeps the existing default (100).
+            since_days: Restricts decisions and learnings in the rollup to
+                the last N days. None keeps the existing unbounded window.
+            exclude_superseded: Drops decisions/learnings retired by a
+                newer `supersedes` entry from the rollup. Defaults to True
+                (unchanged behaviour).
 
         Pass at least one of session_id, session_name, or project_name, or
         set allow_unbound=True to opt into the legacy fallback.
@@ -2273,6 +2283,9 @@ class SessionIntelligenceEngine:
                 save_to_database,
                 body=body,
                 include_derived_sections=include_derived_sections,
+                max_decisions=max_decisions,
+                since_days=since_days,
+                exclude_superseded=exclude_superseded,
             )
         except SessionContextRequiredError:
             raise
@@ -2299,6 +2312,9 @@ class SessionIntelligenceEngine:
         allow_unbound: bool = False,
         body: str | None = None,
         include_derived_sections: bool | None = None,
+        max_decisions: int | None = None,
+        since_days: int | None = None,
+        exclude_superseded: bool = True,
     ) -> NotebookResult:
         """Async version: Generate notebook with full database queries.
 
@@ -2312,6 +2328,13 @@ class SessionIntelligenceEngine:
                 behaviour) and False when a body is given, so an authored
                 narrative is the primary artifact rather than a preamble
                 to a 68k-character rollup (issue #106).
+            max_decisions: Caps the number of decisions included in the
+                rollup. None keeps the existing default (100).
+            since_days: Restricts decisions and learnings in the rollup to
+                the last N days. None keeps the existing unbounded window.
+            exclude_superseded: Drops decisions/learnings retired by a
+                newer `supersedes` entry from the rollup. Defaults to True
+                (unchanged behaviour).
         """
         try:
             # Resolve session via the flexible resolver
@@ -2343,7 +2366,10 @@ class SessionIntelligenceEngine:
             # Merge decisions from database
             if self.database:
                 db_decisions = await self.database.query_decisions_by_session(
-                    session_id, exclude_superseded=True
+                    session_id,
+                    limit=max_decisions if max_decisions is not None else 100,
+                    exclude_superseded=exclude_superseded,
+                    since_days=since_days,
                 )
                 # _hydrate_session loads the full, unfiltered decision
                 # history (issue #103), so a cached/hydrated session still
@@ -2437,7 +2463,9 @@ class SessionIntelligenceEngine:
             # Learnings from database (async)
             if self.database:
                 learnings_content = await self._generate_learnings_section_async(
-                    session.project_path
+                    session.project_path,
+                    since_days=since_days,
+                    exclude_superseded=exclude_superseded,
                 )
                 if learnings_content:
                     sections.append(
@@ -2528,6 +2556,9 @@ class SessionIntelligenceEngine:
         save_to_database: bool,
         body: str | None = None,
         include_derived_sections: bool | None = None,
+        max_decisions: int | None = None,
+        since_days: int | None = None,
+        exclude_superseded: bool = True,
     ) -> NotebookResult:
         """Notebook creation with proper async database access.
 
@@ -2541,6 +2572,13 @@ class SessionIntelligenceEngine:
                 behaviour) and False when a body is given, so an authored
                 narrative is the primary artifact rather than a preamble
                 to a 68k-character rollup (issue #106).
+            max_decisions: Caps the number of decisions included in the
+                rollup. None keeps the existing default (100).
+            since_days: Restricts decisions in the rollup to the last N
+                days. None keeps the existing unbounded window.
+            exclude_superseded: Drops decisions retired by a newer
+                `supersedes` entry from the rollup. Defaults to True
+                (unchanged behaviour).
         """
 
         # Both callers (session_create_notebook / session_create_notebook_async)
@@ -2572,7 +2610,10 @@ class SessionIntelligenceEngine:
         if self.database:
             try:
                 db_decisions_list = await self.database.query_decisions_by_session(
-                    session_id, exclude_superseded=True
+                    session_id,
+                    limit=max_decisions if max_decisions is not None else 100,
+                    exclude_superseded=exclude_superseded,
+                    since_days=since_days,
                 )
                 # _hydrate_session loads the full, unfiltered decision
                 # history (issue #103), so a cached/hydrated session still
@@ -2917,13 +2958,21 @@ class SessionIntelligenceEngine:
         # For sync context, we return None and let HTTP server handle it
         return None
 
-    async def _generate_learnings_section_async(self, project_path: str) -> str | None:
+    async def _generate_learnings_section_async(
+        self,
+        project_path: str,
+        since_days: int | None = None,
+        exclude_superseded: bool = True,
+    ) -> str | None:
         """Async version: Generate learnings section from database."""
         if not self.database:
             return None
 
         learnings = await self.database.query_project_learnings(
-            project_path, limit=10, exclude_superseded=True
+            project_path,
+            limit=10,
+            exclude_superseded=exclude_superseded,
+            since_days=since_days,
         )
         if not learnings:
             return None

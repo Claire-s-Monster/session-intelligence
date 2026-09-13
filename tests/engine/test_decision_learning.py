@@ -14,9 +14,8 @@ asyncio_mode = "auto" (from pyproject.toml) — no @pytest.mark.asyncio needed.
 
 import pytest
 
-from core.session_engine import SessionIntelligenceEngine, UNKNOWN_PROJECT_PATH
+from core.session_engine import UNKNOWN_PROJECT_PATH
 from models.session_models import DecisionResult, LearningResult
-
 
 # ---------------------------------------------------------------------------
 # Helpers

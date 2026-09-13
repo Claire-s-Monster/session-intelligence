@@ -6,8 +6,6 @@ and the apply_token_limits convenience function.
 
 import json
 
-import pytest
-
 from utils.token_limiter import (
     ContentType,
     IntelligentTruncator,
@@ -17,7 +15,6 @@ from utils.token_limiter import (
     TruncationResult,
     apply_token_limits,
 )
-
 
 # ---------------------------------------------------------------------------
 # TokenEstimator

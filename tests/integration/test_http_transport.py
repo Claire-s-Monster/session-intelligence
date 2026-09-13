@@ -17,8 +17,6 @@ from datetime import datetime
 
 import httpx
 import pytest
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 from core.session_engine import SessionIntelligenceEngine
 from lean_mcp_interface import LeanMCPInterface
@@ -26,7 +24,6 @@ from persistence.sqlite import SQLiteBackend
 from transport.http_server import HTTPSessionIntelligenceServer, NotificationManager
 from transport.mcp_session_manager import MCPSessionManager
 from transport.security import SecurityConfig
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

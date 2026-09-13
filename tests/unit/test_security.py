@@ -4,13 +4,11 @@ Tests SecurityConfig defaults/custom and LocalhostOnlyMiddleware
 connection filtering behaviour.
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
-import pytest
 from starlette.responses import Response
 
 from transport.security import LocalhostOnlyMiddleware, SecurityConfig
-
 
 # ---------------------------------------------------------------------------
 # SecurityConfig

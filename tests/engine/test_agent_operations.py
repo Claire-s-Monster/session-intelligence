@@ -13,7 +13,6 @@ SQLite-backed engine (one fresh DB per test).
 asyncio_mode = "auto" is set project-wide — do NOT add @pytest.mark.asyncio.
 """
 
-import pytest
 
 
 # ============================================================================
@@ -240,7 +239,7 @@ async def test_agent_query_learnings(engine):
     learnings = await engine.agent_query_learnings("test-agent")
 
     assert len(learnings) >= 1
-    ids = [l.id for l in learnings]
+    ids = [learning.id for learning in learnings]
     assert log_result.learning_id in ids
 
 

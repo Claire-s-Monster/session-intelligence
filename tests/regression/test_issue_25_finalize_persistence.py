@@ -22,7 +22,6 @@ from core.session_engine import SessionIntelligenceEngine
 from models.session_models import SessionStatus
 from persistence.sqlite import SQLiteBackend
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

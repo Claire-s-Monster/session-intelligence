@@ -1,7 +1,9 @@
 """Run persistence contract tests against PostgreSQL backend."""
 
 import os
+
 import pytest
+
 from tests.persistence.conftest import POSTGRES_AVAILABLE
 from tests.persistence.contract_tests import PersistenceContractTests
 
@@ -24,8 +26,7 @@ class TestPostgreSQLContract(PersistenceContractTests):
     # ------------------------------------------------------------------
 
     async def test_recall_project(self, backend):
-        from tests.persistence.builders import make_decision_data, make_session_data
-        from tests.persistence.contract_tests import _session, _decision
+        from tests.persistence.contract_tests import _decision, _session
 
         s = _session(project_name="recall-test")
         await backend.save_session(s)

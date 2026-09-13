@@ -16,7 +16,6 @@ import pytest
 from core.session_engine import SessionIntelligenceEngine
 from persistence.sqlite import SQLiteBackend
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

@@ -9,7 +9,7 @@ import inspect
 
 import pytest
 
-from core.session_engine import SessionIntelligenceEngine, UNKNOWN_PROJECT_PATH
+from core.session_engine import UNKNOWN_PROJECT_PATH, SessionIntelligenceEngine
 from persistence.sqlite import SQLiteBackend
 
 

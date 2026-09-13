@@ -20,9 +20,9 @@ Fix: session_log_decision now raises SessionContextRequiredError when none of
 import pytest
 
 from core.session_engine import (
+    UNKNOWN_PROJECT_PATH,
     SessionContextRequiredError,
     SessionIntelligenceEngine,
-    UNKNOWN_PROJECT_PATH,
 )
 from persistence.sqlite import SQLiteBackend
 

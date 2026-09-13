@@ -4,65 +4,47 @@ Tests for session intelligence data models.
 Tests all Pydantic models for proper instantiation, validation, and serialization.
 """
 
-import pytest
 from datetime import datetime
-from typing import Dict, Any
 
 from models.session_models import (
-    # Enums
-    SessionStatus,
-    ExecutionStatus,
-    ImpactLevel,
-    PatternType,
-    WorkflowType,
-    DashboardType,
-    AnalysisScope,
-    ExecutionMode,
-    OptimizationLevel,
-    # Core models
-    SessionMetadata,
-    PerformanceMetrics,
-    HealthStatus,
-    CommandExecution,
-    Pattern,
-    Optimization,
-    ExecutionStep,
     # Agent models
     AgentContext,
-    AgentPerformance,
     AgentError,
     AgentExecution,
-    # Workflow models
-    StateMachine,
-    ParallelExecution,
-    WorkflowState,
+    AgentPerformance,
+    Bottleneck,
+    CommandExecution,
+    CoordinationResult,
+    DashboardResult,
+    DashboardType,
+    Decision,
     # Decision models
     DecisionContext,
-    DecisionOutcome,
-    Decision,
+    ExecutionMode,
+    ExecutionStatus,
+    ExecutionStep,
+    ExecutionTrackingResult,
+    HealthStatus,
+    ImpactLevel,
+    Optimization,
+    Pattern,
+    PatternAnalysis,
+    PatternType,
+    PerformanceMetrics,
     # Analytics models
     Recommendation,
-    PatternAnalysis,
-    Bottleneck,
-    PredictedIssue,
-    LearningInsight,
-    Trend,
-    SessionIntelligence,
-    CommandAlternative,
-    CommandAnalysis,
-    # Main session model
     Session,
+    SessionHealthResult,
+    SessionIntelligence,
+    SessionMetadata,
     # Result models
     SessionResult,
-    ExecutionTrackingResult,
-    CoordinationResult,
-    DecisionResult,
-    PatternAnalysisResult,
-    SessionHealthResult,
-    WorkflowResult,
-    CommandAnalysisResult,
-    MissingFunctionResult,
-    DashboardResult,
+    # Enums
+    SessionStatus,
+    # Workflow models
+    StateMachine,
+    WorkflowState,
+    WorkflowType,
 )
 
 

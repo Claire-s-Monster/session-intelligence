@@ -17,7 +17,6 @@ import pytest
 from core.session_engine import SessionContextRequiredError, SessionIntelligenceEngine
 from models.session_models import SessionHealthResult, SessionResult, SessionStatus
 
-
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------

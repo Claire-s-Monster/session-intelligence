@@ -15,7 +15,6 @@ from core.session_engine import SessionIntelligenceEngine
 from lean_mcp_interface import LeanMCPInterface
 from persistence.sqlite import SQLiteBackend
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

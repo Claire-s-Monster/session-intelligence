@@ -11,14 +11,13 @@ from datetime import UTC, datetime
 import pytest
 
 from persistence.sqlite import SQLiteBackend
-
 from tests.persistence.builders import (
-    make_mcp_session_data,
-    make_session_data,
     make_agent_data,
     make_agent_decision_data,
     make_agent_learning_data,
     make_agent_notebook_data,
+    make_mcp_session_data,
+    make_session_data,
 )
 
 

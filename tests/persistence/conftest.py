@@ -8,8 +8,6 @@ PostgreSQL availability is determined by:
 
 import os
 
-import pytest
-
 # ---------------------------------------------------------------------------
 # PostgreSQL availability check
 # ---------------------------------------------------------------------------

@@ -16,18 +16,13 @@ from persistence.sqlite import SQLiteBackend
 
 # Re-use the adapter helpers defined in the contract test suite.
 from tests.persistence.contract_tests import (
-    _agent,
-    _agent_decision,
     _agent_execution,
-    _agent_learning,
-    _agent_notebook,
     _decision,
     _mcp_session,
     _metrics,
     _note,
     _session,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

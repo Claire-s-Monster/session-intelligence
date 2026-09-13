@@ -788,38 +788,56 @@ class SQLiteBackend(BaseDatabaseBackend):
         offset: int = 0,
         *,
         exclude_superseded: bool = False,
+        since_days: int | None = None,
     ) -> list[dict[str, Any]]:
         """Query decisions for a specific session.
 
         exclude_superseded defaults to False because migration/export paths
         (migration.py) must preserve retired rows; callers that render
         rollups (e.g. notebooks) opt in explicitly.
+
+        since_days, when set, restricts results to decisions timestamped
+        within the last N days (rollup-wide time window, issue #106).
+        Matches the ISO-text cutoff-comparison convention used elsewhere
+        in this module (e.g. recall_project, get_agent_usage_stats):
+        compute the cutoff in Python and compare as text, rather than
+        SQLite's datetime('now', ...) modifiers.
         """
+        if since_days is not None and since_days < 1:
+            raise ValueError("since_days must be >= 1")
+
         conn = self._ensure_connected()
 
-        if exclude_superseded:
-            cursor = await conn.execute(
-                """
-                SELECT * FROM decisions
-                WHERE session_id = ?
+        supersede_clause = (
+            """
                   AND id NOT IN (
                       SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
                   )
-                ORDER BY timestamp DESC, id DESC
-                LIMIT ? OFFSET ?
-            """,
-                (session_id, limit, offset),
-            )
-        else:
-            cursor = await conn.execute(
-                """
-                SELECT * FROM decisions
-                WHERE session_id = ?
-                ORDER BY timestamp DESC, id DESC
-                LIMIT ? OFFSET ?
-            """,
-                (session_id, limit, offset),
-            )
+            """
+            if exclude_superseded
+            else ""
+        )
+
+        params: list[Any] = [session_id]
+        since_clause = ""
+        if since_days is not None:
+            cutoff = (datetime.now(UTC) - timedelta(days=since_days)).isoformat()
+            since_clause = "AND timestamp >= ?"
+            params.append(cutoff)
+
+        params.extend([limit, offset])
+
+        cursor = await conn.execute(
+            f"""
+            SELECT * FROM decisions
+            WHERE session_id = ?
+              {supersede_clause}
+              {since_clause}
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ? OFFSET ?
+        """,
+            params,
+        )
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
 
@@ -1955,13 +1973,22 @@ class SQLiteBackend(BaseDatabaseBackend):
         limit: int = 20,
         *,
         exclude_superseded: bool = False,
+        since_days: int | None = None,
     ) -> list[dict[str, Any]]:
         """Query learnings for a project.
 
         exclude_superseded defaults to False because migration/export paths
         (migration.py) must preserve retired rows; callers that render
         rollups (e.g. notebooks) opt in explicitly.
+
+        since_days, when set, restricts results to learnings created
+        within the last N days (rollup-wide time window, issue #106).
+        Matches the ISO-text cutoff-comparison convention used elsewhere
+        in this module (e.g. recall_project, get_agent_usage_stats).
         """
+        if since_days is not None and since_days < 1:
+            raise ValueError("since_days must be >= 1")
+
         conn = self._ensure_connected()
 
         supersede_clause = (
@@ -1975,28 +2002,32 @@ class SQLiteBackend(BaseDatabaseBackend):
             else ""
         )
 
+        params: list[Any] = [project_path]
+        where_category = ""
         if category:
-            cursor = await conn.execute(
-                f"""
-                SELECT * FROM project_learnings
-                WHERE project_path = ? AND category = ?
-                {supersede_clause}
-                ORDER BY success_count DESC, last_used DESC
-                LIMIT ?
-            """,
-                (project_path, category, limit),
-            )
-        else:
-            cursor = await conn.execute(
-                f"""
-                SELECT * FROM project_learnings
-                WHERE project_path = ?
-                {supersede_clause}
-                ORDER BY success_count DESC, last_used DESC
-                LIMIT ?
-            """,
-                (project_path, limit),
-            )
+            where_category = "AND category = ?"
+            params.append(category)
+
+        since_clause = ""
+        if since_days is not None:
+            cutoff = (datetime.now(UTC) - timedelta(days=since_days)).isoformat()
+            since_clause = "AND created_at >= ?"
+            params.append(cutoff)
+
+        params.append(limit)
+
+        cursor = await conn.execute(
+            f"""
+            SELECT * FROM project_learnings
+            WHERE project_path = ?
+            {where_category}
+            {supersede_clause}
+            {since_clause}
+            ORDER BY success_count DESC, last_used DESC
+            LIMIT ?
+        """,
+            params,
+        )
 
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]

@@ -2466,6 +2466,7 @@ class SessionIntelligenceEngine:
                     session.project_path,
                     since_days=since_days,
                     exclude_superseded=exclude_superseded,
+                    project_name=session.project_name,
                 )
                 if learnings_content:
                     sections.append(
@@ -2965,6 +2966,7 @@ class SessionIntelligenceEngine:
         project_path: str,
         since_days: int | None = None,
         exclude_superseded: bool = True,
+        project_name: str | None = None,
     ) -> str | None:
         """Async version: Generate learnings section from database."""
         if not self.database:
@@ -2975,6 +2977,7 @@ class SessionIntelligenceEngine:
             limit=10,
             exclude_superseded=exclude_superseded,
             since_days=since_days,
+            project_name=project_name,
         )
         if not learnings:
             return None

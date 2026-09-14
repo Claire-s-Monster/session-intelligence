@@ -1974,6 +1974,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         *,
         exclude_superseded: bool = False,
         since_days: int | None = None,
+        project_name: str | None = None,
     ) -> list[dict[str, Any]]:
         """Query learnings for a project.
 
@@ -1985,6 +1986,10 @@ class SQLiteBackend(BaseDatabaseBackend):
         within the last N days (rollup-wide time window, issue #106).
         Matches the ISO-text cutoff-comparison convention used elsewhere
         in this module (e.g. recall_project, get_agent_usage_stats).
+
+        project_name, when set, widens scope to also match learnings
+        stored under a sentinel project_path but tagged with this
+        project_name (issue #120).
         """
         if since_days is not None and since_days < 1:
             raise ValueError("since_days must be >= 1")
@@ -2003,6 +2008,11 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
 
         params: list[Any] = [project_path]
+        scope_clause = "project_path = ?"
+        if project_name:
+            params.append(project_name)
+            scope_clause = "(project_path = ? OR project_name = ?)"
+
         where_category = ""
         if category:
             where_category = "AND category = ?"
@@ -2019,11 +2029,11 @@ class SQLiteBackend(BaseDatabaseBackend):
         cursor = await conn.execute(
             f"""
             SELECT * FROM project_learnings
-            WHERE project_path = ?
+            WHERE {scope_clause}
             {where_category}
             {supersede_clause}
             {since_clause}
-            ORDER BY success_count DESC, last_used DESC
+            ORDER BY success_count DESC, last_used DESC, id
             LIMIT ?
         """,
             params,

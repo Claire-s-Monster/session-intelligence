@@ -1436,18 +1436,17 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     FROM project_learnings
                     WHERE (
                         project_name = $1
-                        OR (project_name IS NULL AND project_path = (
+                        OR (project_name IS NULL AND project_path IN (
                             SELECT project_path FROM sessions
                             WHERE project_name = $1
                               AND project_path IS NOT NULL
-                            LIMIT 1
                         ))
                     )
                       AND id NOT IN (
                           SELECT supersedes FROM project_learnings
                           WHERE supersedes IS NOT NULL
                       )
-                    ORDER BY success_count DESC, last_used DESC
+                    ORDER BY success_count DESC, (last_used IS NULL), last_used DESC, id
                     LIMIT $2
                     """,
                     project_name,
@@ -1988,7 +1987,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 {where_category}
                 {supersede_clause}
                 {since_clause}
-                ORDER BY success_count DESC, last_used DESC, id
+                ORDER BY success_count DESC, (last_used IS NULL), last_used DESC, id
                 LIMIT {limit_placeholder}
                 """,
                 *args,
@@ -2667,7 +2666,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                             ),
                             plainto_tsquery('english', $1)
                         ) as relevance,
-                        NULL::text as project_name,
+                        project_name,
                         project_path,
                         created_at as started_at,
                         '[]'::jsonb as tags

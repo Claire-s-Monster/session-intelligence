@@ -1849,7 +1849,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                     category as title,
                     learning_content as snippet,
                     NULL as relevance,
-                    NULL as project_name,
+                    project_name,
                     project_path,
                     created_at as started_at,
                     '[]' as tags
@@ -2033,7 +2033,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             {where_category}
             {supersede_clause}
             {since_clause}
-            ORDER BY success_count DESC, last_used DESC, id
+            ORDER BY success_count DESC, (last_used IS NULL), last_used DESC, id
             LIMIT ?
         """,
             params,
@@ -2295,18 +2295,17 @@ class SQLiteBackend(BaseDatabaseBackend):
                 FROM project_learnings
                 WHERE (
                     project_name = ?
-                    OR (project_name IS NULL AND project_path = (
+                    OR (project_name IS NULL AND project_path IN (
                         SELECT project_path FROM sessions
                         WHERE project_name = ?
                           AND project_path IS NOT NULL
-                        LIMIT 1
                     ))
                 )
                   AND id NOT IN (
                       SELECT supersedes FROM project_learnings
                       WHERE supersedes IS NOT NULL
                   )
-                ORDER BY success_count DESC, last_used DESC
+                ORDER BY success_count DESC, (last_used IS NULL), last_used DESC, id
                 LIMIT ?
                 """,
                 (project_name, project_name, limit),

@@ -1930,6 +1930,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         *,
         exclude_superseded: bool = False,
         since_days: int | None = None,
+        project_name: str | None = None,
     ) -> list[dict[str, Any]]:
         """Query learnings for a project.
 
@@ -1939,6 +1940,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
         since_days, when set, restricts results to learnings created
         within the last N days (rollup-wide time window, issue #106).
+
+        project_name, when set, widens scope to also match learnings
+        stored under a sentinel project_path but tagged with this
+        project_name (issue #120).
         """
         if since_days is not None and since_days < 1:
             raise ValueError("since_days must be >= 1")
@@ -1957,6 +1962,11 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         )
 
         args: list[Any] = [project_path]
+        scope_clause = "project_path = $1"
+        if project_name:
+            args.append(project_name)
+            scope_clause = f"(project_path = $1 OR project_name = ${len(args)})"
+
         where_category = ""
         if category:
             args.append(category)
@@ -1974,11 +1984,11 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             rows = await conn.fetch(
                 f"""
                 SELECT * FROM project_learnings
-                WHERE project_path = $1
+                WHERE {scope_clause}
                 {where_category}
                 {supersede_clause}
                 {since_clause}
-                ORDER BY success_count DESC, last_used DESC
+                ORDER BY success_count DESC, last_used DESC, id
                 LIMIT {limit_placeholder}
                 """,
                 *args,

@@ -2512,6 +2512,7 @@ class SessionIntelligenceEngine:
                 file_path = self._save_notebook_to_file(session_id, notebook)
 
             # Save to database
+            search_indexed = False
             if save_to_database and self.database:
                 await self.database.save_session_summary(
                     {
@@ -2524,6 +2525,7 @@ class SessionIntelligenceEngine:
                         "created_at": datetime.now(UTC),
                     }
                 )
+                search_indexed = True
 
             return NotebookResult(
                 session_id=session_id,
@@ -2531,7 +2533,7 @@ class SessionIntelligenceEngine:
                 notebook=notebook,
                 markdown_output=summary_markdown,
                 file_path=file_path,
-                search_indexed=True,
+                search_indexed=search_indexed,
                 message=f"Notebook created with {len(sections)} sections",
             )
         except SessionContextRequiredError:

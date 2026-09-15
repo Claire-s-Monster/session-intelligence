@@ -19,14 +19,17 @@ Two persistence bugs would have made this dangerous if reverted:
    ``summary_markdown``/``key_changes``/``tags`` columns, and must not
    fabricate a row for a session that has no notebook yet.
 
-On the engine side, ``session_create_notebook`` gained a ``body`` parameter
-(caller-authored narrative, rendered verbatim) and an
+On the engine side, ``session_create_notebook_async`` gained a ``body``
+parameter (caller-authored narrative, rendered verbatim) and an
 ``include_derived_sections`` parameter that independently controls whether
 the compiled sections (agents, decisions, metrics, learnings, files) are
-rendered into the markdown output. The default wiring makes derived
-sections opt-out once a body is supplied (``render_sections = flag if flag
-is not None else body is None``), but the section *data* is always
-gathered regardless of whether it is rendered.
+generated and rendered into the markdown output. The default wiring makes
+derived sections opt-out once a body is supplied (``render_sections = flag
+if flag is not None else body is None``). Since issue #128, a False
+``render_sections`` also skips *generation* (including the derived-section
+DB queries), not just rendering; the model's ``.sections`` list is
+therefore empty (not just unrendered) whenever ``render_sections`` is
+False.
 
 Match the house style: SQLite/PostgreSQL parity tests follow the
 ``PersistenceContractTests`` subclassing convention in
@@ -313,7 +316,7 @@ async def test_no_body_renders_derived_sections_by_default(engine, db):
     await db.save_session(_session_row(sid))
     engine.session_cache.clear()
 
-    result = await engine.session_create_notebook(session_id=sid)
+    result = await engine.session_create_notebook_async(session_id=sid)
 
     assert result.status == "success"
     assert "## Performance Metrics" in result.markdown_output
@@ -327,7 +330,7 @@ async def test_body_supplied_without_flag_suppresses_derived_sections(engine, db
     await db.save_session(_session_row(sid))
     engine.session_cache.clear()
 
-    result = await engine.session_create_notebook(
+    result = await engine.session_create_notebook_async(
         session_id=sid, body="AUTHORED-NARRATIVE-SENTINEL-RENDER"
     )
 
@@ -343,7 +346,7 @@ async def test_body_with_include_derived_sections_true_renders_both(engine, db):
     await db.save_session(_session_row(sid))
     engine.session_cache.clear()
 
-    result = await engine.session_create_notebook(
+    result = await engine.session_create_notebook_async(
         session_id=sid,
         body="AUTHORED-NARRATIVE-SENTINEL-BOTH",
         include_derived_sections=True,
@@ -362,28 +365,34 @@ async def test_include_derived_sections_false_without_body_suppresses_sections(e
     await db.save_session(_session_row(sid))
     engine.session_cache.clear()
 
-    result = await engine.session_create_notebook(session_id=sid, include_derived_sections=False)
+    result = await engine.session_create_notebook_async(
+        session_id=sid, include_derived_sections=False
+    )
 
     assert result.status == "success"
     assert "## Performance Metrics" not in result.markdown_output
 
 
-async def test_notebook_model_carries_body_and_populated_sections_even_when_unrendered(engine, db):
-    """The returned SessionNotebook.authored_body equals the supplied body,
-    and sections are still POPULATED on the model even when not rendered
-    (data gathering is unchanged; only rendering is gated)."""
+async def test_notebook_model_carries_body_with_sections_unrendered(engine, db):
+    """The returned SessionNotebook.authored_body equals the supplied body.
+
+    Updated for issue #128: when render_sections is False (the default once
+    a body is supplied without an explicit include_derived_sections=True),
+    derived-section *generation* is skipped too, not just rendering, so
+    `.sections` is empty here rather than populated-but-unrendered as it
+    was before #128."""
     sid = "issue-106-data-vs-render"
     await db.save_session(_session_row(sid))
     engine.session_cache.clear()
 
-    result = await engine.session_create_notebook(
+    result = await engine.session_create_notebook_async(
         session_id=sid, body="AUTHORED-NARRATIVE-SENTINEL-DATA"
     )
 
     assert result.status == "success"
     assert result.notebook is not None
     assert result.notebook.authored_body == "AUTHORED-NARRATIVE-SENTINEL-DATA"
-    assert len(result.notebook.sections) > 0
+    assert result.notebook.sections == []
     # Sanity: confirm this is genuinely the unrendered case, not an
     # accidental default-True render.
     assert "## Performance Metrics" not in result.markdown_output

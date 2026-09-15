@@ -635,6 +635,11 @@ class NotebookResult(BaseModel):
     notebook: SessionNotebook | None = None
     markdown_output: str = ""
     file_path: str | None = None
+    # One of "written", "skipped: save_to_file=false",
+    # "skipped: filesystem persistence disabled", or "failed: {error}"
+    # (issue #128) -- explicit reporting of why file_path may be None,
+    # rather than leaving the caller to guess.
+    file_status: str | None = None
     search_indexed: bool = False
     message: str = ""
 

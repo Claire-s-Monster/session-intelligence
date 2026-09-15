@@ -761,7 +761,11 @@ class LeanMCPInterface:
                 "**READS**: notebook tier — session narrative records. "
                 "Use as STEP 1 in the anti-dupe protocol before creating a new session "
                 "notebook. Filter by project_path or tags to find existing narratives "
-                "for the current work context."
+                "for the current work context. "
+                "Returns compact pointers by default ({session_id, title, tags, "
+                "created_at, project_name} — see summary_only); pass "
+                "summary_only=false to retrieve full notebook bodies "
+                "(summary_markdown, authored_body, key_changes)."
             ),
             "schema": {
                 "type": "object",
@@ -793,6 +797,16 @@ class LeanMCPInterface:
                         "default": 20,
                         "description": "Maximum results to return",
                     },
+                    "summary_only": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": (
+                            "Return only {session_id, title, tags, created_at, project_name}. "
+                            "Default true: full rows carry the whole narrative (summary_markdown, "
+                            "authored_body, key_changes) and overflow client tool-result caps at "
+                            "the default limit. Pass false to retrieve full notebook bodies."
+                        ),
+                    },
                 },
             },
             "examples": [
@@ -800,6 +814,15 @@ class LeanMCPInterface:
                 {"project_path": "/home/user/my-project", "limit": 5},
                 {"project_name": "session-intelligence", "limit": 5},
                 {"tags": ["feature", "bugfix"]},
+                {
+                    "project_name": "session-intelligence",
+                    "summary_only": False,
+                    "limit": 3,
+                    "_workflow_hint": (
+                        "Fetches full notebook bodies (summary_markdown, authored_body, "
+                        "key_changes) instead of compact pointers."
+                    ),
+                },
             ],
         }
 
@@ -831,8 +854,9 @@ class LeanMCPInterface:
                     "project_name": {
                         "type": "string",
                         "description": (
-                            "Project name — updates the notebook for the most-recent "
-                            "active session for that project."
+                            "Project name — updates the notebook belonging to the "
+                            "most-recent session for that project that owns a "
+                            "notebook (not merely the most-recent active session)."
                         ),
                     },
                     "allow_unbound": {
@@ -2131,7 +2155,16 @@ class LeanMCPInterface:
                     result = await tool_func(**parameters)
                 else:
                     result = tool_func(**parameters)
-                return {"tool": tool_name, "status": "success", "result": result}
+                # issue #127: reflect an inner failure status (dict or Pydantic
+                # model like NotebookResult) in the outer envelope instead of
+                # always reporting "success" when the tool itself signaled an
+                # error. Only the exact value "error" downgrades the envelope.
+                if isinstance(result, dict):
+                    inner_status = result.get("status")
+                else:
+                    inner_status = getattr(result, "status", None)
+                envelope_status = "error" if inner_status == "error" else "success"
+                return {"tool": tool_name, "status": envelope_status, "result": result}
             except Exception as e:
                 logger.error(f"Error executing {tool_name}: {e}")
                 return {"tool": tool_name, "status": "error", "error": str(e)}

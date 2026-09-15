@@ -158,7 +158,7 @@ async def test_notebook_sections_agree_end_to_end(engine, db):
         await db.save_agent_execution(_execution_row(f"exec-{i}", sid, agent_name=f"agent-{i}"))
     engine.session_cache.clear()
 
-    result = await engine.session_create_notebook(
+    result = await engine.session_create_notebook_async(
         session_id=sid, save_to_file=False, save_to_database=False
     )
 

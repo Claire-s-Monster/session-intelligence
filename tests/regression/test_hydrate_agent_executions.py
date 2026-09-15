@@ -94,7 +94,7 @@ async def test_notebook_for_cold_session_includes_agents_section(engine, db):
     )
     engine.session_cache.clear()
 
-    result = await engine.session_create_notebook(session_id=sid, save_to_file=False)
+    result = await engine.session_create_notebook_async(session_id=sid, save_to_file=False)
 
     assert result.status == "success"
     assert "Agents Executed" in result.markdown_output

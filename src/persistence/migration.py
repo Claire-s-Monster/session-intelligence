@@ -24,7 +24,7 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -387,7 +387,7 @@ async def export_to_json(
 
     try:
         data = {
-            "exported_at": datetime.now().isoformat(),
+            "exported_at": datetime.now(UTC).isoformat(),
             "source_backend": "postgresql",
             "sessions": await db.query_sessions(limit=100000),
             "statistics": await db.get_statistics(),

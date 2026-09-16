@@ -18,7 +18,7 @@ Design notes
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -199,29 +199,6 @@ def _agent_execution(session_id: str, agent_name: str = "test-agent", **override
 def _mcp_session(**overrides) -> dict:
     """Return an MCP session dict ready for ``save_mcp_session``."""
     return make_mcp_session_data(**overrides)
-
-
-def _parse_timestamp(value: datetime | str) -> datetime:
-    """Normalize a backend-returned timestamp to a comparable aware datetime.
-
-    Backends are inconsistent about representation: some values are naive
-    (assumed to be local wall-clock time), others are timezone-aware ISO
-    strings. ``datetime.fromisoformat`` accepts both the "T" and space
-    separators, so this only needs to reconcile the naive/aware mismatch.
-
-    WORKAROUND for issue #112: `_get_timestamp()` in persistence/base.py returns
-    naive local time while PostgreSQL's `update_mcp_session_activity` uses
-    server-side NOW() (true UTC), so a single row's `last_activity` can be
-    written in two different time bases. This helper normalizes both for testing
-    so the assertion below measures what it should (that activity advanced) rather
-    than failing on format mismatch. `.astimezone()` on a naive value assumes
-    system local time, which is precisely the ambiguity #112 describes. DELETE
-    this helper and assert timezone-awareness directly once #112 is fixed.
-    """
-    dt = datetime.fromisoformat(value) if isinstance(value, str) else value
-    if dt.tzinfo is None:
-        dt = dt.astimezone()
-    return dt
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +586,44 @@ class PersistenceContractTests:
         ids = {r["session_id"] for r in results}
         assert s["id"] in ids
 
+    async def test_summary_json_fields_decoded_on_every_reader(self, backend):
+        """key_changes and tags come back as lists from every summary reader (#110).
+
+        Checks all readers in one test so a reader that skips decoding is named
+        alongside the ones that don't, on whichever backend runs it.
+        """
+        s = _session()
+        await backend.save_session(s)
+        tag = f"tag-{uuid.uuid4().hex[:6]}"
+        key_changes = ["src/a.py", "tests/b.py"]
+        await backend.save_session_summary(
+            _summary(session_id=s["id"], key_changes=key_changes, tags=[tag])
+        )
+
+        readers = {
+            "get_session_summary": lambda: backend.get_session_summary(s["id"]),
+            # Filtered by project_name (issue #110 note): an unfiltered call in a
+            # populated database could miss this row under its default limit.
+            "query_session_summaries": lambda: backend.query_session_summaries(
+                project_name=s["project_name"], limit=50
+            ),
+            "query_recent_summaries": lambda: backend.query_recent_summaries(limit=50),
+            "query_summaries_by_tag": lambda: backend.query_summaries_by_tag(tag),
+        }
+        problems = []
+        for name, read in readers.items():
+            result = await read()
+            rows = result if isinstance(result, list) else [result]
+            row = next((r for r in rows if r and r["session_id"] == s["id"]), None)
+            if row is None:
+                problems.append(f"{name}: row not returned")
+                continue
+            if row["key_changes"] != key_changes:
+                problems.append(f"{name}: key_changes={row['key_changes']!r}")
+            if row["tags"] != [tag]:
+                problems.append(f"{name}: tags={row['tags']!r}")
+        assert not problems, problems
+
     # ------------------------------------------------------------------
     # Agent Executions
     # ------------------------------------------------------------------
@@ -643,12 +658,18 @@ class PersistenceContractTests:
         new_activity = result["last_activity"]
         # last_activity should be set (either same or newer — just must not be None)
         assert new_activity is not None
-        # Backends may return naive or tz-aware timestamps (and as either
-        # datetime objects or ISO strings) — normalize before comparing.
-        # The two calls can land within the same clock tick, so use >= rather
-        # than a strict > to avoid flakiness.
-        # See #112: normalization reconciles mismatched time bases (naive vs UTC).
-        assert _parse_timestamp(new_activity) >= _parse_timestamp(old_activity)
+        # Backends may return either datetime objects or ISO strings; parse
+        # strings before comparing. The two calls can land within the same
+        # clock tick, so use >= rather than a strict > to avoid flakiness.
+        old_value = (
+            datetime.fromisoformat(old_activity) if isinstance(old_activity, str) else old_activity
+        )
+        new_value = (
+            datetime.fromisoformat(new_activity) if isinstance(new_activity, str) else new_activity
+        )
+        assert old_value.tzinfo is not None
+        assert new_value.tzinfo is not None
+        assert new_value >= old_value
 
     async def test_link_mcp_to_engine_session(self, backend):
         s = _session()
@@ -659,6 +680,36 @@ class PersistenceContractTests:
         result = await backend.get_mcp_session(m["mcp_session_id"])
         assert result is not None
         assert result["engine_session_id"] == s["id"]
+
+    async def test_default_timestamps_are_timezone_aware_utc(self, backend):
+        """Timestamps a backend fills in itself are aware and near UTC now (#112).
+
+        On PostgreSQL this also catches the case where a naive local timestamp is
+        only right because the server TimeZone happens to match the host's.
+        """
+        now = datetime.now(UTC)
+
+        m = _mcp_session()
+        m.pop("created_at", None)
+        m.pop("last_activity", None)
+        await backend.save_mcp_session(m)
+        mcp = await backend.get_mcp_session(m["mcp_session_id"])
+
+        s = _session()
+        await backend.save_session(s)
+        sm = _summary(session_id=s["id"])
+        sm.pop("created_at", None)
+        await backend.save_session_summary(sm)
+        summary = await backend.get_session_summary(s["id"])
+
+        for label, raw in [
+            ("mcp_sessions.created_at", mcp["created_at"]),
+            ("mcp_sessions.last_activity", mcp["last_activity"]),
+            ("session_summaries.created_at", summary["created_at"]),
+        ]:
+            value = datetime.fromisoformat(raw) if isinstance(raw, str) else raw
+            assert value.tzinfo is not None, f"{label} is naive: {raw!r}"
+            assert abs(now - value) < timedelta(minutes=5), f"{label} skewed: {raw!r}"
 
     # ------------------------------------------------------------------
     # Project Learnings

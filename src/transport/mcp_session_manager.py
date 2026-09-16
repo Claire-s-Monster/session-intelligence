@@ -15,6 +15,8 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from persistence.base import _as_aware_utc
+
 if TYPE_CHECKING:
     from persistence.base import DatabaseBackend as Database
 
@@ -133,7 +135,13 @@ class MCPSessionManager:
         to_remove = []
 
         for session_id, session_data in self._active_sessions.items():
-            last_activity = datetime.fromisoformat(session_data["last_activity"])
+            raw = session_data["last_activity"]
+            # Cached DB rows carry a datetime on PostgreSQL and a (possibly naive,
+            # pre-#112) ISO string on SQLite; sessions created here carry an aware
+            # ISO string. Normalize all of them before subtracting from aware `now`.
+            last_activity = _as_aware_utc(
+                datetime.fromisoformat(raw) if isinstance(raw, str) else raw
+            )
             age = (now - last_activity).total_seconds()
             if age > max_age_seconds:
                 to_remove.append(session_id)

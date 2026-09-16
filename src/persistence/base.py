@@ -14,7 +14,7 @@ Usage:
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -413,5 +413,16 @@ class BaseDatabaseBackend:
         }
 
     def _get_timestamp(self) -> str:
-        """Get current timestamp in ISO format."""
-        return datetime.now().isoformat()
+        """Get current timestamp in ISO format (#112: aware UTC, not naive local)."""
+        return datetime.now(UTC).isoformat()
+
+
+def _as_aware_utc(value: datetime) -> datetime:
+    """Return ``value`` as an aware UTC datetime (#112).
+
+    Rows written before #112 hold naive local wall-clock time, so a naive value
+    is interpreted as local time rather than assumed to be UTC.
+    """
+    if value.tzinfo is None:
+        value = value.astimezone()
+    return value.astimezone(UTC)

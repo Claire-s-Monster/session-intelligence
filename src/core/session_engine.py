@@ -1463,7 +1463,7 @@ class SessionIntelligenceEngine:
             "mode": execution_mode.value,
             "agents": [agent.get("name", "unknown") for agent in agents],
             "optimization_level": optimization_level.value,
-            "created_at": datetime.now().isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
         }
 
         # Dependency resolution
@@ -2443,7 +2443,7 @@ class SessionIntelligenceEngine:
             notebook = SessionNotebook(
                 session_id=session_id,
                 title=title,
-                created_at=datetime.now().isoformat(),
+                created_at=datetime.now(UTC).isoformat(),
                 project_name=session.project_name,
                 project_path=session.project_path,
                 duration_minutes=round(duration_minutes, 2),
@@ -3304,7 +3304,7 @@ class SessionIntelligenceEngine:
             trigger_context=trigger_context,
             learning_content=learning_content,
             source_session_id=source_session,
-            created_at=datetime.now().isoformat(),
+            created_at=datetime.now(UTC).isoformat(),
             supersedes=supersedes,
         )
 
@@ -3706,6 +3706,7 @@ class SessionIntelligenceEngine:
         Returns:
             AgentDecisionResult with decision_id and status
         """
+        _reject_tool_result_envelope("agent_log_decision", "decision", decision)
         self._agent_validator.validate(agent_name)  # raises AgentNotFoundError in strict mode
 
         if not self.database:
@@ -3943,6 +3944,7 @@ class SessionIntelligenceEngine:
         Returns:
             AgentLearningResult with learning_id and status
         """
+        _reject_tool_result_envelope("agent_log_learning", "content", content)
         self._agent_validator.validate(agent_name)  # raises AgentNotFoundError in strict mode
 
         if not self.database:
@@ -4199,6 +4201,7 @@ class SessionIntelligenceEngine:
         Returns:
             AgentNotebookResult with notebook_id and status
         """
+        _reject_tool_result_envelope("agent_create_notebook", "content", content)
         self._agent_validator.validate(agent_name)  # raises AgentNotFoundError in strict mode
 
         if not self.database:

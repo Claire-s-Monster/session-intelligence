@@ -37,6 +37,11 @@ from .base import (
 
 logger = logging.getLogger(__name__)
 
+# session_summaries JSON columns. Decoded in exactly one place (#110): every
+# summary reader goes through _decode_summary_row, so a column added here is
+# decoded on all of them instead of on whichever site remembered it.
+_SUMMARY_JSON_FIELDS = ("key_changes", "tags")
+
 
 class PostgreSQLBackend(BaseDatabaseBackend):
     """PostgreSQL database backend with async support for session persistence."""
@@ -502,6 +507,15 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     pass  # Keep as string if parsing fails
 
         return result
+
+    def _decode_summary_row(self, record: asyncpg.Record) -> dict[str, Any]:
+        """Convert a session_summaries row, decoding its JSON columns (#110)."""
+        row = self._from_record(record)
+        for field in _SUMMARY_JSON_FIELDS:
+            value = row.get(field)
+            if isinstance(value, str):
+                row[field] = json.loads(value)
+        return row
 
     # Session operations
 
@@ -1234,7 +1248,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 "SELECT * FROM session_summaries WHERE session_id = $1",
                 session_id,
             )
-            return self._from_record(row) if row else None
+            return self._decode_summary_row(row) if row else None
 
     async def query_session_summaries(
         self,
@@ -1290,7 +1304,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 """
                 rows = await conn.fetch(query, limit)
 
-            return [self._from_record(row) for row in rows]
+            return [self._decode_summary_row(row) for row in rows]
 
     async def query_summaries_by_tag(self, tag: str, limit: int = 50) -> list[dict[str, Any]]:
         """Query session summaries that contain a specific tag."""
@@ -1309,7 +1323,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 json.dumps([tag]),
                 limit,
             )
-            return [self._from_record(row) for row in rows]
+            return [self._decode_summary_row(row) for row in rows]
 
     async def query_recent_summaries(self, limit: int = 20) -> list[dict[str, Any]]:
         """Get most recent session summaries."""
@@ -1326,7 +1340,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 """,
                 limit,
             )
-            return [self._from_record(row) for row in rows]
+            return [self._decode_summary_row(row) for row in rows]
 
     async def search_by_file_change(
         self, file_pattern: str, limit: int = 20
@@ -1351,7 +1365,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 f"%{file_pattern}%",
                 limit,
             )
-            return [self._from_record(row) for row in rows]
+            return [self._decode_summary_row(row) for row in rows]
 
     async def recall_project(
         self,
@@ -1468,15 +1482,19 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     cutoff,
                     limit,
                 )
-                result["notebooks"] = [
-                    {
-                        "title": row["title"],
-                        "tags": row["tags"],
-                        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
-                        "session_id": row["session_id"],
-                    }
-                    for row in rows
-                ]
+                result["notebooks"] = []
+                for row in rows:
+                    decoded = self._decode_summary_row(row)
+                    result["notebooks"].append(
+                        {
+                            "title": decoded["title"],
+                            "tags": decoded["tags"],
+                            "created_at": decoded["created_at"].isoformat()
+                            if decoded["created_at"]
+                            else None,
+                            "session_id": decoded["session_id"],
+                        }
+                    )
 
         result["counts"] = {
             "sessions": len(result["sessions"]),

@@ -28,6 +28,11 @@ from .base import (
 
 logger = logging.getLogger(__name__)
 
+# session_summaries JSON columns. Decoded in exactly one place (#110): every
+# summary reader goes through _decode_summary_row, so a column added here is
+# decoded on all of them instead of on whichever site remembered it.
+_SUMMARY_JSON_FIELDS = ("key_changes", "tags")
+
 
 class SQLiteBackend(BaseDatabaseBackend):
     """SQLite database backend with async support for session persistence."""
@@ -356,7 +361,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         # Track schema version
         await self._connection.execute(
             "INSERT OR IGNORE INTO schema_version VALUES (?, ?)",
-            (self.SCHEMA_VERSION, datetime.now().isoformat()),
+            (self.SCHEMA_VERSION, datetime.now(UTC).isoformat()),
         )
         await self._connection.commit()
 
@@ -486,6 +491,13 @@ class SQLiteBackend(BaseDatabaseBackend):
         if self._connection is None:
             raise RuntimeError("Database not initialized. Call initialize() first.")
         return self._connection
+
+    def _decode_summary_row(self, row) -> dict[str, Any]:
+        """Convert a session_summaries row, decoding its JSON columns (#110)."""
+        result = dict(row)
+        for field in _SUMMARY_JSON_FIELDS:
+            result[field] = self._deserialize_json(result.get(field))
+        return result
 
     # Session operations
 
@@ -1097,7 +1109,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             (session_id,),
         )
         row = await cursor.fetchone()
-        return dict(row) if row else None
+        return self._decode_summary_row(row) if row else None
 
     async def query_session_summaries(
         self,
@@ -1148,14 +1160,7 @@ class SQLiteBackend(BaseDatabaseBackend):
 
         cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
-
-        results = []
-        for row in rows:
-            result = dict(row)
-            result["key_changes"] = self._deserialize_json(result.get("key_changes"))
-            result["tags"] = self._deserialize_json(result.get("tags"))
-            results.append(result)
-        return results
+        return [self._decode_summary_row(row) for row in rows]
 
     # Agent execution operations
 
@@ -1425,13 +1430,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             (tag, limit),
         )
         rows = await cursor.fetchall()
-        results = []
-        for row in rows:
-            result = dict(row)
-            result["key_changes"] = self._deserialize_json(result.get("key_changes"))
-            result["tags"] = self._deserialize_json(result.get("tags"))
-            results.append(result)
-        return results
+        return [self._decode_summary_row(row) for row in rows]
 
     async def query_recent_summaries(self, limit: int = 20) -> list[dict[str, Any]]:
         """Get most recent session summaries."""
@@ -1448,13 +1447,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             (limit,),
         )
         rows = await cursor.fetchall()
-        results = []
-        for row in rows:
-            result = dict(row)
-            result["key_changes"] = self._deserialize_json(result.get("key_changes"))
-            result["tags"] = self._deserialize_json(result.get("tags"))
-            results.append(result)
-        return results
+        return [self._decode_summary_row(row) for row in rows]
 
     # Agent system operations
 
@@ -1911,13 +1904,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             (f"%{file_pattern}%", limit),
         )
         rows = await cursor.fetchall()
-        results = []
-        for row in rows:
-            result = dict(row)
-            result["key_changes"] = self._deserialize_json(result.get("key_changes"))
-            result["tags"] = self._deserialize_json(result.get("tags"))
-            results.append(result)
-        return results
+        return [self._decode_summary_row(row) for row in rows]
 
     # Project Learnings operations
 

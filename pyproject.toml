@@ -73,6 +73,8 @@ daemon-status = { cmd = "scripts/session-intelligence-daemon.sh status" }
 # Database migration tasks
 migrate-from-sqlite = { cmd = "python -m persistence.migration sqlite-to-postgres", env = { PYTHONPATH = "src" } }
 db-export = { cmd = "python -m persistence.migration export", env = { PYTHONPATH = "src" } }
+# Local PostgreSQL test database (issue #114); tests/conftest.py uses it when POSTGRES_DSN is unset
+test-db-create = "python scripts/create_test_db.py"
 # Quality tasks
 # lint is deliberately NOT --fix: ruff exits 0 once it has repaired
 # everything, so a --fix gate passes on a checkout whose committed code

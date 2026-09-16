@@ -16,11 +16,73 @@ from pathlib import Path
 
 import pytest
 
+from tests._pg_guard import (
+    DEFAULT_TEST_DSN,
+    count_pg_skips,
+    database_name,
+    database_reachable,
+    production_dsn_reason,
+    require_pg,
+)
+
 # Add tests/ first, then src — src must come first so that top-level
 # package names (e.g. `persistence`) resolve to src/ rather than to the
 # tests/persistence/ subdirectory which shadows it.
 sys.path.insert(0, str(Path(__file__).parent))  # tests/
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))  # src/ — wins
+
+
+# ============================================================================
+# PostgreSQL test database (issue #114)
+# ============================================================================
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Resolve POSTGRES_DSN before any test module reads it, and refuse production.
+
+    Runs before collection, so module-level reads of POSTGRES_DSN (including
+    tests/persistence/conftest.py's POSTGRES_AVAILABLE) see the resolved value.
+    An explicitly exported POSTGRES_DSN always wins, which keeps CI's own
+    service DSN untouched.
+    """
+    if not os.environ.get("POSTGRES_DSN") and database_reachable(DEFAULT_TEST_DSN):
+        os.environ["POSTGRES_DSN"] = DEFAULT_TEST_DSN
+
+    dsn = os.environ.get("POSTGRES_DSN", "")
+    if dsn:
+        reason = production_dsn_reason(dsn)
+        if reason:
+            raise pytest.UsageError(
+                f"Refusing to run the test suite: {reason}. PostgreSQL tests delete "
+                "rows and create/drop databases. Point POSTGRES_DSN at "
+                f"{DEFAULT_TEST_DSN} instead (pixi run -e ci test-db-create)."
+            )
+
+    if require_pg() and not (dsn and database_reachable(dsn)):
+        raise pytest.UsageError(
+            "SESSION_TEST_REQUIRE_PG is set but no PostgreSQL test database is "
+            "reachable. Run `pixi run -e ci test-db-create` or export POSTGRES_DSN."
+        )
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus: int, config: pytest.Config) -> None:
+    """Make PostgreSQL coverage explicit, so a skip never reads as a pass."""
+    skipped = count_pg_skips(terminalreporter.stats.get("skipped", []))
+    if skipped:
+        terminalreporter.write_sep(
+            "=", f"WARNING: {skipped} PostgreSQL tests skipped", yellow=True, bold=True
+        )
+        terminalreporter.write_line(
+            "This run verified the SQLite backend only; production runs on PostgreSQL."
+        )
+        terminalreporter.write_line(
+            "Fix: pixi run -e ci test-db-create, then re-run. "
+            "SESSION_TEST_REQUIRE_PG=1 turns this into an error."
+        )
+    elif os.environ.get("POSTGRES_DSN"):
+        terminalreporter.write_line(
+            f"PostgreSQL test database: {database_name(os.environ['POSTGRES_DSN'])!r}"
+        )
 
 
 # ============================================================================

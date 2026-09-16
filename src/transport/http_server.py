@@ -920,7 +920,21 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                             tool_result = tool_result.model_copy(update={"status": "saved"})
 
                     limited = apply_token_limits(tool_result, target)
-                    result = {"tool": target, "status": "success", "result": limited}
+                    # issue #127: reflect an inner failure status (dict or Pydantic
+                    # model like NotebookResult) in the outer envelope instead of
+                    # always reporting "success" when the tool itself signaled an
+                    # error. Mirrors lean_mcp_interface.py's execute_tool (~line
+                    # 2158-2167) so the two envelope sites stay in sync. Read from
+                    # tool_result (pre-token-limiting) rather than `limited`: when
+                    # truncation kicks in, apply_token_limits' error path returns a
+                    # brand-new dict with no "status" key at all, which would mask a
+                    # genuine inner error as "success".
+                    if isinstance(tool_result, dict):
+                        inner_status = tool_result.get("status")
+                    else:
+                        inner_status = getattr(tool_result, "status", None)
+                    envelope_status = "error" if inner_status == "error" else "success"
+                    result = {"tool": target, "status": envelope_status, "result": limited}
 
                     # Persist session changes to database after session-modifying operations
                     if target in session_modifying_tools:

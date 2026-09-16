@@ -77,7 +77,7 @@ async def test_notebook_succeeds_for_uncached_active_session(engine, db):
     engine.session_cache.clear()
     assert sid not in engine.session_cache
 
-    result = await engine.session_create_notebook(session_id=sid)
+    result = await engine.session_create_notebook_async(session_id=sid)
 
     assert result.status == "success"
 
@@ -88,7 +88,7 @@ async def test_notebook_succeeds_for_uncached_completed_session(engine, db):
     engine.session_cache.clear()
     assert sid not in engine.session_cache
 
-    result = await engine.session_create_notebook(session_id=sid)
+    result = await engine.session_create_notebook_async(session_id=sid)
 
     assert result.status == "success"
 
@@ -98,7 +98,7 @@ async def test_hydration_populates_the_cache(engine, db):
     await db.save_session(_session_row(sid))
     engine.session_cache.clear()
 
-    await engine.session_create_notebook(session_id=sid)
+    await engine.session_create_notebook_async(session_id=sid)
 
     assert sid in engine.session_cache
 
@@ -106,7 +106,7 @@ async def test_hydration_populates_the_cache(engine, db):
 async def test_missing_session_still_reports_error(engine, db):
     sid = "issue-103-never-persisted"
 
-    result = await engine.session_create_notebook(session_id=sid)
+    result = await engine.session_create_notebook_async(session_id=sid)
 
     assert result.status == "error"
     assert "no session found" in result.message.lower()
@@ -119,7 +119,7 @@ async def test_cold_loaded_decisions_reach_the_notebook(engine, db):
     await db.save_decision(_decision_row("dec-2", sid, "Second cold decision"))
     engine.session_cache.clear()
 
-    result = await engine.session_create_notebook(session_id=sid)
+    result = await engine.session_create_notebook_async(session_id=sid)
 
     assert result.status == "success"
     assert "First cold decision" in result.markdown_output

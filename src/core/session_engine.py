@@ -342,6 +342,15 @@ class SessionIntelligenceEngine:
                 metadata={"session_name": session_name, "project_path": safe_project_path},
                 session_name=session_name,
             )
+            # Persist session to DB so FK references work: _create_session only
+            # writes session_cache/filesystem, never the sessions row that
+            # session_summaries.session_id FK-references, so a later
+            # save_session_summary would fail FOREIGN KEY constraint failed.
+            if result.status == "success" and self.database:
+                try:
+                    await self.database.save_session(result.session_data.model_dump(mode="python"))
+                except Exception as e:
+                    debug_logger.error(f"Error persisting session to DB: {e}")
             cached = self.session_cache.get(result.session_id)
             return ResolvedSessionContext(
                 session_id=result.session_id,
@@ -369,6 +378,15 @@ class SessionIntelligenceEngine:
                 project_name=project_name,
                 metadata={"project_path": safe_project_path},
             )
+            # Persist session to DB so FK references work: _create_session only
+            # writes session_cache/filesystem, never the sessions row that
+            # session_summaries.session_id FK-references, so a later
+            # save_session_summary would fail FOREIGN KEY constraint failed.
+            if result.status == "success" and self.database:
+                try:
+                    await self.database.save_session(result.session_data.model_dump(mode="python"))
+                except Exception as e:
+                    debug_logger.error(f"Error persisting session to DB: {e}")
             cached = self.session_cache.get(result.session_id)
             return ResolvedSessionContext(
                 session_id=result.session_id,
@@ -380,6 +398,17 @@ class SessionIntelligenceEngine:
         if allow_unbound:
             fallback_id: str = self._get_or_create_current_session_id() or ""  # legacy path
             cached = self.session_cache.get(fallback_id) if fallback_id else None
+            # Persist session to DB so FK references work: _create_session (used
+            # internally by _get_or_create_current_session_id) only writes
+            # session_cache/filesystem, never the sessions row that
+            # session_summaries.session_id FK-references. save_session is an
+            # upsert (INSERT OR REPLACE), so re-persisting a cache-hit session
+            # here is harmless.
+            if cached and self.database:
+                try:
+                    await self.database.save_session(cached.model_dump(mode="python"))
+                except Exception as e:
+                    debug_logger.error(f"Error persisting session to DB: {e}")
             return ResolvedSessionContext(
                 session_id=fallback_id,
                 project_name=cached.project_name if cached else None,
@@ -2202,101 +2231,6 @@ class SessionIntelligenceEngine:
 
     # ===== SESSION NOTEBOOK =====
 
-    async def session_create_notebook(
-        self,
-        session_id: str | None = None,
-        title: str | None = None,
-        include_decisions: bool = True,
-        include_agents: bool = True,
-        include_metrics: bool = True,
-        tags: list[str] | None = None,
-        save_to_file: bool = True,
-        save_to_database: bool = True,
-        session_name: str | None = None,
-        project_name: str | None = None,
-        allow_unbound: bool = False,
-        body: str | None = None,
-        include_derived_sections: bool | None = None,
-        max_decisions: int | None = None,
-        since_days: int | None = None,
-        exclude_superseded: bool = True,
-    ) -> NotebookResult:
-        """
-        Generate a comprehensive markdown notebook/summary for a session.
-
-        Creates a narrative summary of all work done during the session,
-        including decisions made, agents executed, file changes, and metrics.
-
-        Args:
-            session_id: Session to summarize
-            title: Custom title for the notebook
-            include_decisions: Include decision log section
-            include_agents: Include agent execution summary
-            include_metrics: Include performance metrics
-            tags: Tags for cross-session search
-            save_to_file: Save markdown to file in session directory
-            save_to_database: Persist summary to database for search
-            session_name: Named session to summarize
-            project_name: Project whose most-recent active session to use
-            allow_unbound: If True, fall back to legacy unbound session
-                (deprecated)
-            body: Caller-authored narrative, stored verbatim and never
-                regenerated. When supplied, the compiled sections become
-                opt-in (see include_derived_sections).
-            include_derived_sections: Whether to render the compiled
-                sections (agents, decisions, metrics, learnings, files).
-                Defaults to True when no body is given (unchanged
-                behaviour) and False when a body is given, so an authored
-                narrative is the primary artifact rather than a preamble
-                to a 68k-character rollup (issue #106).
-            max_decisions: Caps the number of decisions included in the
-                rollup. None keeps the existing default (100).
-            since_days: Restricts decisions and learnings in the rollup to
-                the last N days. None keeps the existing unbounded window.
-            exclude_superseded: Drops decisions/learnings retired by a
-                newer `supersedes` entry from the rollup. Defaults to True
-                (unchanged behaviour).
-
-        Pass at least one of session_id, session_name, or project_name, or
-        set allow_unbound=True to opt into the legacy fallback.
-
-        Returns:
-            NotebookResult with generated notebook and file path
-        """
-        try:
-            if session_id is None:
-                resolved = await self._resolve_session_context(
-                    session_id=None,
-                    session_name=session_name,
-                    project_name=project_name,
-                    allow_unbound=allow_unbound,
-                )
-                session_id = resolved.session_id
-            return await self._create_notebook_impl(
-                session_id,
-                title,
-                include_decisions,
-                include_agents,
-                include_metrics,
-                tags,
-                save_to_file,
-                save_to_database,
-                body=body,
-                include_derived_sections=include_derived_sections,
-                max_decisions=max_decisions,
-                since_days=since_days,
-                exclude_superseded=exclude_superseded,
-            )
-        except SessionContextRequiredError:
-            raise
-        except Exception as e:
-            debug_logger.error(f"Error creating notebook: {e}")
-            return NotebookResult(
-                session_id=session_id or "unknown",
-                status="error",
-                message=f"Failed to create notebook: {str(e)}",
-            )
-
     async def session_create_notebook_async(
         self,
         session_id: str | None = None,
@@ -2404,18 +2338,29 @@ class SessionIntelligenceEngine:
                     f"{session.started.strftime('%Y-%m-%d %H:%M')}"
                 )
 
-            sections: list[NotebookSection] = []
-            sections.append(
-                NotebookSection(
-                    heading="Overview",
-                    content=self._generate_overview_section(session, duration_minutes),
-                    level=2,
-                )
+            # Computed ahead of section-building (issue #128): render_sections
+            # now also gates whether derived sections are *generated*, not
+            # just whether they are rendered into the markdown, so callers
+            # below need it before doing any generation work.
+            render_sections = (
+                include_derived_sections if include_derived_sections is not None else body is None
             )
 
-            # File operations from database (async)
+            sections: list[NotebookSection] = []
+            if render_sections:
+                sections.append(
+                    NotebookSection(
+                        heading="Overview",
+                        content=self._generate_overview_section(session, duration_minutes),
+                        level=2,
+                    )
+                )
+
+            # File operations from database (async). Gated on render_sections
+            # too (issue #128) so a suppressed rollup skips the DB query
+            # entirely instead of just discarding its result.
             files_changed: list[str] = []
-            if self.database:
+            if self.database and render_sections:
                 files_content, files_changed = await self._generate_files_section_async(session_id)
                 if files_content:
                     sections.append(
@@ -2426,32 +2371,36 @@ class SessionIntelligenceEngine:
                         )
                     )
 
-            # Agents
+            # Agents. agents_used is still populated from the in-memory list
+            # (issue #128: cheap, no DB call) even when render_sections is
+            # False; only the rendered section is gated.
             agents_used: list[str] = []
             if include_agents and session.agents_executed:
                 agents_content, agents_used = self._generate_agents_section(session)
-                sections.append(
-                    NotebookSection(
-                        heading="Agents Executed",
-                        content=agents_content,
-                        level=2,
+                if render_sections:
+                    sections.append(
+                        NotebookSection(
+                            heading="Agents Executed",
+                            content=agents_content,
+                            level=2,
+                        )
                     )
-                )
 
-            # Decisions
+            # Decisions. Same pattern as Agents above (issue #128).
             decisions_made: list[str] = []
             if include_decisions and session.decisions:
                 decisions_content, decisions_made = self._generate_decisions_section(session)
-                sections.append(
-                    NotebookSection(
-                        heading="Decisions Made",
-                        content=decisions_content,
-                        level=2,
+                if render_sections:
+                    sections.append(
+                        NotebookSection(
+                            heading="Decisions Made",
+                            content=decisions_content,
+                            level=2,
+                        )
                     )
-                )
 
             # Metrics
-            if include_metrics:
+            if include_metrics and render_sections:
                 sections.append(
                     NotebookSection(
                         heading="Performance Metrics",
@@ -2460,8 +2409,10 @@ class SessionIntelligenceEngine:
                     )
                 )
 
-            # Learnings from database (async)
-            if self.database:
+            # Learnings from database (async). Gated on render_sections too
+            # (issue #128) so query_project_learnings is not issued when the
+            # rollup is suppressed.
+            if self.database and render_sections:
                 learnings_content = await self._generate_learnings_section_async(
                     session.project_path,
                     since_days=since_days,
@@ -2481,9 +2432,6 @@ class SessionIntelligenceEngine:
             if tags is None:
                 tags = self._auto_generate_tags(session, agents_used, key_changes)
 
-            render_sections = (
-                include_derived_sections if include_derived_sections is not None else body is None
-            )
             summary_markdown = self._generate_summary_markdown(
                 title,
                 sections,
@@ -2508,9 +2456,22 @@ class SessionIntelligenceEngine:
                 tags=tags,
             )
 
+            # File status is always reported explicitly (issue #128) rather
+            # than leaving the caller to infer "no file" from a null
+            # file_path, which conflated "not requested", "filesystem
+            # disabled", and "write failed" into the same signal.
             file_path = None
-            if save_to_file and self.use_filesystem:
-                file_path = self._save_notebook_to_file(session_id, notebook)
+            if not save_to_file:
+                file_status = "skipped: save_to_file=false"
+            elif not self.use_filesystem:
+                file_status = "skipped: filesystem persistence disabled"
+            else:
+                try:
+                    file_path = self._save_notebook_to_file(session_id, notebook)
+                    file_status = "written"
+                except OSError as e:
+                    debug_logger.debug(f"Notebook file write failed for {session_id}: {e}")
+                    file_status = f"failed: {e}"
 
             # Save to database
             search_indexed = False
@@ -2534,6 +2495,7 @@ class SessionIntelligenceEngine:
                 notebook=notebook,
                 markdown_output=summary_markdown,
                 file_path=file_path,
+                file_status=file_status,
                 search_indexed=search_indexed,
                 message=f"Notebook created with {len(sections)} sections",
             )
@@ -2546,227 +2508,6 @@ class SessionIntelligenceEngine:
                 status="error",
                 message=str(e),
             )
-
-    async def _create_notebook_impl(
-        self,
-        session_id: str | None,
-        title: str | None,
-        include_decisions: bool,
-        include_agents: bool,
-        include_metrics: bool,
-        tags: list[str] | None,
-        save_to_file: bool,
-        save_to_database: bool,
-        body: str | None = None,
-        include_derived_sections: bool | None = None,
-        max_decisions: int | None = None,
-        since_days: int | None = None,
-        exclude_superseded: bool = True,
-    ) -> NotebookResult:
-        """Notebook creation with proper async database access.
-
-        Args:
-            body: Caller-authored narrative, stored verbatim and never
-                regenerated. When supplied, the compiled sections become
-                opt-in (see include_derived_sections).
-            include_derived_sections: Whether to render the compiled
-                sections (agents, decisions, metrics, learnings, files).
-                Defaults to True when no body is given (unchanged
-                behaviour) and False when a body is given, so an authored
-                narrative is the primary artifact rather than a preamble
-                to a 68k-character rollup (issue #106).
-            max_decisions: Caps the number of decisions included in the
-                rollup. None keeps the existing default (100).
-            since_days: Restricts decisions in the rollup to the last N
-                days. None keeps the existing unbounded window.
-            exclude_superseded: Drops decisions retired by a newer
-                `supersedes` entry from the rollup. Defaults to True
-                (unchanged behaviour).
-        """
-
-        # Both callers (session_create_notebook / session_create_notebook_async)
-        # already resolve session_id via _resolve_session_context() before
-        # reaching this helper, so this is defensive: there is no
-        # session_name/project_name/project_path here to derive a scope
-        # from, so a missing session_id can only be rejected, not resolved
-        # ambiently. Issue #77: replaces the latent
-        # `_get_or_create_current_session_id()` ambient fallback that used
-        # to sit here.
-        if not session_id:
-            raise SessionContextRequiredError(
-                "_create_notebook_impl requires a resolved session_id; "
-                "callers must resolve session_id via _resolve_session_context "
-                "before calling (no ambient session fallback is available here)."
-            )
-
-        # Load from the database when this process never cached the session
-        # (issue #103); None here means it truly does not exist.
-        session = await self._hydrate_session(session_id)
-        if session is None:
-            return NotebookResult(
-                session_id=session_id,
-                status="error",
-                message="No session found to create notebook for",
-            )
-
-        # Merge decisions from database if available
-        if self.database:
-            try:
-                db_decisions_list = await self.database.query_decisions_by_session(
-                    session_id,
-                    limit=max_decisions if max_decisions is not None else 100,
-                    exclude_superseded=exclude_superseded,
-                    since_days=since_days,
-                )
-                # _hydrate_session loads the full, unfiltered decision
-                # history (issue #103), so a cached/hydrated session still
-                # carries rows this exclude_superseded query has since
-                # dropped. Prune those out here rather than only adding
-                # missing ones, or the exclude_superseded flag has no
-                # effect on an already-hydrated session (issue #106).
-                keep_ids = {
-                    (db_dec.get("id") or db_dec.get("decision_id")) for db_dec in db_decisions_list
-                }
-                # `session` may be the exact object cached in
-                # self.session_cache (see _hydrate_session's cache-hit
-                # path), so rebinding .decisions in place would
-                # permanently strip superseded decisions from every other
-                # caller sharing that cached session (issue #106 follow-up).
-                # Shallow-copy first so the rebind below lands on a
-                # per-call object instead.
-                session = copy.copy(session)
-                session.decisions = [d for d in session.decisions if d.decision_id in keep_ids]
-                existing_ids = {d.decision_id for d in session.decisions}
-                for db_dec in db_decisions_list:
-                    dec_id = db_dec.get("id") or db_dec.get("decision_id")
-                    if dec_id and dec_id not in existing_ids:
-                        session.decisions.append(self._decision_from_row(db_dec, session_id))
-            except Exception as e:
-                debug_logger.error(f"Error merging DB decisions: {e}")
-
-        # Calculate duration
-        end_time = session.completed or datetime.now(UTC)
-        duration_minutes = (end_time - session.started).total_seconds() / 60
-
-        # Generate title if not provided
-        if not title:
-            title = (
-                f"Session: {session.project_name} - {session.started.strftime('%Y-%m-%d %H:%M')}"
-            )
-
-        # Build notebook sections
-        sections: list[NotebookSection] = []
-
-        # Overview section
-        overview_content = self._generate_overview_section(session, duration_minutes)
-        sections.append(NotebookSection(heading="Overview", content=overview_content, level=2))
-
-        # Work Completed section (file operations)
-        files_content, files_changed = self._generate_files_section(session)
-        if files_content:
-            sections.append(
-                NotebookSection(heading="Work Completed", content=files_content, level=2)
-            )
-
-        # Agents section
-        agents_used: list[str] = []
-        if include_agents and session.agents_executed:
-            agents_content, agents_used = self._generate_agents_section(session)
-            sections.append(
-                NotebookSection(heading="Agents Executed", content=agents_content, level=2)
-            )
-
-        # Decisions section
-        decisions_made: list[str] = []
-        if include_decisions and session.decisions:
-            decisions_content, decisions_made = self._generate_decisions_section(session)
-            sections.append(
-                NotebookSection(heading="Decisions Made", content=decisions_content, level=2)
-            )
-
-        # Metrics section
-        if include_metrics:
-            metrics_content = self._generate_metrics_section(session)
-            sections.append(
-                NotebookSection(
-                    heading="Performance Metrics",
-                    content=metrics_content,
-                    level=2,
-                )
-            )
-
-        # Learnings section (from database)
-        learnings_content = self._generate_learnings_section(session.project_path)
-        if learnings_content:
-            sections.append(
-                NotebookSection(
-                    heading="Project Learnings",
-                    content=learnings_content,
-                    level=2,
-                )
-            )
-
-        # Gather key file changes from agent executions and file operations
-        key_changes = self._extract_key_changes(session)
-        # Merge with files from file_operations tracking
-        key_changes = list(set(key_changes) | set(files_changed))[:20]
-
-        # Auto-generate tags if not provided
-        if tags is None:
-            tags = self._auto_generate_tags(session, agents_used, key_changes)
-
-        # Generate summary markdown
-        render_sections = (
-            include_derived_sections if include_derived_sections is not None else body is None
-        )
-        summary_markdown = self._generate_summary_markdown(
-            title,
-            sections,
-            session,
-            duration_minutes,
-            body=body,
-            render_sections=render_sections,
-        )
-
-        # Create notebook object
-        notebook = SessionNotebook(
-            session_id=session_id,
-            title=title,
-            created_at=datetime.now().isoformat(),
-            project_name=session.project_name,
-            project_path=session.project_path,
-            duration_minutes=round(duration_minutes, 2),
-            sections=sections,
-            summary_markdown=summary_markdown,
-            authored_body=body,
-            key_changes=key_changes,
-            agents_used=agents_used,
-            decisions_made=decisions_made,
-            tags=tags,
-        )
-
-        # Save to file if requested
-        file_path = None
-        if save_to_file and self.use_filesystem:
-            file_path = self._save_notebook_to_file(session_id, notebook)
-
-        # Save to database if requested (for search indexing)
-        search_indexed = False
-        if save_to_database and self.database:
-            # This would be async in the HTTP server context
-            # For now, just mark as not indexed
-            search_indexed = False
-            debug_logger.info("Database persistence requires async context")
-
-        return NotebookResult(
-            session_id=session_id,
-            status="success",
-            notebook=notebook,
-            markdown_output=summary_markdown,
-            file_path=file_path,
-            search_indexed=search_indexed,
-            message=(f"Notebook created successfully with {len(sections)} sections"),
-        )
 
     def _generate_overview_section(self, session: Session, duration_minutes: float) -> str:
         """Generate the overview section content."""
@@ -2873,29 +2614,6 @@ class SessionIntelligenceEngine:
 | Efficiency Score | {metrics.efficiency_score:.1f}% |
 """.strip()
 
-    def _generate_files_section(self, session: Session) -> tuple[str | None, list[str]]:
-        """
-        Generate files section from database.
-
-        Queries file operations for the session and formats as markdown
-        table. Returns tuple of (markdown_content, list_of_changed_files).
-        Returns (None, []) if no database or no file operations found.
-        """
-        changed_files: list[str] = []
-
-        if not self.database:
-            return None, changed_files
-
-        # We need async context to query, return placeholder for sync
-        try:
-            import asyncio
-
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return None, changed_files
-
-        return None, changed_files
-
     async def _generate_files_section_async(self, session_id: str) -> tuple[str | None, list[str]]:
         """Async version: Generate files section from database."""
         changed_files: list[str] = []
@@ -2937,29 +2655,6 @@ class SessionIntelligenceEngine:
             return None, changed_files
 
         return "\n".join(lines), changed_files
-
-    def _generate_learnings_section(self, project_path: str) -> str | None:
-        """
-        Generate learnings section from database.
-
-        Queries project-specific learnings and formats as markdown.
-        Returns None if no database or no learnings found.
-        """
-        if not self.database:
-            return None
-
-        # We need async context to query, so return placeholder
-        # The actual query happens in async context of HTTP server
-        try:
-            import asyncio
-
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return None  # No event loop - skip learnings in sync context
-
-        # Return a placeholder that will be populated async
-        # For sync context, we return None and let HTTP server handle it
-        return None
 
     async def _generate_learnings_section_async(
         self,
@@ -3208,6 +2903,7 @@ class SessionIntelligenceEngine:
         project_name: str | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
+        summary_only: bool = True,
     ) -> list[dict[str, Any]]:
         """
         Query session notebooks/summaries with optional filters.
@@ -3225,6 +2921,12 @@ class SessionIntelligenceEngine:
                 session_recall) and is the preferred filter.
             tags: Filter by tags
             limit: Maximum results to return
+            summary_only: When True (default), project each row down to
+                only session_id, title, tags, created_at, and project_name
+                (omitting any of those keys absent from the row). Full rows
+                carry summary_markdown + authored_body + key_changes and
+                overflow client tool-result caps at the default limit
+                (issue #126). Set False to get full rows as before.
 
         Returns:
             List of session notebook summaries. If project_path is supplied
@@ -3282,6 +2984,16 @@ class SessionIntelligenceEngine:
                     if key in result and hasattr(result[key], "isoformat"):
                         result[key] = result[key].isoformat()
 
+            # Project down to a lightweight summary by default (issue #126):
+            # full rows carry summary_markdown + authored_body + key_changes
+            # and overflow client tool-result caps at the default limit.
+            if summary_only:
+                summary_keys = ("session_id", "title", "tags", "created_at", "project_name")
+                results = [
+                    {key: result[key] for key in summary_keys if key in result}
+                    for result in results
+                ]
+
             debug_logger.info(f"session_query_notebooks returned {len(results)} results")
             return results
 
@@ -3319,13 +3031,26 @@ class SessionIntelligenceEngine:
         """
         try:
             if session_id is None:
-                resolved = await self._resolve_session_context(
-                    session_id=None,
-                    session_name=session_name,
-                    project_name=project_name,
-                    allow_unbound=allow_unbound,
-                )
-                session_id = resolved.session_id
+                # This updates an EXISTING notebook, so project_name must
+                # resolve to the newest session that OWNS a notebook, not
+                # merely the newest active session -- _resolve_session_context
+                # below picks the latter and can point at a session with no
+                # notebook at all (issue #127 resolution half).
+                if project_name is not None and session_name is None and self.database is not None:
+                    rows = await self.database.query_session_summaries(
+                        project_name=project_name, limit=1
+                    )
+                    if rows:
+                        session_id = rows[0]["session_id"]
+
+                if session_id is None:
+                    resolved = await self._resolve_session_context(
+                        session_id=None,
+                        session_name=session_name,
+                        project_name=project_name,
+                        allow_unbound=allow_unbound,
+                    )
+                    session_id = resolved.session_id
 
             if self.database is None:
                 return {"status": "error", "message": "No database configured"}
@@ -3341,12 +3066,28 @@ class SessionIntelligenceEngine:
             )
 
             if not updated:
+                message = "No notebook exists for this session; call session_create_notebook first"
+                # When project_name was supplied, name up to 5 candidate
+                # sessions that DO have notebooks so the caller can retry
+                # with an explicit session_id (issue #127).
+                if project_name is not None:
+                    candidates = await self.database.query_session_summaries(
+                        project_name=project_name, limit=5
+                    )
+                    candidate_ids = [
+                        row["session_id"] for row in candidates if row.get("session_id")
+                    ]
+                    if candidate_ids:
+                        message = (
+                            f"No notebook exists for session {session_id!r}; sessions with "
+                            f"notebooks for project {project_name!r}: {candidate_ids}. Pass "
+                            "one of these explicitly via session_id, or call "
+                            "session_create_notebook first."
+                        )
                 return {
                     "status": "error",
                     "session_id": session_id,
-                    "message": (
-                        "No notebook exists for this session; call session_create_notebook first"
-                    ),
+                    "message": message,
                 }
 
             updated_fields = [

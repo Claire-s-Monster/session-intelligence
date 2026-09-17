@@ -96,6 +96,11 @@ UNKNOWN_PROJECT_PATH = "_unknown_"
 AGENT_EXECUTION_PAGE_SIZE = 200
 AGENT_EXECUTION_MAX_PAGES = 100
 
+# Issue #108: internal hook-driven pseudo-agents that never report a real
+# `agent_type`. Sessions tracked under these names are resolved to
+# agent_type "internal" instead of persisting "unknown".
+INTERNAL_AGENT_NAMES = frozenset({"task-manager", "bash-executor"})
+
 
 def _json_or_default(value: Any, default: Any) -> Any:
     """Decode a column that may arrive as JSON text or already parsed.
@@ -112,6 +117,38 @@ def _json_or_default(value: Any, default: Any) -> Any:
         except (json.JSONDecodeError, TypeError):
             return default
     return value
+
+
+def _describe_step(step_data: dict[str, Any]) -> str:
+    """Derive a short human-readable description from raw hook fields.
+
+    Issue #108: hooks never send an explicit `description`; they send
+    `phase` plus fields like `command`/`command_base`, `task_subject`/
+    `task_description`, `task_id`/`new_status`, and `tools_used`/
+    `tool_count`. This picks the most informative one available.
+    """
+    command = step_data.get("command") or step_data.get("command_base")
+    if command:
+        return str(command)
+
+    task_subject = step_data.get("task_subject")
+    if task_subject:
+        task_description = step_data.get("task_description")
+        if task_description:
+            return f"{task_subject}: {task_description}"
+        return str(task_subject)
+
+    task_id = step_data.get("task_id")
+    new_status = step_data.get("new_status")
+    if task_id and new_status:
+        return f"task {task_id} -> {new_status}"
+
+    tools_used = step_data.get("tools_used")
+    if tools_used:
+        tool_count = step_data.get("tool_count", len(tools_used))
+        return f"{tool_count} tools: {', '.join(tools_used)}"
+
+    return ""
 
 
 def safe_parse_datetime(value: Any) -> datetime | None:
@@ -1175,6 +1212,38 @@ class SessionIntelligenceEngine:
                 optimizations=[],
             )
 
+        # Issue #108: Claude Code's background-task progress summarizer
+        # fires a typeless SubagentStop (phase="agent_stop", agent_type=""
+        # or "unknown") roughly every 32s with no matching SubagentStart.
+        # These are not real agents -- ignore them outright, before the
+        # session auto-create block below, so they never spawn a session,
+        # bump a heartbeat, or create a step/execution. A stop reporting a
+        # real agent_type, or one whose start WAS observed (cached
+        # agent_type or a RUNNING execution already tracked), is still
+        # recorded exactly as before.
+        supplied_agent_type = step_data.get("agent_type") or "unknown"
+        if step_data.get("phase") == "agent_stop" and supplied_agent_type == "unknown":
+            if agent_name not in self._agent_type_cache:
+                cached_session = self.session_cache.get(session_id)
+                has_running_execution = cached_session is not None and any(
+                    agent_exec.agent_name == agent_name
+                    and agent_exec.status == ExecutionStatus.RUNNING
+                    for agent_exec in cached_session.agents_executed
+                )
+                if not has_running_execution:
+                    debug_logger.info(
+                        f"Ignoring typeless agent_stop with no prior start for "
+                        f"agent_name={agent_name!r} (issue #108)"
+                    )
+                    return ExecutionTrackingResult(
+                        step_id="ignored",
+                        session_id=session_id,
+                        agent_name=agent_name,
+                        status="ignored-no-start",
+                        patterns_detected=[],
+                        optimizations=[],
+                    )
+
         if session_id not in self.session_cache:
             debug_logger.info(
                 f"session_id {session_id} not in cache; auto-creating and "
@@ -1233,12 +1302,18 @@ class SessionIntelligenceEngine:
         )
         completed_at = datetime.now(UTC) if is_agent_stop else None
 
+        # Issue #108: hooks never send `operation`/`description`; they send
+        # `phase` plus raw fields (`command`/`command_base`, `task_subject`,
+        # `tools_used`, ...). Prefer explicit values, then derive.
+        operation = step_data.get("operation") or step_data.get("phase") or "unknown"
+        description = step_data.get("description") or _describe_step(step_data)
+
         execution_step = ExecutionStep(
             step_id=step_id,
             step_number=len(session.agents_executed) + 1,
             agent=agent_name,
-            operation=step_data.get("operation", "unknown"),
-            description=step_data.get("description", ""),
+            operation=operation,
+            description=description,
             tools_used=step_data.get("tools_used", []),
             started=datetime.now(UTC),
             completed=completed_at,
@@ -1268,6 +1343,11 @@ class SessionIntelligenceEngine:
         if raw_agent_type and raw_agent_type != "unknown":
             resolved_agent_type = raw_agent_type
             self._agent_type_cache[agent_name] = raw_agent_type
+        elif agent_name in INTERNAL_AGENT_NAMES:
+            # Issue #108: task-manager/bash-executor are internal
+            # hook-driven pseudo-agents that never report a real
+            # agent_type; label them distinctly instead of "unknown".
+            resolved_agent_type = self._agent_type_cache.get(agent_name, "internal")
         else:
             resolved_agent_type = self._agent_type_cache.get(
                 agent_name, raw_agent_type or "unknown"

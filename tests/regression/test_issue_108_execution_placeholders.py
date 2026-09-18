@@ -282,3 +282,57 @@ async def test_typeless_stop_after_cache_clear_still_terminates_running_executio
     execution = next(a for a in session.agents_executed if a.agent_name == "restart-agent")
     assert execution.status == ExecutionStatus.SUCCESS
     assert execution.completed is not None
+
+
+# ---------------------------------------------------------------------------
+# Issue #115 (cause 3): commands_executed/duration_ms never populated
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.regression
+async def test_commands_executed_and_duration_ms_are_populated_from_step_data(engine):
+    """`commands_executed`/`duration_ms` in step_data must populate the
+    ExecutionStep fields of the same name, not be silently dropped."""
+    result = await engine.session_track_execution(
+        session_id=None,
+        agent_name="metrics-agent",
+        step_data={
+            "phase": "command_success",
+            "commands_executed": ["pytest tests/", "ruff check ."],
+            "duration_ms": 4200,
+        },
+        allow_unbound=True,
+    )
+    assert result.status == "success"
+
+    session = engine.session_cache[result.session_id]
+    agent_execution = next(a for a in session.agents_executed if a.agent_name == "metrics-agent")
+    last_step = agent_execution.execution_steps[-1]
+
+    assert [c.command for c in last_step.commands_executed] == [
+        "pytest tests/",
+        "ruff check .",
+    ]
+    assert last_step.duration_ms == 4200
+
+
+@pytest.mark.regression
+async def test_singular_command_becomes_one_element_commands_executed_list(engine):
+    """The hook's documented singular `command` field must be normalized
+    into a one-element `commands_executed` list, absent the plural key."""
+    result = await engine.session_track_execution(
+        session_id=None,
+        agent_name="single-command-agent",
+        step_data={"phase": "start", "command": "pytest"},
+        allow_unbound=True,
+    )
+    assert result.status == "success"
+
+    session = engine.session_cache[result.session_id]
+    agent_execution = next(
+        a for a in session.agents_executed if a.agent_name == "single-command-agent"
+    )
+    last_step = agent_execution.execution_steps[-1]
+
+    assert len(last_step.commands_executed) == 1
+    assert last_step.commands_executed[0].command == "pytest"

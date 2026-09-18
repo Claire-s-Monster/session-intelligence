@@ -34,6 +34,7 @@ from models.session_models import (
     AgentRegistrationResult,
     AnalysisScope,
     CommandAnalysisResult,
+    CommandExecution,
     CoordinationResult,
     DashboardResult,
     DashboardType,
@@ -149,6 +150,31 @@ def _describe_step(step_data: dict[str, Any]) -> str:
         return f"{tool_count} tools: {', '.join(tools_used)}"
 
     return ""
+
+
+def _build_commands_executed(
+    step_data: dict[str, Any], started_at: datetime
+) -> list[CommandExecution]:
+    """Normalize hook-reported commands into `CommandExecution` records.
+
+    Issue #115: hooks report a singular `command` string (see the
+    `session_track_execution` example in lean_mcp_interface.py), not the
+    plural `commands_executed` the model expects. Accept both, preferring
+    the plural form when present; entries may be bare strings or dicts of
+    `CommandExecution` fields.
+    """
+    raw_commands = step_data.get("commands_executed")
+    if not raw_commands:
+        single_command = step_data.get("command")
+        raw_commands = [single_command] if single_command else []
+
+    commands_executed = []
+    for raw_command in raw_commands:
+        if isinstance(raw_command, str):
+            commands_executed.append(CommandExecution(command=raw_command, started=started_at))
+        else:
+            commands_executed.append(CommandExecution(**{"started": started_at, **raw_command}))
+    return commands_executed
 
 
 def safe_parse_datetime(value: Any) -> datetime | None:
@@ -1308,6 +1334,18 @@ class SessionIntelligenceEngine:
         operation = step_data.get("operation") or step_data.get("phase") or "unknown"
         description = step_data.get("description") or _describe_step(step_data)
 
+        started_at = datetime.now(UTC)
+
+        # Issue #115: hooks report a singular `command` string, and neither
+        # `commands_executed` nor `duration_ms` was ever read from step_data --
+        # so the notebook's derived "Commands Executed" row was always 0 and no
+        # step duration was recorded. Source both here. This does NOT affect
+        # session_agent_stats' avg_duration_ms: that reads the separate
+        # AgentExecution.performance blob (see get_agent_stats in the
+        # persistence layer), which nothing populates.
+        commands_executed = _build_commands_executed(step_data, started_at)
+        duration_ms = step_data.get("duration_ms", 0)
+
         execution_step = ExecutionStep(
             step_id=step_id,
             step_number=len(session.agents_executed) + 1,
@@ -1315,8 +1353,10 @@ class SessionIntelligenceEngine:
             operation=operation,
             description=description,
             tools_used=step_data.get("tools_used", []),
-            started=datetime.now(UTC),
+            commands_executed=commands_executed,
+            started=started_at,
             completed=completed_at,
+            duration_ms=duration_ms,
             status=terminal_status if is_agent_stop else ExecutionStatus.RUNNING,
         )
         debug_logger.info(f"Created execution_step: {execution_step}")

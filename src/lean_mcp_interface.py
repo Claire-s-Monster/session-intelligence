@@ -101,7 +101,12 @@ class LeanMCPInterface:
                         "description": (
                             "Explicit session to resume/finalize/validate. "
                             "Required (with session_name/project_name as alternatives) "
-                            "for operations other than 'create'."
+                            "for operations other than 'create'. For 'create', this is "
+                            "optional and binds the new session to an externally-supplied "
+                            "id (e.g. Claude Code's native session UUID) instead of "
+                            "minting one; if a session already exists under that id, it "
+                            "is adopted (its existing data is preserved) rather than "
+                            "replaced."
                         ),
                     },
                     "session_name": {

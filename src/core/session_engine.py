@@ -629,8 +629,11 @@ class SessionIntelligenceEngine:
         The resume/finalize/validate operations require at least one of
         session_id, session_name, or project_name (derived from project_path
         as a last resort). Pass allow_unbound=True to opt into the legacy
-        ambient-session fallback (deprecated). The create operation is
-        unaffected -- project_name/project_path remain optional there.
+        ambient-session fallback (deprecated). project_name/project_path
+        remain optional for create. If create is given a session_id, that id
+        is used verbatim (e.g. to bind to Claude Code's native session UUID)
+        instead of minting a new one; if a session already exists under that
+        id, it is adopted idempotently rather than replaced (issue #115).
         """
         try:
             return await self._manage_lifecycle_impl(
@@ -683,7 +686,41 @@ class SessionIntelligenceEngine:
                 # caller's, so only an absolute path is recorded (issue #72).
                 if Path(project_path).is_absolute():
                     create_metadata["project_path"] = project_path
-            result = self._create_session(mode, project_name, create_metadata, session_name=None)
+
+            # Issue #115 (cause 1): `create` used to always mint a fresh
+            # `session-<ts>-<hex>` id, while SubagentStop/SubagentStart hooks
+            # call session_track_execution(session_id=<native Claude Code
+            # session UUID>), which _track_execution_sync auto-creates under
+            # that literal UUID (issue #33). The two id-spaces could never
+            # meet, so a caller-supplied session_id here must be honored
+            # verbatim instead of discarded, AND if the hooks already created
+            # (and populated) that row, `create` must adopt it idempotently
+            # rather than clobbering it with a blank session. This process's
+            # session_cache may not hold that row at all -- e.g. after a
+            # `systemctl --user restart` the cache is empty but the row (and
+            # its agent_executions) persist in the database -- so adoption
+            # reuses `_hydrate_session`, the same cache-miss-falls-back-to-DB
+            # recovery path `_hydrate_session`'s own callers rely on
+            # (issue #103), rather than a shallow `Session.model_validate`
+            # that would silently drop agents_executed/decisions.
+            if session_id:
+                existing = await self._hydrate_session(session_id)
+
+                if existing is not None:
+                    self._current_session_id = session_id
+                    self._current_session_set_in_process = True
+                    return SessionResult(
+                        session_id=session_id,
+                        operation="create",
+                        status="success",
+                        message=f"Session {session_id} already exists; adopted existing session",
+                        session_data=existing,
+                        next_steps=["Initialize agent tracking", "Set up workflow state"],
+                    )
+
+            result = self._create_session(
+                mode, project_name, create_metadata, session_name=None, session_id=session_id
+            )
             # Persist session to DB so FK references work
             if result.status == "success" and self.database:
                 try:

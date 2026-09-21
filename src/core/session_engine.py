@@ -1030,6 +1030,12 @@ class SessionIntelligenceEngine:
                         f"{agent_exec.execution_id}: {e}"
                     )
 
+        # Issue #115: recompute after the RUNNING->ABANDONED reconciliation
+        # above (which changes the successful/failed split) and before the
+        # session is persisted/returned below, so both the stored row and
+        # this call's session_data carry correct counters.
+        self._recompute_derived_metrics(session)
+
         # Persist completed status to DB (issue #25 Bug 1). Without this,
         # the row stays status='active' forever and stale sessions keep
         # matching find_recent_session_by_project lookups.
@@ -1141,6 +1147,12 @@ class SessionIntelligenceEngine:
         session.health_status.files_valid = len(issues) == 0
         session.health_status.overall_score = 100.0 if not issues else 50.0
         session.health_status.issues = issues
+
+        # Issue #115: validate returns session_data=session, and decisions
+        # logged via session_log_decision since this session was last built
+        # or hydrated don't update performance_metrics themselves -- derive
+        # the counters here so this read-back path can't surface stale ones.
+        self._recompute_derived_metrics(session)
 
         status = "success" if not issues else "warning"
         message = (
@@ -1475,6 +1487,7 @@ class SessionIntelligenceEngine:
 
         # Update performance metrics
         session.performance_metrics.agents_executed = len(session.agents_executed)
+        self._recompute_derived_metrics(session)
         debug_logger.info(
             "Updated performance metrics - agents executed: "
             f"{session.performance_metrics.agents_executed}"
@@ -2294,6 +2307,53 @@ class SessionIntelligenceEngine:
             offset += len(rows)
         return executions
 
+    def _recompute_derived_metrics(self, session: Session) -> None:
+        """Derive successful_executions, failed_executions, and
+        decisions_made from session.agents_executed / session.decisions
+        (issue #115).
+
+        These three PerformanceMetrics fields have no reliable per-event
+        write site of their own -- an audit found only agents_executed and
+        total_execution_time_ms were ever assigned. Recomputing them from
+        the lists every time a Session is built, hydrated, or read back is
+        self-healing: it produces the same correct numbers whether the
+        session was freshly tracked in this process or rebuilt by
+        `_hydrate_session` from a database row after a restart, a case
+        where an increment-style counter would still read stale or zero.
+
+        `AgentExecution.status` is typed as ExecutionStatus (a StrEnum), so
+        `==` against ExecutionStatus.SUCCESS/.ERROR already matches an
+        equal-valued plain string too, whichever form is present.
+
+        NON-SUMMING BY DESIGN: successful_executions + failed_executions
+        does NOT necessarily equal agents_executed / len(agents_executed).
+        PENDING, RUNNING, and SKIPPED executions land in neither bucket, and
+        ABANDONED is deliberately excluded from failed_executions too --
+        ExecutionStatus.ABANDONED's own docstring note (issue #70) says
+        "never reported agent_stop" is distinct from ERROR ("failed"), and
+        get_agent_stats() (persistence layer) already treats them
+        identically: its query excludes status='abandoned' outright rather
+        than counting it as a failure. This is not a rare edge case in
+        production: the startup sweep (http_server.py:199-208) flips every
+        stale RUNNING execution to ABANDONED on each restart. A session
+        reading "5 successful / 0 failed / 7 agents_executed" has 2
+        executions in some state other than SUCCESS or ERROR -- abandoned,
+        still running, pending, or skipped -- not 2 that quietly succeeded
+        or were never counted; do not read the gap as "nothing failed".
+        """
+        metrics = session.performance_metrics
+        metrics.successful_executions = sum(
+            1
+            for agent_exec in session.agents_executed
+            if agent_exec.status == ExecutionStatus.SUCCESS
+        )
+        metrics.failed_executions = sum(
+            1
+            for agent_exec in session.agents_executed
+            if agent_exec.status == ExecutionStatus.ERROR
+        )
+        metrics.decisions_made = len(session.decisions)
+
     async def _hydrate_session(self, session_id: str) -> Session | None:
         """Return a Session by ID, loading it from the database when uncached.
 
@@ -2382,6 +2442,12 @@ class SessionIntelligenceEngine:
         session.agents_executed = await self._load_agent_executions(
             session_id, session.project_path
         )
+
+        # Issue #115: the stored performance_metrics blob (or its absence)
+        # predates this hydration's agents_executed/decisions load, so
+        # derive the three counters fresh from what was just loaded instead
+        # of trusting whatever was persisted.
+        self._recompute_derived_metrics(session)
 
         self.session_cache[session_id] = session
         return session

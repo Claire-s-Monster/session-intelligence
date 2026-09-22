@@ -265,6 +265,70 @@ class PersistenceContractTests:
         assert s3["id"] not in ids
 
     # ------------------------------------------------------------------
+    # find_recent_project_path (issue #151)
+    # ------------------------------------------------------------------
+
+    async def test_find_recent_project_path_no_session_returns_none(self, backend):
+        """No session at all for the project name -> None, not an error."""
+        result = await backend.find_recent_project_path("no-such-project-xyz")
+        assert result is None
+
+    async def test_find_recent_project_path_returns_absolute_path(self, backend):
+        """One usable session -> its absolute project_path is returned."""
+        project = f"project-{uuid.uuid4().hex[:8]}"
+        s = _session(project_name=project, project_path="/tmp/usable-project-path")
+        await backend.save_session(s)
+        result = await backend.find_recent_project_path(project)
+        assert result == "/tmp/usable-project-path"
+
+    async def test_find_recent_project_path_returns_most_recent(self, backend):
+        """Several usable sessions -> the one with the latest started_at wins."""
+        project = f"project-{uuid.uuid4().hex[:8]}"
+        older = _session(
+            project_name=project,
+            project_path="/tmp/older-path",
+            start_time=datetime.now(UTC) - timedelta(hours=2),
+        )
+        newer = _session(
+            project_name=project,
+            project_path="/tmp/newer-path",
+            start_time=datetime.now(UTC) - timedelta(minutes=1),
+        )
+        await backend.save_session(older)
+        await backend.save_session(newer)
+        result = await backend.find_recent_project_path(project)
+        assert result == "/tmp/newer-path"
+
+    async def test_find_recent_project_path_skips_sentinel_rows(self, backend):
+        """Core regression guard: a NEWER '_unknown_' row carries no location
+        evidence and must not shadow an OLDER usable path."""
+        project = f"project-{uuid.uuid4().hex[:8]}"
+        usable = _session(
+            project_name=project,
+            project_path="/tmp/older-usable-path",
+            start_time=datetime.now(UTC) - timedelta(hours=1),
+        )
+        sentinel = _session(
+            project_name=project,
+            project_path="_unknown_",
+            start_time=datetime.now(UTC),
+        )
+        await backend.save_session(usable)
+        await backend.save_session(sentinel)
+        result = await backend.find_recent_project_path(project)
+        assert result == "/tmp/older-usable-path"
+
+    async def test_find_recent_project_path_all_unusable_returns_none(self, backend):
+        """Only sentinel/relative rows exist for the project -> None."""
+        project = f"project-{uuid.uuid4().hex[:8]}"
+        sentinel = _session(project_name=project, project_path="_unknown_")
+        relative = _session(project_name=project, project_path="relative/path")
+        await backend.save_session(sentinel)
+        await backend.save_session(relative)
+        result = await backend.find_recent_project_path(project)
+        assert result is None
+
+    # ------------------------------------------------------------------
     # Decision CRUD
     # ------------------------------------------------------------------
 

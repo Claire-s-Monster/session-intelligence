@@ -806,6 +806,39 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 return self._normalize_session_data(self._from_record(row))
             return None
 
+    @db_retry
+    async def find_recent_project_path(self, project_name: str) -> str | None:
+        """Best-effort lookup of the most recently recorded path for a project.
+
+        Ignores sentinel/relative paths because propagating one just moves
+        the defect: a usable project_path must be absolute and not one of
+        the "_unknown_"/"_unbound_" sentinels. No status filter -- completed
+        or inactive sessions are still valid evidence of where the project
+        lives on disk.
+
+        The explicit ORDER BY is REQUIRED: an unordered LIMIT 1 is open bug
+        #118 in this repo, and would make this lookup nondeterministic.
+
+        Returns the most-recent usable project_path, or None if no session
+        for this project_name has ever recorded one.
+        """
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT project_path FROM sessions
+                WHERE project_name = $1
+                  AND project_path IS NOT NULL
+                  AND project_path NOT IN ('_unknown_', '_unbound_')
+                  AND project_path LIKE '/%'
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                project_name,
+            )
+            return row["project_path"] if row else None
+
     # Decision operations
 
     @db_retry

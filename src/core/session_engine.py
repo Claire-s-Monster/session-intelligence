@@ -319,6 +319,32 @@ class SessionIntelligenceEngine:
 
         self._agent_validator = AgentValidator()  # env-driven config, defaults to strict
 
+    async def _derive_project_path(
+        self, project_name: str | None, caller_path: str | None
+    ) -> str | None:
+        """Best-effort project_path for a session this call is about to create.
+
+        A caller-supplied absolute path always wins. Failing that, fall back to the
+        most recent session recorded for the same project_name: that is the same
+        evidence project-filtered recall matches against, so deriving it keeps the
+        written row recallable instead of stranding it behind the "_unknown_"
+        sentinel (issue #151). It is an inference, not a fact -- a project can move
+        on disk -- but the alternative in that window is a row that is unrecallable
+        unconditionally.
+        """
+        if caller_path is not None:
+            return caller_path
+        if not project_name or not self.database:
+            return None
+        try:
+            derived = await self.database.find_recent_project_path(project_name)
+        except Exception as e:
+            debug_logger.error(f"Error deriving project_path for {project_name!r}: {e}")
+            return None
+        if derived and derived != UNKNOWN_PROJECT_PATH and Path(derived).is_absolute():
+            return derived
+        return None
+
     async def _resolve_session_context(
         self,
         session_id: str | None = None,
@@ -402,7 +428,12 @@ class SessionIntelligenceEngine:
             result = self._create_session(
                 mode="explicit",
                 project_name=project_name or "_unbound_",
-                metadata={"session_name": session_name, "project_path": safe_project_path},
+                metadata={
+                    "session_name": session_name,
+                    "project_path": await self._derive_project_path(
+                        project_name, safe_project_path
+                    ),
+                },
                 session_name=session_name,
             )
             # Persist session to DB so FK references work: _create_session only
@@ -439,7 +470,9 @@ class SessionIntelligenceEngine:
             result = self._create_session(
                 mode="explicit",
                 project_name=project_name,
-                metadata={"project_path": safe_project_path},
+                metadata={
+                    "project_path": await self._derive_project_path(project_name, safe_project_path)
+                },
             )
             # Persist session to DB so FK references work: _create_session only
             # writes session_cache/filesystem, never the sessions row that

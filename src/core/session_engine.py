@@ -20,6 +20,7 @@ from core.agent_validator import AgentValidator
 from core.debug_logging import configure_debug_logger
 from core.project_naming import UNBOUND, derive_project_name
 from models.session_models import (
+    UNKNOWN_PROJECT_PATH,
     Agent,
     AgentContext,
     AgentDecision,
@@ -81,12 +82,12 @@ debug_logger = configure_debug_logger(
     "session_intelligence_engine_debug", "%(asctime)s [ENGINE-DEBUG] %(message)s"
 )
 
-# Sentinel for "the caller did not tell us where they were working".
-# Never fall back to the server's own cwd: this process runs from the
-# systemd/pixi launch dir, so recording it silently misattributes the row
-# to wherever the daemon lives rather than to the caller's project.
+# UNKNOWN_PROJECT_PATH is imported above from models.session_models (its
+# canonical home as of issue #154, since models cannot import back from this
+# module). Never fall back to the server's own cwd: this process runs from
+# the systemd/pixi launch dir, so recording it silently misattributes the
+# row to wherever the daemon lives rather than to the caller's project.
 # Parallels the existing "_unbound_" sentinel used for project_name.
-UNKNOWN_PROJECT_PATH = "_unknown_"
 
 # query_agent_executions() is paginated. Loading only the first page would be
 # actively harmful here, not merely incomplete: session_engine recomputes

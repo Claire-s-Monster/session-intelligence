@@ -9,7 +9,15 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
+
+# Sentinel for "the caller did not tell us where they were working".
+# Canonical home (issue #154): this module cannot import from
+# core.session_engine (session_engine imports models.session_models), so the
+# definition lives here and core.session_engine re-exports it by importing
+# from this module, keeping `from core.session_engine import
+# UNKNOWN_PROJECT_PATH` working for existing importers.
+UNKNOWN_PROJECT_PATH = "_unknown_"
 
 # ===== ENUMS =====
 
@@ -483,6 +491,21 @@ class SessionResult(BaseModel):
     recovery_options: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def project_path_derived(self) -> bool:
+        """False iff session_data.project_path is the UNKNOWN_PROJECT_PATH
+        sentinel (issue #154): such a row is not project-recallable (#120
+        matches project_path exactly). True means "not known to be a
+        sentinel", not "definitely verified" -- it is also True when
+        session_data is absent (e.g. a non-create operation), since there is
+        no stored path to be a sentinel. Computed from the nested row rather
+        than hand-set so a write path can never silently disagree with the
+        data it describes."""
+        if self.session_data is None:
+            return True
+        return self.session_data.project_path != UNKNOWN_PROJECT_PATH
+
 
 class ExecutionTrackingResult(BaseModel):
     """Result from execution tracking."""
@@ -643,6 +666,20 @@ class NotebookResult(BaseModel):
     search_indexed: bool = False
     message: str = ""
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def project_path_derived(self) -> bool:
+        """False iff notebook.project_path is the UNKNOWN_PROJECT_PATH
+        sentinel (issue #154): such a row is not project-recallable (#120
+        matches project_path exactly). True means "not known to be a
+        sentinel", not "definitely verified" -- it is also True when
+        notebook is absent, since there is no stored path to be a sentinel.
+        Computed from the nested row rather than hand-set so a write path
+        can never silently disagree with the data it describes."""
+        if self.notebook is None:
+            return True
+        return self.notebook.project_path != UNKNOWN_PROJECT_PATH
+
 
 class SearchResult(BaseModel):
     """Result from session search."""
@@ -712,6 +749,20 @@ class LearningResult(BaseModel):
     status: str
     message: str = ""
     learning: ProjectLearning | None = None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def project_path_derived(self) -> bool:
+        """False iff learning.project_path is the UNKNOWN_PROJECT_PATH
+        sentinel (issue #154): such a row is not project-recallable (#120
+        matches project_path exactly). True means "not known to be a
+        sentinel", not "definitely verified" -- it is also True when
+        learning is absent, since there is no stored path to be a sentinel.
+        Computed from the nested row rather than hand-set so a write path
+        can never silently disagree with the data it describes."""
+        if self.learning is None:
+            return True
+        return self.learning.project_path != UNKNOWN_PROJECT_PATH
 
 
 class LearningsQueryResult(BaseModel):

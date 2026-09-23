@@ -103,6 +103,21 @@ AGENT_EXECUTION_MAX_PAGES = 100
 INTERNAL_AGENT_NAMES = frozenset({"task-manager", "bash-executor"})
 
 
+def _usable_project_path(candidate: str | None) -> str | None:
+    """Return a caller-supplied project_path only if it is trustworthy here.
+
+    A RELATIVE path resolves against the SERVER's cwd, not the caller's, so it
+    names a location that means nothing on this side and produces a row that
+    looks like a real path but is unrecallable (issue #153). The "_unknown_"
+    sentinel is likewise not a caller fact. Either way, return None so the
+    caller falls through to the resolver-derived value, keeping the written
+    row consistent with its session row.
+    """
+    if candidate and candidate != UNKNOWN_PROJECT_PATH and Path(candidate).is_absolute():
+        return candidate
+    return None
+
+
 def _json_or_default(value: Any, default: Any) -> Any:
     """Decode a column that may arrive as JSON text or already parsed.
 
@@ -3535,9 +3550,11 @@ class SessionIntelligenceEngine:
             resolved_ctx.project_name if resolved_ctx else None
         )
 
-        # project_path: caller-supplied wins, then resolved session, then the _unknown_ sentinel.
+        # project_path: caller-supplied wins only when absolute (issue #153;
+        # a relative path resolves against the server's cwd, not the
+        # caller's), then resolved session, then the _unknown_ sentinel.
         effective_project = (
-            project_path
+            _usable_project_path(project_path)
             or (resolved_ctx.project_path if resolved_ctx else None)
             or UNKNOWN_PROJECT_PATH
         )

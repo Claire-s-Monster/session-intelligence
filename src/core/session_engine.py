@@ -2158,7 +2158,10 @@ class SessionIntelligenceEngine:
                 "session_age_minutes": ((datetime.now(UTC) - session.started).total_seconds() / 60),
                 "agents_count": len(session.agents_executed),
                 "decisions_count": len(session.decisions),
-                "performance_score": (session.performance_metrics.efficiency_score),
+                # None means no terminal (success/failed) execution has
+                # been recorded yet -- surface that explicitly rather than
+                # coercing to 0.0, which would assert "0% efficient".
+                "performance_score": session.performance_metrics.efficiency_score,
             }
 
         return SessionHealthResult(
@@ -2357,11 +2360,11 @@ class SessionIntelligenceEngine:
         return executions
 
     def _recompute_derived_metrics(self, session: Session) -> None:
-        """Derive successful_executions, failed_executions, and
-        decisions_made from session.agents_executed / session.decisions
-        (issue #115).
+        """Derive successful_executions, failed_executions, decisions_made,
+        commands_executed, average_execution_time_ms, and efficiency_score
+        from session.agents_executed / session.decisions (issue #115).
 
-        These three PerformanceMetrics fields have no reliable per-event
+        These six PerformanceMetrics fields have no reliable per-event
         write site of their own -- an audit found only agents_executed and
         total_execution_time_ms were ever assigned. Recomputing them from
         the lists every time a Session is built, hydrated, or read back is
@@ -2369,6 +2372,9 @@ class SessionIntelligenceEngine:
         session was freshly tracked in this process or rebuilt by
         `_hydrate_session` from a database row after a restart, a case
         where an increment-style counter would still read stale or zero.
+        DERIVE, DON'T INCREMENT: never add a running counter for any of
+        these -- always recompute from the source lists so a rebuilt
+        session matches a freshly-tracked one exactly.
 
         `AgentExecution.status` is typed as ExecutionStatus (a StrEnum), so
         `==` against ExecutionStatus.SUCCESS/.ERROR already matches an
@@ -2389,6 +2395,25 @@ class SessionIntelligenceEngine:
         executions in some state other than SUCCESS or ERROR -- abandoned,
         still running, pending, or skipped -- not 2 that quietly succeeded
         or were never counted; do not read the gap as "nothing failed".
+
+        efficiency_score is the success rate over the SAME terminal-only
+        denominator (successful + failed), not over agents_executed, for
+        the identical reason: widening it to include PENDING/RUNNING/
+        SKIPPED/ABANDONED would silently punish or reward a session for
+        states that are not outcomes. It is None (not 0.0) when no
+        terminal execution has been recorded yet, so an unmeasured session
+        cannot be misread as "0% efficient".
+
+        average_execution_time_ms is the mean WALL-CLOCK duration of
+        agent executions, computed from AgentExecution.started/.completed,
+        deliberately NOT from summing ExecutionStep.duration_ms.
+        duration_ms is populated from hook step_data via
+        `.get("duration_ms", 0)` and is 0 for most real steps in
+        production, since most hooks never send it; summing it would
+        reproduce the exact confident-zero bug issue #115 reports, just
+        moved to a different field. It is None when no agent execution
+        has completed yet, for the same "unmeasured, not zero" reason as
+        efficiency_score.
         """
         metrics = session.performance_metrics
         metrics.successful_executions = sum(
@@ -2402,6 +2427,25 @@ class SessionIntelligenceEngine:
             if agent_exec.status == ExecutionStatus.ERROR
         )
         metrics.decisions_made = len(session.decisions)
+        metrics.commands_executed = sum(
+            len(step.commands_executed)
+            for agent_exec in session.agents_executed
+            for step in agent_exec.execution_steps
+        )
+
+        durations_ms = [
+            (agent_exec.completed - agent_exec.started).total_seconds() * 1000
+            for agent_exec in session.agents_executed
+            if agent_exec.completed is not None
+        ]
+        metrics.average_execution_time_ms = (
+            sum(durations_ms) / len(durations_ms) if durations_ms else None
+        )
+
+        terminal = metrics.successful_executions + metrics.failed_executions
+        metrics.efficiency_score = (
+            metrics.successful_executions / terminal * 100.0 if terminal else None
+        )
 
     async def _hydrate_session(self, session_id: str) -> Session | None:
         """Return a Session by ID, loading it from the database when uncached.
@@ -2874,16 +2918,29 @@ class SessionIntelligenceEngine:
             for step in agent.execution_steps
         )
 
+        # Unmeasured ("n/a") is distinct from measured-as-zero -- an
+        # unfinalized session has never recorded a wall-clock time, and a
+        # session with no terminal executions has never recorded a success
+        # rate, so both must render as "n/a" rather than a confident 0.
+        total_time_display = (
+            "n/a"
+            if not metrics.total_execution_time_ms
+            else f"{metrics.total_execution_time_ms / 1000:.1f}s"
+        )
+        efficiency_display = (
+            "n/a" if metrics.efficiency_score is None else f"{metrics.efficiency_score:.1f}%"
+        )
+
         return f"""
 | Metric | Value |
 |--------|-------|
-| Total Execution Time | {metrics.total_execution_time_ms / 1000:.1f}s |
+| Total Execution Time | {total_time_display} |
 | Agents Executed | {len(session.agents_executed)} |
 | Successful Executions | {successful} |
 | Failed Executions | {failed} |
 | Commands Executed | {commands} |
 | Decisions Made | {len(session.decisions)} |
-| Efficiency Score | {metrics.efficiency_score:.1f}% |
+| Efficiency Score | {efficiency_display} |
 """.strip()
 
     async def _generate_files_section_async(self, session_id: str) -> tuple[str | None, list[str]]:

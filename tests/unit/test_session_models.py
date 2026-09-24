@@ -127,8 +127,8 @@ class TestCoreModels:
         assert metrics.agents_executed == 0
         assert metrics.successful_executions == 0
         assert metrics.failed_executions == 0
-        assert metrics.average_execution_time_ms == 0.0
-        assert metrics.efficiency_score == 0.0
+        assert metrics.average_execution_time_ms is None
+        assert metrics.efficiency_score is None
 
     def test_performance_metrics_with_values(self):
         metrics = PerformanceMetrics(

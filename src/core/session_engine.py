@@ -3638,6 +3638,24 @@ class SessionIntelligenceEngine:
         """
         debug_logger.info(f"Finding solutions for error: {error_text[:100]}...")
 
+        # A caller-supplied scope is honoured only when it is usable here. A relative
+        # path resolves against the SERVER's cwd, and the sentinel is the marker for
+        # "project unknown" rather than a project -- honouring either would answer a
+        # different question than the caller asked (issue #156). Returning nothing
+        # beats silently re-scoping: see session_query_notebooks for the same call.
+        if project_path is not None and _usable_project_path(project_path) is None:
+            debug_logger.warning(
+                f"session_find_solution: project_path {project_path!r} is not "
+                "usable (relative path or unknown sentinel); returning no "
+                "results instead of querying unscoped"
+            )
+            return SolutionSearchResult(
+                error_text=error_text,
+                total_found=0,
+                solutions=[],
+                project_specific_count=0,
+                universal_count=0,
+            )
         effective_project = project_path or str(self.claude_sessions_path.parent)
 
         if not self.database:

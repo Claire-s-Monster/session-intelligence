@@ -9,8 +9,12 @@ because they came from different sources of truth.
 
 `_generate_metrics_section` now derives every count-like row from the same
 lists the rest of the notebook renders, so the sections can never disagree
-again. Timing and efficiency have no list-based equivalent and still come
-from the stored blob.
+again. Total Execution Time has no list-based equivalent and still comes
+from the stored blob (written once by `session_finalize`). Efficiency Score
+is ALSO now derived (issue #115 cause 2, `_recompute_derived_metrics`) from
+successful_executions/failed_executions rather than read verbatim off the
+stored blob -- a stale or hand-set stored value can no longer leak through
+on hydration.
 
 Every test below stores a deliberately WRONG counter in the stored blob and
 asserts the rendered table shows the TRUE count from the lists. A test that
@@ -183,15 +187,15 @@ async def test_notebook_sections_agree_end_to_end(engine, db):
     assert reported_count == 4
 
 
-async def test_timing_and_efficiency_still_come_from_the_stored_blob(engine, db):
-    sid = "metrics-timing-efficiency-from-blob"
+async def test_total_execution_time_still_comes_from_the_stored_blob(engine, db):
+    """total_execution_time_ms has no list-based equivalent (it is session
+    wall-clock, written once by session_finalize) and is read verbatim from
+    the stored blob."""
+    sid = "metrics-timing-from-blob"
     await db.save_session(
         _session_row(
             sid,
-            performance_metrics={
-                "total_execution_time_ms": 4500,
-                "efficiency_score": 87.5,
-            },
+            performance_metrics={"total_execution_time_ms": 4500},
         )
     )
     engine.session_cache.clear()
@@ -200,7 +204,29 @@ async def test_timing_and_efficiency_still_come_from_the_stored_blob(engine, db)
     table = engine._generate_metrics_section(session)
 
     assert "| Total Execution Time | 4.5s |" in table
-    assert "| Efficiency Score | 87.5% |" in table
+
+
+async def test_efficiency_score_is_derived_not_read_from_stale_stored_blob(engine, db):
+    """Issue #115 cause 2: efficiency_score must be DERIVED from
+    successful_executions/failed_executions on every hydration, not read
+    verbatim from whatever was last persisted. A session hydrated with zero
+    agent executions must render 'n/a', even if a stale/hand-set stored
+    value of 87.5 is sitting in the row -- reading it through unchanged
+    would let a confident-but-wrong number leak past a restart."""
+    sid = "metrics-efficiency-derived-not-stale-blob"
+    await db.save_session(
+        _session_row(
+            sid,
+            performance_metrics={"efficiency_score": 87.5},
+        )
+    )
+    engine.session_cache.clear()
+
+    session = await engine._hydrate_session(sid)
+    table = engine._generate_metrics_section(session)
+
+    assert "| Efficiency Score | n/a |" in table
+    assert "87.5" not in table
 
 
 async def test_session_with_no_activity_renders_zeros(engine, db):

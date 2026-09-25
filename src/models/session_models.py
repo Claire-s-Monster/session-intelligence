@@ -130,10 +130,16 @@ class PerformanceMetrics(BaseModel):
     agents_executed: int = 0
     successful_executions: int = 0
     failed_executions: int = 0
-    average_execution_time_ms: float = 0.0
+    # None means "never measured" (no completed agent executions to derive
+    # from); 0.0 means "measured as zero". Derived in
+    # _recompute_derived_metrics, never incremented directly.
+    average_execution_time_ms: float | None = None
     commands_executed: int = 0
     decisions_made: int = 0
-    efficiency_score: float = 0.0
+    # None means "never measured" (no terminal successful/failed executions
+    # recorded yet); 0.0 means "measured as zero percent". Derived in
+    # _recompute_derived_metrics, never incremented directly.
+    efficiency_score: float | None = None
 
 
 class HealthStatus(BaseModel):

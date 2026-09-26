@@ -10,11 +10,11 @@ both ``self.database.find_error_solutions`` (:3654) and
 
 A caller-supplied RELATIVE ``project_path`` resolves against the SERVER's
 cwd, not the caller's, so it is meaningless here -- the same reasoning
-already applied to write paths by ``_usable_project_path()`` (issues
+already applied to write paths by ``usable_project_path()`` (issues
 #153/#155) and to session resolution by ``_resolve_session_context``
 (session_engine.py:335-346).
 
-Critically, the fix required is NOT "apply ``_usable_project_path()`` and let
+Critically, the fix required is NOT "apply ``usable_project_path()`` and let
 the existing ``project_path or str(self.claude_sessions_path.parent)``
 fallback run". That would turn an unusable ``project_path`` into ``None``
 and then silently re-scope the query to the SERVER's OWN directory
@@ -134,7 +134,7 @@ class TestFindSolutionRelativeProjectPath:
         must return a completely empty SolutionSearchResult.
 
         If this fails by returning the seeded rows, it proves a naive
-        "apply _usable_project_path() and let the existing `project_path or
+        "apply usable_project_path() and let the existing `project_path or
         str(self.claude_sessions_path.parent)` fallback run" fix was used:
         that turns an unusable relative path into None, which then falls
         through to the SERVER's own directory scope and leaks whatever

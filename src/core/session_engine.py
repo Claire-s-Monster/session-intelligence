@@ -104,7 +104,7 @@ AGENT_EXECUTION_MAX_PAGES = 100
 INTERNAL_AGENT_NAMES = frozenset({"task-manager", "bash-executor"})
 
 
-def _usable_project_path(candidate: str | None) -> str | None:
+def usable_project_path(candidate: str | None) -> str | None:
     """Return a caller-supplied project_path only if it is trustworthy here.
 
     A RELATIVE path resolves against the SERVER's cwd, not the caller's, so it
@@ -3612,7 +3612,7 @@ class SessionIntelligenceEngine:
         # a relative path resolves against the server's cwd, not the
         # caller's), then resolved session, then the _unknown_ sentinel.
         effective_project = (
-            _usable_project_path(project_path)
+            usable_project_path(project_path)
             or (resolved_ctx.project_path if resolved_ctx else None)
             or UNKNOWN_PROJECT_PATH
         )
@@ -3700,7 +3700,7 @@ class SessionIntelligenceEngine:
         # "project unknown" rather than a project -- honouring either would answer a
         # different question than the caller asked (issue #156). Returning nothing
         # beats silently re-scoping: see session_query_notebooks for the same call.
-        if project_path is not None and _usable_project_path(project_path) is None:
+        if project_path is not None and usable_project_path(project_path) is None:
             debug_logger.warning(
                 f"session_find_solution: project_path {project_path!r} is not "
                 "usable (relative path or unknown sentinel); returning no "

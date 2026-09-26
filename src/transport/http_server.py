@@ -50,7 +50,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from core.session_engine import SessionIntelligenceEngine
+from core.session_engine import SessionIntelligenceEngine, usable_project_path
 from lean_mcp_interface import LeanMCPInterface
 from persistence import DatabaseConfig, create_database, sanitize_dsn
 from transport.mcp_session_manager import MCPSessionManager
@@ -821,104 +821,14 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                     else:
                         tool_result = tool_func(**tool_params)
 
-                    # Handle knowledge system tools - persist to database
-                    database = request.app.state.database
-                    if (
-                        target == "session_log_learning"
-                        and hasattr(tool_result, "learning")
-                        and tool_result.learning
-                    ):
-                        learning = tool_result.learning
-                        # Validate source_session_id exists before FK insert, else use None
-                        valid_session_id = None
-                        if learning.source_session_id:
-                            existing = await database.get_session(learning.source_session_id)
-                            if existing:
-                                valid_session_id = learning.source_session_id
-                        await database.save_project_learning(
-                            learning_id=learning.id,
-                            project_path=learning.project_path,
-                            category=(
-                                learning.category.value
-                                if hasattr(learning.category, "value")
-                                else learning.category
-                            ),
-                            learning_content=learning.learning_content,
-                            trigger_context=learning.trigger_context,
-                            source_session_id=valid_session_id,
-                        )
-                        tool_result = tool_result.model_copy(
-                            update={"status": "saved", "message": "Learning saved to database"}
-                        )
-
-                    elif target == "session_find_solution":
-                        # Query database for solutions
-                        solutions = await database.find_error_solutions(
-                            error_text=tool_params.get("error_text", ""),
-                            project_path=tool_params.get("project_path"),
-                            include_universal=tool_params.get("include_universal", True),
-                        )
-                        from models.session_models import ErrorSolution, SolutionSearchResult
-
-                        # Convert datetime fields to strings for Pydantic
-                        for s in solutions:
-                            if s.get("created_at") and hasattr(s["created_at"], "isoformat"):
-                                s["created_at"] = s["created_at"].isoformat()
-                            if s.get("last_used") and hasattr(s["last_used"], "isoformat"):
-                                s["last_used"] = s["last_used"].isoformat()
-                        tool_result = SolutionSearchResult(
-                            error_text=tool_params.get("error_text", ""),
-                            total_found=len(solutions),
-                            solutions=[ErrorSolution(**s) for s in solutions] if solutions else [],
-                            project_specific_count=sum(
-                                1 for s in solutions if s.get("project_path")
-                            ),
-                            universal_count=sum(1 for s in solutions if not s.get("project_path")),
-                        )
-
-                    elif target == "session_update_solution_outcome":
-                        db_result = await database.update_solution_outcome(
-                            solution_id=tool_params.get("solution_id", ""),
-                            success=tool_params.get("success", False),
-                        )
-                        from models.session_models import SolutionResult
-
-                        tool_result = SolutionResult(
-                            id=tool_params.get("solution_id", ""),
-                            status="updated" if db_result.get("updated") else "error",
-                            message=(
-                                f"Success rate: {db_result.get('success_rate', 0):.2f}"
-                                if db_result.get("updated")
-                                else db_result.get("error", "")
-                            ),
-                        )
-
-                    elif target == "session_track_file_operation":
-                        # Persist file operation to database
-                        if hasattr(tool_result, "operation") and tool_result.operation:
-                            op = tool_result.operation
-                            await database.save_file_operation(
-                                {
-                                    "session_id": op.session_id,
-                                    "timestamp": (
-                                        op.timestamp.isoformat()
-                                        if hasattr(op.timestamp, "isoformat")
-                                        else str(op.timestamp)
-                                    ),
-                                    "operation": (
-                                        op.operation_type.value
-                                        if hasattr(op.operation_type, "value")
-                                        else op.operation_type
-                                    ),
-                                    "file_path": op.file_path,
-                                    "lines_added": op.lines_added or 0,
-                                    "lines_removed": op.lines_removed or 0,
-                                    "summary": op.description or "",
-                                    "tool_name": op.tool_name or "",
-                                }
-                            )
-                            tool_result = tool_result.model_copy(update={"status": "saved"})
-
+                    # issue #160: the engine (tool_func above) already owns persistence
+                    # and project_path scoping for session_log_learning,
+                    # session_find_solution, session_update_solution_outcome and
+                    # session_track_file_operation. Re-deriving results here via direct
+                    # database calls bypassed engine-side guards (e.g. #156's
+                    # usable_project_path scoping) and double-wrote
+                    # session_update_solution_outcome. Removed so HTTP matches the
+                    # stdio/lean transport, which has no such special-casing.
                     limited = apply_token_limits(tool_result, target)
                     # issue #127: reflect an inner failure status (dict or Pydantic
                     # model like NotebookResult) in the outer envelope instead of
@@ -1072,7 +982,19 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             solutions = []
 
             # Query project learnings
-            if project_path:
+            # issue #160: a caller-supplied project_path is honoured only when it is
+            # usable here (same guard the engine applies in session_find_solution,
+            # #156). A relative path resolves against the SERVER's cwd and the
+            # "_unknown_" sentinel is not a real project, so either would silently
+            # re-scope the query; return no results instead of falling back to an
+            # unscoped search.
+            if project_path and usable_project_path(project_path) is None:
+                logger.warning(
+                    f"/tools/session_find_solution: project_path {project_path!r} is "
+                    "not usable (relative path or unknown sentinel); returning no "
+                    "results instead of querying unscoped"
+                )
+            elif project_path:
                 project_learnings = await database.query_project_learnings(
                     project_path=project_path,
                     limit=50,

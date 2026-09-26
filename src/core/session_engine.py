@@ -3743,19 +3743,31 @@ class SessionIntelligenceEngine:
                 except Exception:
                     pass  # Skip malformed records
 
-            # Also query project_learnings for matching content
-            learnings = await self.database.query_project_learnings(
-                project_path=effective_project,
-                category=error_category,
-            )
+            # Also query project_learnings for matching content. This is wrapped in its
+            # own try/except (issue #158) so a failure here can't discard the `solutions`
+            # list already built above from the unrelated error_solutions query.
+            matching_count = 0
+            try:
+                learnings = await self.database.query_project_learnings(
+                    project_path=effective_project,
+                    category=error_category,
+                )
 
-            # Filter learnings by text match and count them
-            matching_count = sum(
-                1
-                for lr in learnings
-                if error_text.lower()
-                in (lr.get("learning_content", "") + lr.get("trigger_context", "")).lower()
-            )
+                # Filter learnings by text match and count them. trigger_context is a
+                # nullable column, so a NULL row is PRESENT with value None -- `.get(key, "")`
+                # only supplies "" when the key is ABSENT, not when it's None (issue #158).
+                # Use `or ""` to coerce both cases; learning_content is NOT NULL so this is
+                # purely defensive there, but kept for uniform style.
+                matching_count = sum(
+                    1
+                    for lr in learnings
+                    if error_text.lower()
+                    in (
+                        (lr.get("learning_content") or "") + (lr.get("trigger_context") or "")
+                    ).lower()
+                )
+            except Exception as e:
+                debug_logger.error(f"Error matching project_learnings: {e}")
 
             project_count = sum(1 for s in solutions if s.project_path == effective_project)
             total = len(solutions) + matching_count

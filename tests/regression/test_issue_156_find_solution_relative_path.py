@@ -96,17 +96,9 @@ async def _seed_project_learning(
     ``SQLiteBackend.save_project_learning``'s signature (learning_id,
     project_path, category, learning_content, ...).
 
-    Passes ``trigger_context=""`` rather than leaving it at
-    ``save_project_learning``'s own ``None`` default: when a row seeded
-    here is later matched by ``session_find_solution``'s
-    ``project_learnings`` scan (session_engine.py ~3682), that code does
-    ``lr.get("learning_content", "") + lr.get("trigger_context", "")`` --
-    since the key is present with value ``None`` (not absent), the ``.get``
-    default never applies and ``str + None`` raises ``TypeError``. That is
-    a separate, pre-existing bug unrelated to issue #156's project_path
-    scoping, so seeding a non-None ``trigger_context`` here avoids
-    incidentally exercising it and masking the scoping behaviour this
-    module is testing.
+    Uses ``save_project_learning``'s own ``None`` default for
+    ``trigger_context``: NULL trigger_context is now handled correctly by
+    ``session_find_solution`` as of issue #158.
     """
     learning_id = f"learn-{uuid.uuid4().hex[:12]}"
     await db.save_project_learning(
@@ -114,7 +106,6 @@ async def _seed_project_learning(
         project_path=project_path,
         category="pattern",
         learning_content=learning_content,
-        trigger_context="",
     )
     return learning_id
 

@@ -10,11 +10,10 @@ Features:
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from fastapi import HTTPException, Request
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
 logger = logging.getLogger(__name__)
@@ -49,9 +48,7 @@ class LocalhostOnlyMiddleware(BaseHTTPMiddleware):
 
     ALLOWED_HOSTS = {"127.0.0.1", "::1", "localhost"}
 
-    async def dispatch(
-        self, request: Request, call_next: Callable[[Request], Response]
-    ) -> Response:
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         client_host = request.client.host if request.client else None
 
         if client_host not in self.ALLOWED_HOSTS:
@@ -87,13 +84,13 @@ def validate_api_key(provided_key: str | None, expected_key: str) -> None:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
 
-def get_origin_validation_middleware(allowed_origins: list[str]) -> type:
+def get_origin_validation_middleware(
+    allowed_origins: list[str],
+) -> type[BaseHTTPMiddleware]:
     """Create origin validation middleware with configured allowed origins."""
 
     class OriginValidationMiddleware(BaseHTTPMiddleware):
-        async def dispatch(
-            self, request: Request, call_next: Callable[[Request], Response]
-        ) -> Response:
+        async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
             if not validate_origin(request, allowed_origins):
                 return Response(
                     content="Origin not allowed",

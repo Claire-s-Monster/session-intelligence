@@ -326,6 +326,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         """
         super().__init__()
 
+        self.db_path: str | Path
         if db_path == ":memory:":
             self.db_path = db_path
         else:
@@ -2247,7 +2248,6 @@ class SQLiteBackend(BaseDatabaseBackend):
 
         conn = self._ensure_connected()
         cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
-        include_all = include is None
         result: dict[str, Any] = {
             "project_name": project_name,
             "recall_window_days": days,
@@ -2257,7 +2257,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             "notebooks": [],
         }
 
-        if include_all or "sessions" in include:
+        if include is None or "sessions" in include:
             cursor = await conn.execute(
                 """
                 SELECT id, started_at, ended_at, status, mode
@@ -2278,7 +2278,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 for row in rows
             ]
 
-        if include_all or "decisions" in include:
+        if include is None or "decisions" in include:
             cursor = await conn.execute(
                 """
                 SELECT d.id, d.description, d.category, d.rationale,
@@ -2305,7 +2305,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 for row in rows
             ]
 
-        if include_all or "learnings" in include:
+        if include is None or "learnings" in include:
             cursor = await conn.execute(
                 """
                 SELECT id, category, trigger_context, learning_content,
@@ -2332,7 +2332,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             rows = await cursor.fetchall()
             result["learnings"] = [dict(row) for row in rows]
 
-        if include_all or "notebooks" in include:
+        if include is None or "notebooks" in include:
             cursor = await conn.execute(
                 """
                 SELECT ss.title, ss.tags, ss.created_at, ss.session_id

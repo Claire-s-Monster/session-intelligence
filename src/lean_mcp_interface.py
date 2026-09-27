@@ -2260,6 +2260,11 @@ def create_lean_interface(
                     except Exception as e:
                         logger.warning(f"Error closing database: {e}")
 
-        app.run_stdio_async = run_stdio_with_db
+        # Dynamic monkeypatch: FastMCP.run_stdio_async is a bound method, so a
+        # direct attribute assignment is rejected by mypy ("Cannot assign to a
+        # method"). setattr performs the same instance-level override at
+        # runtime while satisfying the type checker; this wrapper is required
+        # to hook database init/cleanup around the original stdio run loop.
+        setattr(app, "run_stdio_async", run_stdio_with_db)  # noqa: B010
 
     return app

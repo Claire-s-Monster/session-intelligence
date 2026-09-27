@@ -11,7 +11,7 @@ import logging
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
@@ -108,7 +108,7 @@ class IntelligentTruncator:
         self.token_estimator = TokenEstimator()
 
     def truncate_content(
-        self, content: str, max_tokens: int, content_type: ContentType = None
+        self, content: str, max_tokens: int, content_type: ContentType | None = None
     ) -> TruncationResult:
         """Truncate content intelligently to fit within token limit."""
         if not content:
@@ -214,7 +214,7 @@ class IntelligentTruncator:
 
             elif isinstance(data, list):
                 # For lists, keep first N items
-                truncated_list = []
+                truncated_list: list[Any] = []
                 for _i, item in enumerate(data):
                     test_list = truncated_list + [item]
                     test_content = json.dumps(test_list, indent=2)
@@ -242,7 +242,7 @@ class IntelligentTruncator:
     def _truncate_structured(self, content: str, max_tokens: int) -> str:
         """Truncate structured content by lines."""
         lines = content.split("\n")
-        truncated_lines = []
+        truncated_lines: list[str] = []
 
         for line in lines:
             test_content = "\n".join(truncated_lines + [line])
@@ -358,7 +358,7 @@ class SessionTokenLimiter:
     ) -> dict[str, Any]:
         """Limit response size by truncating content if necessary."""
         # Convert Pydantic models to dicts first
-        response = self._to_dict(response)
+        response = cast(dict[str, Any], self._to_dict(response))
 
         if not self.enable_truncation:
             return response

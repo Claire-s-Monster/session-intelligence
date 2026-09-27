@@ -386,7 +386,7 @@ async def export_to_json(
     await db.initialize()
 
     try:
-        data = {
+        data: dict[str, Any] = {
             "exported_at": datetime.now(UTC).isoformat(),
             "source_backend": "postgresql",
             "sessions": await db.query_sessions(limit=100000),

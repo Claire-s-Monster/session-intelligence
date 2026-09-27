@@ -1413,7 +1413,6 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
         pool = self._ensure_connected()
         cutoff = datetime.now(UTC) - timedelta(days=days)
-        include_all = include is None
         result: dict[str, Any] = {
             "project_name": project_name,
             "recall_window_days": days,
@@ -1424,7 +1423,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         }
 
         async with pool.acquire() as conn:
-            if include_all or "sessions" in include:
+            if include is None or "sessions" in include:
                 rows = await conn.fetch(
                     """
                     SELECT id, started_at, ended_at, status, mode
@@ -1446,7 +1445,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     for row in rows
                 ]
 
-            if include_all or "decisions" in include:
+            if include is None or "decisions" in include:
                 rows = await conn.fetch(
                     """
                     SELECT d.id, d.description, d.category, d.rationale,
@@ -1474,7 +1473,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     for row in rows
                 ]
 
-            if include_all or "learnings" in include:
+            if include is None or "learnings" in include:
                 rows = await conn.fetch(
                     """
                     SELECT id, category, trigger_context, learning_content,
@@ -1501,7 +1500,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 )
                 result["learnings"] = [self._from_record(row) for row in rows]
 
-            if include_all or "notebooks" in include:
+            if include is None or "notebooks" in include:
                 rows = await conn.fetch(
                     """
                     SELECT ss.title, ss.tags, ss.created_at, ss.session_id
@@ -1679,7 +1678,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             started_at = row_dict.get("started_at")
             # asyncpg returns datetime objects for TIMESTAMPTZ; normalise to ISO string
             started_at_str = (
-                started_at.isoformat() if hasattr(started_at, "isoformat") else (started_at or "")
+                started_at.isoformat()
+                if started_at is not None and hasattr(started_at, "isoformat")
+                else (started_at or "")
             )
 
             performance_raw = row_dict.get("performance")

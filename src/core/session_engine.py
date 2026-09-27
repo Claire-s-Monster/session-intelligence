@@ -73,8 +73,6 @@ from models.session_models import (
     SolutionResult,
     SolutionSearchResult,
     WorkflowResult,
-    WorkflowState,
-    WorkflowType,
 )
 
 # Debug logging is opt-in via SESSION_INTELLIGENCE_DEBUG (issue #68).
@@ -457,10 +455,18 @@ class SessionIntelligenceEngine:
             # session_summaries.session_id FK-references, so a later
             # save_session_summary would fail FOREIGN KEY constraint failed.
             if result.status == "success" and self.database:
-                try:
-                    await self.database.save_session(result.session_data.model_dump(mode="python"))
-                except Exception as e:
-                    debug_logger.error(f"Error persisting session to DB: {e}")
+                if result.session_data is None:
+                    debug_logger.error(
+                        f"Session {result.session_id} reported success but has no "
+                        "session_data; skipping DB persistence"
+                    )
+                else:
+                    try:
+                        await self.database.save_session(
+                            result.session_data.model_dump(mode="python")
+                        )
+                    except Exception as e:
+                        debug_logger.error(f"Error persisting session to DB: {e}")
             cached = self.session_cache.get(result.session_id)
             return ResolvedSessionContext(
                 session_id=result.session_id,
@@ -495,10 +501,18 @@ class SessionIntelligenceEngine:
             # session_summaries.session_id FK-references, so a later
             # save_session_summary would fail FOREIGN KEY constraint failed.
             if result.status == "success" and self.database:
-                try:
-                    await self.database.save_session(result.session_data.model_dump(mode="python"))
-                except Exception as e:
-                    debug_logger.error(f"Error persisting session to DB: {e}")
+                if result.session_data is None:
+                    debug_logger.error(
+                        f"Session {result.session_id} reported success but has no "
+                        "session_data; skipping DB persistence"
+                    )
+                else:
+                    try:
+                        await self.database.save_session(
+                            result.session_data.model_dump(mode="python")
+                        )
+                    except Exception as e:
+                        debug_logger.error(f"Error persisting session to DB: {e}")
             cached = self.session_cache.get(result.session_id)
             return ResolvedSessionContext(
                 session_id=result.session_id,
@@ -772,10 +786,18 @@ class SessionIntelligenceEngine:
             )
             # Persist session to DB so FK references work
             if result.status == "success" and self.database:
-                try:
-                    await self.database.save_session(result.session_data.model_dump(mode="python"))
-                except Exception as e:
-                    debug_logger.error(f"Error persisting session to DB: {e}")
+                if result.session_data is None:
+                    debug_logger.error(
+                        f"Session {result.session_id} reported success but has no "
+                        "session_data; skipping DB persistence"
+                    )
+                else:
+                    try:
+                        await self.database.save_session(
+                            result.session_data.model_dump(mode="python")
+                        )
+                    except Exception as e:
+                        debug_logger.error(f"Error persisting session to DB: {e}")
             return result
         elif operation == "resume":
             return await self._resume_session(
@@ -813,7 +835,7 @@ class SessionIntelligenceEngine:
     def _create_session(
         self,
         mode: str,
-        project_name: str,
+        project_name: str | None,
         metadata: dict[str, Any],
         session_name: str | None = None,
         session_id: str | None = None,
@@ -825,6 +847,10 @@ class SessionIntelligenceEngine:
         session to an externally-supplied identifier (e.g. Claude Code's
         native subagent session UUID) so later lookups by that same id hit
         the cache instead of failing.
+
+        `project_name` may be None (e.g. the `create` lifecycle operation has
+        no project scope to offer); the `project_name or "unknown"` below
+        already coalesces that case when constructing the stored `Session`.
         """
         session_id = (
             session_id
@@ -2003,7 +2029,7 @@ class SessionIntelligenceEngine:
     async def session_monitor_health(
         self,
         session_id: str | None,
-        health_checks: list[str] = None,
+        health_checks: list[str] | None = None,
         auto_recover: bool = True,
         alert_thresholds: dict[str, float] | None = None,
         include_diagnostics: bool = True,
@@ -2176,22 +2202,16 @@ class SessionIntelligenceEngine:
     # ===== PLACEHOLDER IMPLEMENTATIONS FOR OTHER FUNCTIONS =====
 
     # NOTE: Unregistered from the tool registry (src/lean_mcp_interface.py)
-    # per #64 — this hardcodes state_machine={} below, and WorkflowState
-    # .state_machine requires a StateMachine with a required current_state
-    # field, so every call raises a pydantic ValidationError. Left in place
-    # as dead code pending a real implementation; do not re-register
-    # without fixing this.
+    # per #64 — this was a dead, fake-success placeholder that built a
+    # WorkflowResult around a StateMachine(current_state="placeholder"),
+    # reporting success for a workflow that never ran. It now raises
+    # NotImplementedError instead so dead code stays visibly dead. Do not
+    # re-register this tool without a real implementation.
     def session_orchestrate_workflow(self, **kwargs) -> WorkflowResult:
         """Workflow orchestration - placeholder implementation."""
-        return WorkflowResult(
-            workflow_id="placeholder",
-            session_id=kwargs.get("session_id", "unknown"),
-            execution_plan={},
-            state=WorkflowState(
-                workflow_type=WorkflowType.CUSTOM,
-                current_phase="placeholder",
-                state_machine={},
-            ),
+        raise NotImplementedError(
+            "session_orchestrate_workflow is an unregistered placeholder (see #64) "
+            "and has no real implementation."
         )
 
     def session_analyze_patterns(self, **kwargs) -> PatternAnalysisResult:
@@ -2334,7 +2354,14 @@ class SessionIntelligenceEngine:
         Paging to exhaustion is load-bearing, not thoroughness for its own
         sake -- see AGENT_EXECUTION_PAGE_SIZE above for why a partial load
         would be worse than loading nothing.
+
+        Raises if no database backend is configured, rather than returning
+        an empty list: an empty list here would be indistinguishable from
+        "this session genuinely has no agent executions," misreporting an
+        unavailable backend as a real, empty result.
         """
+        if not self.database:
+            raise ValueError(f"_load_agent_executions({session_id!r}) requires a database backend")
         executions: list[AgentExecution] = []
         offset = 0
         for _ in range(AGENT_EXECUTION_MAX_PAGES):

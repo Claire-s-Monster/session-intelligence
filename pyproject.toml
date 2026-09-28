@@ -85,8 +85,10 @@ format = "ruff format src/ tests/"
 format-check = "ruff format --check src/ tests/"
 type-check = "mypy src/"
 dead-code = "vulture src/ --min-confidence 80"
-quality = { depends-on = ["lint", "format-check", "type-check-lenient"] }
-type-check-lenient = "mypy src/ || echo 'mypy: warnings found (non-blocking)'"
+# quality is deliberately strict on types: mypy src/ is clean as of 699a6f17,
+# and the previous `|| echo` type-check-lenient variant meant a mypy
+# regression would still exit 0 and pass CI silently.
+quality = { depends-on = ["lint", "format-check", "type-check"] }
 check-all = { depends-on = ["test", "quality"] }
 build = "python -m build"
 

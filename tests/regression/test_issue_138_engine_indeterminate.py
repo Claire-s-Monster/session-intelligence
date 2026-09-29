@@ -263,6 +263,92 @@ async def test_tools_used_renders_into_step_description(engine):
 
 
 # ---------------------------------------------------------------------------
+# 16a. tool_count (calls) vs tools_used (deduplicated) rendering
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.regression
+async def test_tool_count_exceeds_unique_tools_renders_both_numbers(engine):
+    """When tool_count (call count) differs from len(tools_used) (unique
+    names), the description must surface both numbers instead of implying
+    a miscount, e.g. "9 tools: A, B" when only 2 unique names are listed."""
+    result = await engine.session_track_execution(
+        session_id=None,
+        agent_name="tool-count-mismatch-agent",
+        step_data={
+            "phase": "agent_stop",
+            "agent_type": AGENT_TYPE,
+            "success": True,
+            "tools_used": ["Read", "Edit", "Grep", "Write", "Bash", "Glob"],
+            "tool_count": 9,
+        },
+        allow_unbound=True,
+    )
+    assert result.status == "success"
+
+    session = engine.session_cache[result.session_id]
+    agent_execution = next(
+        a for a in session.agents_executed if a.agent_name == "tool-count-mismatch-agent"
+    )
+    last_step = agent_execution.execution_steps[-1]
+
+    assert last_step.description == "9 tool calls (6 unique): Read, Edit, Grep, Write, Bash, Glob"
+
+
+@pytest.mark.regression
+async def test_tool_count_equal_to_unique_tools_uses_legacy_format(engine):
+    """When tool_count equals len(tools_used), the legacy single-number
+    format is preserved unchanged."""
+    result = await engine.session_track_execution(
+        session_id=None,
+        agent_name="tool-count-equal-agent",
+        step_data={
+            "phase": "agent_stop",
+            "agent_type": AGENT_TYPE,
+            "success": True,
+            "tools_used": ["A", "B", "C", "D"],
+            "tool_count": 4,
+        },
+        allow_unbound=True,
+    )
+    assert result.status == "success"
+
+    session = engine.session_cache[result.session_id]
+    agent_execution = next(
+        a for a in session.agents_executed if a.agent_name == "tool-count-equal-agent"
+    )
+    last_step = agent_execution.execution_steps[-1]
+
+    assert last_step.description == "4 tools: A, B, C, D"
+
+
+@pytest.mark.regression
+async def test_tools_used_without_tool_count_key_uses_legacy_format(engine):
+    """When `tool_count` is absent entirely, the description falls back to
+    len(tools_used) in the legacy single-number format."""
+    result = await engine.session_track_execution(
+        session_id=None,
+        agent_name="tools-used-no-count-agent",
+        step_data={
+            "phase": "agent_stop",
+            "agent_type": AGENT_TYPE,
+            "success": True,
+            "tools_used": ["Read", "Grep", "Edit"],
+        },
+        allow_unbound=True,
+    )
+    assert result.status == "success"
+
+    session = engine.session_cache[result.session_id]
+    agent_execution = next(
+        a for a in session.agents_executed if a.agent_name == "tools-used-no-count-agent"
+    )
+    last_step = agent_execution.execution_steps[-1]
+
+    assert last_step.description == "3 tools: Read, Grep, Edit"
+
+
+# ---------------------------------------------------------------------------
 # 17. Notebook agents section: INDETERMINATE renders as U+2754, not U+274C
 # ---------------------------------------------------------------------------
 

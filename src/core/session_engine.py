@@ -141,6 +141,9 @@ def _describe_step(step_data: dict[str, Any]) -> str:
     `phase` plus fields like `command`/`command_base`, `task_subject`/
     `task_description`, `task_id`/`new_status`, and `tools_used`/
     `tool_count`. This picks the most informative one available.
+
+    Note: `tool_count` counts tool *calls*, while `tools_used` is a
+    deduplicated list of tool names, so the two can legitimately differ.
     """
     command = step_data.get("command") or step_data.get("command_base")
     if command:
@@ -161,7 +164,9 @@ def _describe_step(step_data: dict[str, Any]) -> str:
     tools_used = step_data.get("tools_used")
     if tools_used:
         tool_count = step_data.get("tool_count", len(tools_used))
-        return f"{tool_count} tools: {', '.join(tools_used)}"
+        if tool_count and tool_count != len(tools_used):
+            return f"{tool_count} tool calls ({len(tools_used)} unique): {', '.join(tools_used)}"
+        return f"{len(tools_used)} tools: {', '.join(tools_used)}"
 
     return ""
 

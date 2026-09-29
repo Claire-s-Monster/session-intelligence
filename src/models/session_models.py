@@ -41,6 +41,7 @@ class ExecutionStatus(StrEnum):
     ERROR = "error"
     SKIPPED = "skipped"
     ABANDONED = "abandoned"  # Issue #70: never reported agent_stop; distinct from ERROR
+    INDETERMINATE = "indeterminate"  # Issue #138: agent_stop reported no parseable outcome
 
 
 class ImpactLevel(StrEnum):

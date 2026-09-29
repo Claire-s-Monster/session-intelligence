@@ -1446,10 +1446,19 @@ class SessionIntelligenceEngine:
         # The SubagentStop hook reports phase="agent_stop" with a "success"
         # flag once an agent finishes. That is the only signal we have to
         # transition an execution out of RUNNING into a terminal state.
+        # Issue #138: `success` is tri-state, not boolean. An absent key or
+        # an explicit `None` means the transcript parser could not determine
+        # an outcome (INDETERMINATE) and must not be conflated with a real
+        # observed failure (ERROR). `.get("success")` alone cannot tell
+        # "missing" apart from "None" from "False", so check explicitly.
         is_agent_stop = step_data.get("phase") == "agent_stop"
-        terminal_status = (
-            ExecutionStatus.SUCCESS if step_data.get("success") else ExecutionStatus.ERROR
-        )
+        raw_success = step_data.get("success")
+        if raw_success is None:
+            terminal_status = ExecutionStatus.INDETERMINATE
+        elif raw_success:
+            terminal_status = ExecutionStatus.SUCCESS
+        else:
+            terminal_status = ExecutionStatus.ERROR
         completed_at = datetime.now(UTC) if is_agent_stop else None
 
         # Issue #108: hooks never send `operation`/`description`; they send
@@ -2880,6 +2889,8 @@ class SessionIntelligenceEngine:
                 if agent.status == ExecutionStatus.SUCCESS
                 else "⚠️"
                 if agent.status == ExecutionStatus.RUNNING
+                else "❔"
+                if agent.status == ExecutionStatus.INDETERMINATE
                 else "❌"
             )
             lines.append(f"- {status_emoji} **{agent.agent_name}** ({agent.agent_type})")
@@ -2939,6 +2950,9 @@ class SessionIntelligenceEngine:
         failed = sum(
             1 for agent in session.agents_executed if agent.status == ExecutionStatus.ERROR
         )
+        indeterminate = sum(
+            1 for agent in session.agents_executed if agent.status == ExecutionStatus.INDETERMINATE
+        )
         commands = sum(
             len(step.commands_executed)
             for agent in session.agents_executed
@@ -2965,6 +2979,7 @@ class SessionIntelligenceEngine:
 | Agents Executed | {len(session.agents_executed)} |
 | Successful Executions | {successful} |
 | Failed Executions | {failed} |
+| Indeterminate Executions | {indeterminate} |
 | Commands Executed | {commands} |
 | Decisions Made | {len(session.decisions)} |
 | Efficiency Score | {efficiency_display} |

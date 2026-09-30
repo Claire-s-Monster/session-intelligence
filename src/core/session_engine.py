@@ -2402,8 +2402,9 @@ class SessionIntelligenceEngine:
 
     def _recompute_derived_metrics(self, session: Session) -> None:
         """Derive successful_executions, failed_executions, decisions_made,
-        commands_executed, average_execution_time_ms, and efficiency_score
-        from session.agents_executed / session.decisions (issue #115).
+        commands_executed, average_execution_time_ms, efficiency_score,
+        abandoned_executions, and indeterminate_executions from
+        session.agents_executed / session.decisions (issue #115).
 
         These six PerformanceMetrics fields have no reliable per-event
         write site of their own -- an audit found only agents_executed and
@@ -2455,6 +2456,14 @@ class SessionIntelligenceEngine:
         moved to a different field. It is None when no agent execution
         has completed yet, for the same "unmeasured, not zero" reason as
         efficiency_score.
+
+        abandoned_executions and indeterminate_executions (issue #168) do
+        NOT change efficiency_score's formula or denominator -- it is still
+        successful / (successful + failed), exactly as above. They report
+        how many terminal executions that denominator excludes, so a reader
+        can tell "could not measure" (a non-zero excluded count alongside a
+        None or unexpectedly high score) apart from "nothing ran" (an empty
+        session, where both are 0).
         """
         metrics = session.performance_metrics
         metrics.successful_executions = sum(
@@ -2466,6 +2475,16 @@ class SessionIntelligenceEngine:
             1
             for agent_exec in session.agents_executed
             if agent_exec.status == ExecutionStatus.ERROR
+        )
+        metrics.abandoned_executions = sum(
+            1
+            for agent_exec in session.agents_executed
+            if agent_exec.status == ExecutionStatus.ABANDONED
+        )
+        metrics.indeterminate_executions = sum(
+            1
+            for agent_exec in session.agents_executed
+            if agent_exec.status == ExecutionStatus.INDETERMINATE
         )
         metrics.decisions_made = len(session.decisions)
         metrics.commands_executed = sum(
@@ -2958,6 +2977,9 @@ class SessionIntelligenceEngine:
         indeterminate = sum(
             1 for agent in session.agents_executed if agent.status == ExecutionStatus.INDETERMINATE
         )
+        abandoned = sum(
+            1 for agent in session.agents_executed if agent.status == ExecutionStatus.ABANDONED
+        )
         commands = sum(
             len(step.commands_executed)
             for agent in session.agents_executed
@@ -2985,6 +3007,7 @@ class SessionIntelligenceEngine:
 | Successful Executions | {successful} |
 | Failed Executions | {failed} |
 | Indeterminate Executions | {indeterminate} |
+| Abandoned Executions | {abandoned} |
 | Commands Executed | {commands} |
 | Decisions Made | {len(session.decisions)} |
 | Efficiency Score | {efficiency_display} |

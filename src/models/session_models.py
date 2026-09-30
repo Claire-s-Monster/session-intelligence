@@ -131,6 +131,13 @@ class PerformanceMetrics(BaseModel):
     agents_executed: int = 0
     successful_executions: int = 0
     failed_executions: int = 0
+    # Terminal outcomes excluded from efficiency_score's denominator (issue
+    # #168): ABANDONED and INDETERMINATE executions are neither a success
+    # nor a failure, so they are reported here so a reader can see how many
+    # terminal executions the score's denominator leaves out. Derived in
+    # _recompute_derived_metrics, never incremented directly.
+    abandoned_executions: int = 0
+    indeterminate_executions: int = 0
     # None means "never measured" (no completed agent executions to derive
     # from); 0.0 means "measured as zero". Derived in
     # _recompute_derived_metrics, never incremented directly.

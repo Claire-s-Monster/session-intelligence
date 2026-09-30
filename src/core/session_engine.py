@@ -4907,7 +4907,15 @@ class SessionIntelligenceEngine:
             total_sessions = stats_result.get("total_sessions_scanned", 0)
             raw = stats_result.get("agents", [])
 
-            # Compute success_rate for each agent-type entry
+            # Compute success_rate for each agent-type entry. Issue #171:
+            # get_agent_stats() already excludes 'indeterminate' executions
+            # from invocations/successes/failures (mirroring 'abandoned'), so
+            # success_rate here is naturally over the same reduced
+            # denominator; the indeterminate count is passed through
+            # unchanged so a reader can see how many were excluded. When
+            # invocations is 0 (e.g. every execution in the window was
+            # indeterminate), success_rate falls back to 0.0 -- the
+            # pre-existing zero-guard, unchanged by this issue.
             agent_stats = []
             for entry in raw:
                 invocations = entry["invocations"]
@@ -4917,6 +4925,7 @@ class SessionIntelligenceEngine:
                     "invocations": invocations,
                     "successes": successes,
                     "failures": entry["failures"],
+                    "indeterminate": entry.get("indeterminate", 0),
                     "success_rate": round(successes / invocations, 2) if invocations else 0.0,
                     "avg_duration_ms": entry["avg_duration_ms"],
                     "last_used": entry["last_used"],

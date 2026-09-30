@@ -1593,9 +1593,11 @@ class LeanMCPInterface:
             "implementation": self._wrap_async_tool(self._session_agent_stats_handler),
             "description": (
                 "Return per-agent-type usage statistics over a configurable time window. "
-                "Aggregates invocations, successes, failures, and average duration from "
-                "agent_executions records. Use this for data-driven decisions about which "
-                "agent types are actually being used."
+                "Aggregates invocations, successes, failures, indeterminate count, and "
+                "average duration from agent_executions records (issue #171: indeterminate "
+                "executions are excluded from invocations/successes/failures/success_rate). "
+                "Use this for data-driven decisions about which agent types are actually "
+                "being used."
             ),
             "schema": {
                 "type": "object",
@@ -1651,7 +1653,14 @@ class LeanMCPInterface:
         return registry
 
     async def _session_agent_stats_handler(self, **params) -> dict[str, Any]:
-        """Handler for session_agent_stats that applies min_invocations filter."""
+        """Handler for session_agent_stats that applies min_invocations filter.
+
+        Issue #171: "invocations" already excludes 'indeterminate' executions
+        (see session_engine.session_agent_stats / get_agent_stats), so
+        min_invocations filters on that reduced count -- an agent with, say,
+        1 real invocation and 9 indeterminate ones is NOT treated as having
+        10 invocations for this threshold.
+        """
         time_window_hours = params.get("time_window_hours", 168)
         min_invocations = params.get("min_invocations", 1)
 

@@ -13,6 +13,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -426,3 +427,48 @@ def _as_aware_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         value = value.astimezone()
     return value.astimezone(UTC)
+
+
+_PERF_DURATION_KEYS = ("duration_ms", "total_duration_ms", "total_execution_time_ms")
+
+
+def _parse_timestamp_utc(value: Any) -> datetime | None:
+    """Parse a datetime or ISO string to aware UTC; None if unparseable.
+
+    Naive values are local wall-clock time per #112 (see ``_as_aware_utc``).
+    """
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    return _as_aware_utc(value)
+
+
+def execution_duration_ms(row: dict[str, Any]) -> float | None:
+    """Duration of an agent_executions row in ms (#179).
+
+    Prefers a positive number in the performance blob (duration_ms,
+    total_duration_ms, total_execution_time_ms); falls back to
+    completed_at - started_at when both parse and completed_at >= started_at;
+    otherwise None.
+    """
+    perf = row.get("performance")
+    if isinstance(perf, str):
+        try:
+            perf = json.loads(perf)
+        except ValueError:
+            perf = None
+    if isinstance(perf, dict):
+        for key in _PERF_DURATION_KEYS:
+            val = perf.get(key)
+            if isinstance(val, (int, float)) and not isinstance(val, bool) and val > 0:
+                return float(val)
+
+    start = _parse_timestamp_utc(row.get("started_at"))
+    end = _parse_timestamp_utc(row.get("completed_at"))
+    if start is None or end is None or end < start:
+        return None
+    return (end - start).total_seconds() * 1000.0

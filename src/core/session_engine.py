@@ -1478,9 +1478,9 @@ class SessionIntelligenceEngine:
         # `commands_executed` nor `duration_ms` was ever read from step_data --
         # so the notebook's derived "Commands Executed" row was always 0 and no
         # step duration was recorded. Source both here. This does NOT affect
-        # session_agent_stats' avg_duration_ms: that reads the separate
-        # AgentExecution.performance blob (see get_agent_stats in the
-        # persistence layer), which nothing populates.
+        # session_agent_stats' avg_duration_ms: get_agent_stats in the
+        # persistence layer reads the AgentExecution.performance blob and
+        # falls back to started_at/completed_at timestamps (#179).
         commands_executed = _build_commands_executed(step_data, started_at)
         duration_ms = step_data.get("duration_ms", 0)
 

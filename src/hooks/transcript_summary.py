@@ -15,6 +15,28 @@ reporting ``success=None`` (indeterminate) whenever the transcript could not
 be read or contained zero usable entries, rather than silently defaulting to
 ``True``.
 
+Issue #175: after #167, ``success`` was set to ``False`` whenever ANY
+tool_result in the whole transcript carried ``is_error``. PreToolUse hooks
+routinely reject individual tool calls that the agent then recovers from
+(retries, alternate tool, etc.), so an agent that finished its work cleanly
+was still recorded as ERROR. ``success`` now reflects the transcript's
+*final state* rather than its full history:
+
+- ``False`` only if (a) the LAST tool_result in the transcript is an error,
+  or (b) the transcript contains at least one tool call/result but no
+  assistant text block follows the last tool activity (the agent never
+  produced a final answer -- an incomplete/truncated run). Only text
+  blocks in a message whose role is ``"assistant"`` count for (b); a
+  user-role message carrying a ``type: "text"`` block (e.g. a
+  hook-injected/harness nudge) does not.
+- ``True`` otherwise, even if earlier tool_results in the same transcript
+  errored and were recovered from.
+- ``errors``/``error_count`` still report every errored tool_result seen,
+  regardless of whether it affected the final ``success`` verdict, so
+  recovered errors remain visible for debugging/learning extraction.
+- The pre-existing ``None`` (indeterminate) semantics for unreadable,
+  missing, or empty transcripts are unchanged by this issue.
+
 STDLIB ONLY. This module is imported by
 ``~/.claude/hooks/session_intelligence_agent_stop.py``, which runs under
 plain ``python3`` OUTSIDE this project's pixi environment. It must not
@@ -34,6 +56,7 @@ _EMPTY_RESULT_BASE = {
     "tool_count": 0,
     "tools_used": [],
     "errors": [],
+    "error_count": 0,
 }
 
 
@@ -52,8 +75,10 @@ def summarize_transcript(path: str) -> dict:
 
     Returns a dict with keys: ``tool_count`` (int), ``tools_used``
     (deduplicated list, first-seen order), ``errors`` (list of error
-    markers), ``success`` (True/False/None), ``entries_parsed`` (int),
-    ``parse_error`` (str or None). Never raises.
+    markers), ``error_count`` (int, total errored tool_results -- not
+    truncated), ``success`` (True/False/None, see issue #175 for the
+    final-state rule), ``entries_parsed`` (int), ``parse_error`` (str or
+    None). Never raises.
     """
     if not path:
         return _indeterminate_result("no transcript path provided")
@@ -72,6 +97,18 @@ def summarize_transcript(path: str) -> dict:
     errors: list[str] = []
     entries_parsed = 0
 
+    # Issue #175 final-state tracking. `last_tool_result_is_error` reflects
+    # only the most recently seen tool_result block (rule (a)); it is left
+    # untouched by tool_use blocks, so it always answers "was the last
+    # *resolved* tool_result an error", even across an unresolved trailing
+    # tool_use. `saw_text_since_last_tool_event` is reset False on every
+    # tool_use/tool_result and set True on every text block, so it answers
+    # "did the agent produce a final answer after its last tool activity"
+    # (rule (b)).
+    last_tool_result_is_error: bool | None = None
+    saw_text_since_last_tool_event = False
+    any_tool_event = False
+
     for raw_line in raw_lines:
         line = raw_line.strip()
         if not line:
@@ -88,6 +125,17 @@ def summarize_transcript(path: str) -> dict:
         message = entry.get("message")
         content = message.get("content") if isinstance(message, dict) else None
 
+        # Issue #175 follow-up: rule (b) is "assistant text after last tool
+        # activity" specifically. Hook-injected/harness nudges and other
+        # user-role messages can carry a `type: "text"` content block too
+        # (e.g. a synthetic reminder), and those must NOT count as the
+        # agent's final answer. Prefer the message's own `role`; fall back
+        # to the entry's top-level `type` only when `role` is absent.
+        message_role = message.get("role") if isinstance(message, dict) else None
+        if message_role is None:
+            message_role = entry.get("type")
+        is_assistant_message = message_role == "assistant"
+
         if isinstance(content, list):
             for block in content:
                 if not isinstance(block, dict):
@@ -95,31 +143,56 @@ def summarize_transcript(path: str) -> dict:
                 block_type = block.get("type")
                 if block_type == "tool_use":
                     tool_count += 1
+                    any_tool_event = True
+                    saw_text_since_last_tool_event = False
                     name = block.get("name")
                     if name and name not in tools_used:
                         tools_used.append(name)
-                elif block_type == "tool_result" and block.get("is_error"):
-                    errors.append(str(block.get("tool_use_id", "unknown")))
+                elif block_type == "tool_result":
+                    any_tool_event = True
+                    saw_text_since_last_tool_event = False
+                    is_error = bool(block.get("is_error"))
+                    last_tool_result_is_error = is_error
+                    if is_error:
+                        errors.append(str(block.get("tool_use_id", "unknown")))
+                elif block_type == "text" and is_assistant_message:
+                    saw_text_since_last_tool_event = True
         else:
             # Legacy flat shape: tool_use/tool_result at the top level.
             entry_type = entry.get("type")
             if entry_type == "tool_use":
                 tool_count += 1
+                any_tool_event = True
+                saw_text_since_last_tool_event = False
                 name = entry.get("name")
                 if name and name not in tools_used:
                     tools_used.append(name)
-            elif entry_type == "tool_result" and entry.get("is_error"):
-                errors.append(str(entry.get("tool_use_id", "unknown")))
+            elif entry_type == "tool_result":
+                any_tool_event = True
+                saw_text_since_last_tool_event = False
+                is_error = bool(entry.get("is_error"))
+                last_tool_result_is_error = is_error
+                if is_error:
+                    errors.append(str(entry.get("tool_use_id", "unknown")))
+            elif entry_type == "text":
+                saw_text_since_last_tool_event = True
 
     if entries_parsed == 0:
         return _indeterminate_result("no usable entries found in transcript")
 
-    success = False if errors else True
+    # Issue #175: final-state judgment, not "any error anywhere => False".
+    if last_tool_result_is_error:
+        success = False
+    elif any_tool_event and not saw_text_since_last_tool_event:
+        success = False
+    else:
+        success = True
 
     return {
         "tool_count": tool_count,
         "tools_used": tools_used,
         "errors": errors,
+        "error_count": len(errors),
         "success": success,
         "entries_parsed": entries_parsed,
         "parse_error": None,

@@ -2455,7 +2455,13 @@ class SessionIntelligenceEngine:
         reproduce the exact confident-zero bug issue #115 reports, just
         moved to a different field. It is None when no agent execution
         has completed yet, for the same "unmeasured, not zero" reason as
-        efficiency_score.
+        efficiency_score. ABANDONED executions are excluded from this
+        average (issue #173): the startup sweep (http_server.py:199-208)
+        sets an ABANDONED execution's `completed` to the sweep time, not an
+        observed end, so including it can inflate the mean by hours from a
+        single stale execution. INDETERMINATE stays included -- its
+        `completed` comes from a real agent_stop, so its duration is an
+        actual measurement, unlike ABANDONED's.
 
         abandoned_executions and indeterminate_executions (issue #168) do
         NOT change efficiency_score's formula or denominator -- it is still
@@ -2496,7 +2502,7 @@ class SessionIntelligenceEngine:
         durations_ms = [
             (agent_exec.completed - agent_exec.started).total_seconds() * 1000
             for agent_exec in session.agents_executed
-            if agent_exec.completed is not None
+            if agent_exec.completed is not None and agent_exec.status != ExecutionStatus.ABANDONED
         ]
         metrics.average_execution_time_ms = (
             sum(durations_ms) / len(durations_ms) if durations_ms else None

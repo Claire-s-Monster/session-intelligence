@@ -50,6 +50,9 @@ from __future__ import annotations
 import json
 import os
 
+# Issue #181: the tool whose successful result is the agent's final answer.
+_HANDBACK_TOOL_NAME = "SubagentHandback"
+
 # Public keys always present in the returned dict, used to build every
 # early-return (unreadable/unparseable transcript) result consistently.
 _EMPTY_RESULT_BASE = {
@@ -104,10 +107,13 @@ def summarize_transcript(path: str) -> dict:
     # tool_use. `saw_text_since_last_tool_event` is reset False on every
     # tool_use/tool_result and set True on every text block, so it answers
     # "did the agent produce a final answer after its last tool activity"
-    # (rule (b)).
+    # (rule (b)). Issue #181: a successful SubagentHandback result is the
+    # agent's final answer (a tool_use/tool_result pair, not a text block),
+    # so it sets that flag right after the reset.
     last_tool_result_is_error: bool | None = None
     saw_text_since_last_tool_event = False
     any_tool_event = False
+    handback_ids: set[str] = set()
 
     for raw_line in raw_lines:
         line = raw_line.strip()
@@ -148,6 +154,8 @@ def summarize_transcript(path: str) -> dict:
                     name = block.get("name")
                     if name and name not in tools_used:
                         tools_used.append(name)
+                    if name == _HANDBACK_TOOL_NAME and isinstance(block.get("id"), str):
+                        handback_ids.add(block["id"])
                 elif block_type == "tool_result":
                     any_tool_event = True
                     saw_text_since_last_tool_event = False
@@ -155,6 +163,11 @@ def summarize_transcript(path: str) -> dict:
                     last_tool_result_is_error = is_error
                     if is_error:
                         errors.append(str(block.get("tool_use_id", "unknown")))
+                    elif (
+                        isinstance(block.get("tool_use_id"), str)
+                        and block["tool_use_id"] in handback_ids
+                    ):
+                        saw_text_since_last_tool_event = True
                 elif block_type == "text" and is_assistant_message:
                     saw_text_since_last_tool_event = True
         else:
@@ -167,6 +180,8 @@ def summarize_transcript(path: str) -> dict:
                 name = entry.get("name")
                 if name and name not in tools_used:
                     tools_used.append(name)
+                if name == _HANDBACK_TOOL_NAME and isinstance(entry.get("id"), str):
+                    handback_ids.add(entry["id"])
             elif entry_type == "tool_result":
                 any_tool_event = True
                 saw_text_since_last_tool_event = False
@@ -174,6 +189,11 @@ def summarize_transcript(path: str) -> dict:
                 last_tool_result_is_error = is_error
                 if is_error:
                     errors.append(str(entry.get("tool_use_id", "unknown")))
+                elif (
+                    isinstance(entry.get("tool_use_id"), str)
+                    and entry["tool_use_id"] in handback_ids
+                ):
+                    saw_text_since_last_tool_event = True
             elif entry_type == "text":
                 saw_text_since_last_tool_event = True
 

@@ -1646,6 +1646,15 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         design previously caused total_sessions_scanned to silently report 0
         whenever there were zero agent_execution rows in the window, even if
         the sessions table itself had thousands of matching rows.
+
+        Issue #171: rows with status 'indeterminate' (ExecutionStatus.INDETERMINATE
+        in models/session_models.py -- agent_stop reported no parseable outcome)
+        are neither a success nor a failure, so they are excluded from
+        "invocations"/"successes"/"failures" and from the average duration,
+        mirroring how 'abandoned' is already excluded via the WHERE clause
+        below. Each agent's indeterminate count is still reported separately
+        (per-agent "indeterminate" key) so a reader can see how many terminal
+        executions of unknown outcome were left out of success_rate.
         """
         pool = self._ensure_connected()
 
@@ -1702,22 +1711,31 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     "invocations": 0,
                     "successes": 0,
                     "failures": 0,
+                    "indeterminate": 0,
                     "duration_ms_total": 0.0,
                     "duration_ms_count": 0,
                     "last_used": started_at_str,
                 }
 
             entry = stats_map[agent_type]
-            entry["invocations"] += 1
 
-            if status in ("completed", "success"):
-                entry["successes"] += 1
-            elif status in ("failed", "error"):
-                entry["failures"] += 1
+            # Issue #171: indeterminate executions don't count toward
+            # invocations/successes/failures or the duration average -- only
+            # their own counter, so success_rate isn't deflated by unknown
+            # outcomes.
+            if status == "indeterminate":
+                entry["indeterminate"] += 1
+            else:
+                entry["invocations"] += 1
 
-            if duration_ms is not None:
-                entry["duration_ms_total"] += duration_ms
-                entry["duration_ms_count"] += 1
+                if status in ("completed", "success"):
+                    entry["successes"] += 1
+                elif status in ("failed", "error"):
+                    entry["failures"] += 1
+
+                if duration_ms is not None:
+                    entry["duration_ms_total"] += duration_ms
+                    entry["duration_ms_count"] += 1
 
             # Track most recent use
             if started_at_str > entry["last_used"]:
@@ -1736,6 +1754,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     "invocations": entry["invocations"],
                     "successes": entry["successes"],
                     "failures": entry["failures"],
+                    "indeterminate": entry["indeterminate"],
                     "avg_duration_ms": avg_duration_ms,
                     "last_used": entry["last_used"],
                 }

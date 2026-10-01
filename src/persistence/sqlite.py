@@ -1280,6 +1280,13 @@ class SQLiteBackend(BaseDatabaseBackend):
 
         Returns a dict with "total_sessions_scanned" (int) and "agents" (list).
         See postgresql.py counterpart for why this isn't a bare per-row sentinel.
+
+        Issue #171: rows with status 'indeterminate' (ExecutionStatus.INDETERMINATE
+        in models/session_models.py) are neither a success nor a failure, so
+        they are excluded from "invocations"/"successes"/"failures" and from
+        the average duration, mirroring how 'abandoned' is already excluded
+        via the WHERE clause below. Each agent's indeterminate count is still
+        reported separately (per-agent "indeterminate" key).
         """
         from datetime import timedelta
 
@@ -1333,22 +1340,31 @@ class SQLiteBackend(BaseDatabaseBackend):
                     "invocations": 0,
                     "successes": 0,
                     "failures": 0,
+                    "indeterminate": 0,
                     "duration_ms_total": 0.0,
                     "duration_ms_count": 0,
                     "last_used": started_at,
                 }
 
             entry = stats_map[agent_type]
-            entry["invocations"] += 1
 
-            if status in ("completed", "success"):
-                entry["successes"] += 1
-            elif status in ("failed", "error"):
-                entry["failures"] += 1
+            # Issue #171: indeterminate executions don't count toward
+            # invocations/successes/failures or the duration average -- only
+            # their own counter, so success_rate isn't deflated by unknown
+            # outcomes.
+            if status == "indeterminate":
+                entry["indeterminate"] += 1
+            else:
+                entry["invocations"] += 1
 
-            if duration_ms is not None:
-                entry["duration_ms_total"] += duration_ms
-                entry["duration_ms_count"] += 1
+                if status in ("completed", "success"):
+                    entry["successes"] += 1
+                elif status in ("failed", "error"):
+                    entry["failures"] += 1
+
+                if duration_ms is not None:
+                    entry["duration_ms_total"] += duration_ms
+                    entry["duration_ms_count"] += 1
 
             # Track most recent use
             if started_at > entry["last_used"]:
@@ -1368,6 +1384,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                     "invocations": invocations,
                     "successes": entry["successes"],
                     "failures": entry["failures"],
+                    "indeterminate": entry["indeterminate"],
                     "avg_duration_ms": avg_duration_ms,
                     "last_used": entry["last_used"],
                 }

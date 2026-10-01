@@ -22,6 +22,7 @@ import aiosqlite
 from .base import (
     DEFAULT_SQLITE_PATH,
     BaseDatabaseBackend,
+    execution_duration_ms,
     get_execution_max_age_hours,
     get_session_max_age_hours,
 )
@@ -1287,6 +1288,10 @@ class SQLiteBackend(BaseDatabaseBackend):
         the average duration, mirroring how 'abandoned' is already excluded
         via the WHERE clause below. Each agent's indeterminate count is still
         reported separately (per-agent "indeterminate" key).
+
+        Issue #179: avg_duration_ms uses a positive performance-blob duration
+        when present, else falls back to completed_at - started_at (see
+        base.execution_duration_ms); rows with neither contribute nothing.
         """
         from datetime import timedelta
 
@@ -1321,18 +1326,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             status = row_dict.get("status") or ""
             started_at = row_dict.get("started_at") or ""
 
-            performance_raw = row_dict.get("performance")
-            duration_ms: float | None = None
-            if performance_raw:
-                try:
-                    perf = (
-                        json.loads(performance_raw)
-                        if isinstance(performance_raw, str)
-                        else performance_raw
-                    )
-                    duration_ms = perf.get("duration_ms") or perf.get("total_duration_ms")
-                except (json.JSONDecodeError, AttributeError):
-                    pass
+            duration_ms = execution_duration_ms(row_dict)
 
             if agent_type not in stats_map:
                 stats_map[agent_type] = {

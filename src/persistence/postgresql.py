@@ -30,6 +30,7 @@ from .base import (
     DEFAULT_POSTGRES_DSN,
     BaseDatabaseBackend,
     db_retry,
+    execution_duration_ms,
     get_execution_max_age_hours,
     get_session_max_age_hours,
     sanitize_dsn,
@@ -1655,6 +1656,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         below. Each agent's indeterminate count is still reported separately
         (per-agent "indeterminate" key) so a reader can see how many terminal
         executions of unknown outcome were left out of success_rate.
+
+        Issue #179: avg_duration_ms uses a positive performance-blob duration
+        when present, else falls back to completed_at - started_at (see
+        base.execution_duration_ms); rows with neither contribute nothing.
         """
         pool = self._ensure_connected()
 
@@ -1692,18 +1697,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 else (started_at or "")
             )
 
-            performance_raw = row_dict.get("performance")
-            duration_ms: float | None = None
-            if performance_raw:
-                try:
-                    perf = (
-                        json.loads(performance_raw)
-                        if isinstance(performance_raw, str)
-                        else performance_raw
-                    )
-                    duration_ms = perf.get("duration_ms") or perf.get("total_duration_ms")
-                except (json.JSONDecodeError, AttributeError):
-                    pass
+            duration_ms = execution_duration_ms(row_dict)
 
             if agent_type not in stats_map:
                 stats_map[agent_type] = {

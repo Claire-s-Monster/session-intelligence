@@ -1538,6 +1538,20 @@ class SessionIntelligenceEngine:
                 agent_execution = agent_exec
                 break
 
+        # Issue #174: Claude Code can fire SubagentStop twice for one agent
+        # (before and after the SubagentHandback). The first stop already moved
+        # the execution to a terminal status, so fold a later stop into the most
+        # recent terminal execution of the same agent instead of creating a
+        # start-less duplicate. Internal agents reuse fixed names; never fold.
+        if not agent_execution and is_agent_stop and agent_name not in INTERNAL_AGENT_NAMES:
+            for agent_exec in reversed(session.agents_executed):
+                if (
+                    agent_exec.agent_name == agent_name
+                    and agent_exec.status != ExecutionStatus.RUNNING
+                ):
+                    agent_execution = agent_exec
+                    break
+
         if not agent_execution:
             from models.session_models import AgentContext, AgentPerformance
 
@@ -1562,7 +1576,13 @@ class SessionIntelligenceEngine:
         agent_execution.last_seen_at = datetime.now(UTC)
 
         if is_agent_stop:
-            agent_execution.status = terminal_status
+            # Issue #174: an INDETERMINATE late stop must not overwrite an
+            # already-determinate (SUCCESS/ERROR) status from a folded stop.
+            if not (
+                terminal_status == ExecutionStatus.INDETERMINATE
+                and agent_execution.status in (ExecutionStatus.SUCCESS, ExecutionStatus.ERROR)
+            ):
+                agent_execution.status = terminal_status
             agent_execution.completed = completed_at
             if resolved_agent_type != "unknown" and not (
                 agent_execution.agent_type and agent_execution.agent_type != "unknown"

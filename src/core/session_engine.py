@@ -1367,6 +1367,19 @@ class SessionIntelligenceEngine:
                 optimizations=[],
             )
 
+        # Issue #184: an explicit session_id missing from the cache is
+        # normal after a service restart or after _finalize_session evicts
+        # it (#25). Hydrate it from the database BEFORE the #108 guard (which
+        # consults the cached executions) and before the auto-create block
+        # below (which would build a blank session and let the post-call
+        # sweep overwrite the persisted row). _hydrate_session caches its
+        # result, creates nothing when the row does not exist, and leaves
+        # status untouched, so a completed session is not reopened.
+        if session_id not in self.session_cache:
+            hydrated = await self._hydrate_session(session_id)
+            if hydrated is not None:
+                self.session_cache[session_id] = hydrated
+
         # Issue #108: Claude Code's background-task progress summarizer
         # fires a typeless SubagentStop (phase="agent_stop", agent_type=""
         # or "unknown") roughly every 32s with no matching SubagentStart.

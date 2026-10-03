@@ -37,6 +37,14 @@ was still recorded as ERROR. ``success`` now reflects the transcript's
 - The pre-existing ``None`` (indeterminate) semantics for unreadable,
   missing, or empty transcripts are unchanged by this issue.
 
+Issue #186: SubagentStop fires while the transcript still ends with the
+assistant's ``SubagentHandback`` tool_use -- its tool_result has not been
+written yet. Rule (b) therefore scored every normally-finishing agent False,
+because #181 only recognised the handback's tool_result. Invoking
+``SubagentHandback`` is itself the agent's final answer, so the tool_use
+(nested and legacy flat shapes) now counts as one; an errored result that
+follows still wins via rule (a).
+
 STDLIB ONLY. This module is imported by
 ``~/.claude/hooks/session_intelligence_agent_stop.py``, which runs under
 plain ``python3`` OUTSIDE this project's pixi environment. It must not
@@ -109,7 +117,9 @@ def summarize_transcript(path: str) -> dict:
     # "did the agent produce a final answer after its last tool activity"
     # (rule (b)). Issue #181: a successful SubagentHandback result is the
     # agent's final answer (a tool_use/tool_result pair, not a text block),
-    # so it sets that flag right after the reset.
+    # so it sets that flag right after the reset. Issue #186: SubagentStop
+    # fires before that result is written, so the SubagentHandback tool_use
+    # itself also sets the flag right after the reset.
     last_tool_result_is_error: bool | None = None
     saw_text_since_last_tool_event = False
     any_tool_event = False
@@ -154,8 +164,10 @@ def summarize_transcript(path: str) -> dict:
                     name = block.get("name")
                     if name and name not in tools_used:
                         tools_used.append(name)
-                    if name == _HANDBACK_TOOL_NAME and isinstance(block.get("id"), str):
-                        handback_ids.add(block["id"])
+                    if name == _HANDBACK_TOOL_NAME:
+                        saw_text_since_last_tool_event = True
+                        if isinstance(block.get("id"), str):
+                            handback_ids.add(block["id"])
                 elif block_type == "tool_result":
                     any_tool_event = True
                     saw_text_since_last_tool_event = False
@@ -180,8 +192,10 @@ def summarize_transcript(path: str) -> dict:
                 name = entry.get("name")
                 if name and name not in tools_used:
                     tools_used.append(name)
-                if name == _HANDBACK_TOOL_NAME and isinstance(entry.get("id"), str):
-                    handback_ids.add(entry["id"])
+                if name == _HANDBACK_TOOL_NAME:
+                    saw_text_since_last_tool_event = True
+                    if isinstance(entry.get("id"), str):
+                        handback_ids.add(entry["id"])
             elif entry_type == "tool_result":
                 any_tool_event = True
                 saw_text_since_last_tool_event = False

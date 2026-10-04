@@ -61,6 +61,7 @@ from transport.security import (
     get_origin_validation_middleware,
     validate_api_key,
 )
+from transport.stall_monitor import StallMonitor
 from utils.token_limiter import apply_token_limits
 
 
@@ -171,6 +172,10 @@ class HTTPSessionIntelligenceServer:
         # last successful write.
         self.persist_tracker = PersistDigestTracker()
 
+        # Issue #174: stall evidence (loop lag, sync tools, slow requests/DB, pool).
+        # PostgreSQL exposes an asyncpg pool as ``_pool``; other backends yield None.
+        self.stall_monitor = StallMonitor(pool_getter=lambda: getattr(self.database, "_pool", None))
+
     @asynccontextmanager
     async def lifespan(self, app: FastAPI) -> AsyncGenerator[None, None]:
         """Application lifespan manager."""
@@ -238,11 +243,13 @@ class HTTPSessionIntelligenceServer:
         app.state.mcp_session_manager = self.mcp_session_manager
         app.state.notification_manager = self.notification_manager
 
+        self.stall_monitor.start()
         logger.info("Session Intelligence HTTP server ready")
 
         yield
 
         logger.info("Shutting down HTTP server")
+        await self.stall_monitor.stop()
         await self.database.close()
 
     def create_app(self) -> FastAPI:
@@ -317,6 +324,16 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             mcp_session_id: str | None = Header(None, alias="MCP-Session-Id"),
             x_api_key: str | None = Header(None, alias="X-API-Key"),
         ) -> JSONResponse:
+            """Track the request as in-flight (issue #174), then handle it."""
+            kind, tool = await self._describe_mcp_request(request)
+            with self.stall_monitor.track_request(kind, tool):
+                return await process_mcp_post(request, mcp_session_id, x_api_key)
+
+        async def process_mcp_post(
+            request: Request,
+            mcp_session_id: str | None,
+            x_api_key: str | None,
+        ) -> JSONResponse:
             """Handle MCP JSON-RPC 2.0 requests."""
             if self.security_config.require_api_key and self.security_config.api_key:
                 validate_api_key(x_api_key, self.security_config.api_key)
@@ -341,9 +358,10 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             lean_interface = request.app.state.lean_interface
 
             if method == "initialize":
-                new_session_id = await mcp_manager.create_mcp_session(
-                    client_info=params.get("clientInfo")
-                )
+                async with self.stall_monitor.timed_db("initialize.save_mcp_session"):
+                    new_session_id = await mcp_manager.create_mcp_session(
+                        client_info=params.get("clientInfo")
+                    )
                 response = JSONResponse(
                     content={
                         "jsonrpc": "2.0",
@@ -589,6 +607,30 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
 
         return {"contents": []}
 
+    @staticmethod
+    async def _describe_mcp_request(request: Request) -> tuple[str, str | None]:
+        """Return (kind, target tool) for in-flight tracking; never raises."""
+        try:
+            body = await request.json()
+        except Exception:
+            return "invalid", None
+        if isinstance(body, list):
+            return "batch", None
+        if not isinstance(body, dict):
+            return "invalid", None
+        method = body.get("method")
+        kind = method if isinstance(method, str) else "unknown"
+        params = body.get("params")
+        if kind != "tools/call" or not isinstance(params, dict):
+            return kind, None
+        name = params.get("name")
+        arguments = params.get("arguments")
+        if name == "execute_tool" and isinstance(arguments, dict):
+            target = arguments.get("tool_name")
+            if isinstance(target, str):
+                return kind, target
+        return kind, name if isinstance(name, str) else None
+
     async def _persist_sessions_to_database(self, request: Request) -> None:
         """Persist changed sessions from engine cache to database.
 
@@ -812,14 +854,17 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                     # This ensures decisions/executions can find their session even after
                     # the engine cache is cleared between HTTP requests
                     if target in session_modifying_tools:
-                        await self._ensure_sessions_loaded_from_database(request)
+                        async with self.stall_monitor.timed_db("ensure_sessions_loaded"):
+                            await self._ensure_sessions_loaded_from_database(request)
 
                     tool_func = tool_registry[target]["implementation"]
                     # Handle async tool implementations
                     if inspect.iscoroutinefunction(tool_func):
                         tool_result = await tool_func(**tool_params)
                     else:
-                        tool_result = tool_func(**tool_params)
+                        # Runs on the event loop: its duration is loop-blocked time.
+                        with self.stall_monitor.time_sync_tool(target):
+                            tool_result = tool_func(**tool_params)
 
                     # issue #160: the engine (tool_func above) already owns persistence
                     # and project_path scoping for session_log_learning,
@@ -848,7 +893,8 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
 
                     # Persist session changes to database after session-modifying operations
                     if target in session_modifying_tools:
-                        await self._persist_sessions_to_database(request)
+                        async with self.stall_monitor.timed_db("persist_sessions"):
+                            await self._persist_sessions_to_database(request)
 
                 except Exception as e:
                     logger.exception(f"Error executing tool {target}")
@@ -856,6 +902,10 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
 
         elif tool_name == "server_info":
             result = lean_interface.build_server_info(transport="HTTP (SSE)")
+            events = arguments.get("events", 50)
+            if not isinstance(events, int) or isinstance(events, bool):
+                events = 50
+            result["stall_diagnostics"] = self.stall_monitor.snapshot(events=events)
 
         else:
             result = {"error": f"Unknown tool: {tool_name}"}
@@ -864,6 +914,10 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
 
     def _add_health_endpoint(self, app: FastAPI) -> None:
         """Add health check endpoint."""
+
+        @app.get("/health/stalls")
+        async def health_stalls(events: int = 50) -> dict[str, Any]:
+            return self.stall_monitor.snapshot(events=events)
 
         @app.get("/health")
         async def health_check(request: Request) -> dict[str, Any]:

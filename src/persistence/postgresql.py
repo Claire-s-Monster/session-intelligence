@@ -16,6 +16,8 @@ Connection string format:
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import json
 import logging
 from datetime import UTC, datetime, timedelta
@@ -42,6 +44,53 @@ logger = logging.getLogger(__name__)
 # summary reader goes through _decode_summary_row, so a column added here is
 # decoded on all of them instead of on whichever site remembered it.
 _SUMMARY_JSON_FIELDS = ("key_changes", "tags")
+
+# Schema DDL guard (#174). ALTER TABLE takes ACCESS EXCLUSIVE even when the column
+# exists, so re-running DDL behind a live query stalls the server. initialize()
+# skips all DDL when schema_fingerprint holds the hash of the DDL text below.
+DEFAULT_DDL_LOCK_TIMEOUT_MS = 2000
+DEFAULT_DDL_MAX_ATTEMPTS = 5
+_DDL_BACKOFF_SECONDS = 0.5
+
+_SCHEMA_VERSION_INSERT = """
+INSERT INTO schema_version (version)
+VALUES ($1)
+ON CONFLICT (version) DO NOTHING
+"""
+
+_FINGERPRINT_TABLE_DDL = (
+    "CREATE TABLE IF NOT EXISTS schema_fingerprint ("
+    "fingerprint TEXT PRIMARY KEY, "
+    "applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+)
+_FINGERPRINT_INSERT = (
+    "INSERT INTO schema_fingerprint (fingerprint) VALUES ($1) ON CONFLICT DO NOTHING"
+)
+
+# Idempotent migrations and backfills for existing databases, run in order after
+# SCHEMA. Both the slow path and the schema fingerprint consume this tuple.
+_MIGRATIONS = (
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_name TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_sessions_session_name "
+    "ON sessions(session_name) WHERE session_name IS NOT NULL",
+    "ALTER TABLE project_learnings ADD COLUMN IF NOT EXISTS project_name TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_learnings_project_name "
+    "ON project_learnings(project_name) WHERE project_name IS NOT NULL",
+    # Issue #87: supersedes pointer used to retire corrected entries.
+    "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS supersedes TEXT",
+    "ALTER TABLE project_learnings ADD COLUMN IF NOT EXISTS supersedes TEXT",
+    # Issue #82: last_seen_at heartbeat column on sessions and agent_executions,
+    # backfilled from the start-time column so existing rows do not become more
+    # reap-able than they are today. Every current insert path sets last_seen_at,
+    # so only rows predating the column need the backfill (slow path only).
+    "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ",
+    "UPDATE sessions SET last_seen_at = started_at WHERE last_seen_at IS NULL",
+    "ALTER TABLE agent_executions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ",
+    "UPDATE agent_executions SET last_seen_at = started_at WHERE last_seen_at IS NULL",
+    # Issue #106: caller-authored notebook body, distinct from the regenerated
+    # summary_markdown snapshot.
+    "ALTER TABLE session_summaries ADD COLUMN IF NOT EXISTS authored_body TEXT",
+)
 
 
 class PostgreSQLBackend(BaseDatabaseBackend):
@@ -345,11 +394,20 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     CREATE INDEX IF NOT EXISTS idx_agent_notebooks_type ON agent_notebooks(notebook_type);
     """
 
-    def __init__(self, dsn: str | None = None, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        dsn: str | None = None,
+        *,
+        lock_timeout_ms: int = DEFAULT_DDL_LOCK_TIMEOUT_MS,
+        ddl_max_attempts: int = DEFAULT_DDL_MAX_ATTEMPTS,
+        **kwargs: Any,
+    ) -> None:
         """Initialize PostgreSQL backend.
 
         Args:
             dsn: PostgreSQL connection string. Defaults to postgresql://localhost/session_intelligence.
+            lock_timeout_ms: lock_timeout applied to schema DDL (slow path only).
+            ddl_max_attempts: attempts at the slow path when a lock is unavailable.
             **kwargs: Additional arguments passed to asyncpg.create_pool().
         """
         super().__init__()
@@ -360,6 +418,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             )
 
         self.dsn = dsn or DEFAULT_POSTGRES_DSN
+        self._lock_timeout_ms = lock_timeout_ms
+        self._ddl_max_attempts = max(1, ddl_max_attempts)
         self._pool_kwargs = kwargs
         self._pool: asyncpg.Pool | None = None
 
@@ -381,74 +441,73 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             **pool_config,
         )
 
-        # Apply schema
-        async with self._pool.acquire() as conn:
-            # Split schema into individual statements for PostgreSQL
-            statements = [s.strip() for s in self.SCHEMA.split(";") if s.strip()]
-            for statement in statements:
-                try:
-                    await conn.execute(statement)
-                except Exception as e:
-                    # Ignore "already exists" errors
-                    if "already exists" not in str(e).lower():
-                        logger.warning(f"Schema statement warning: {e}")
-
-            # Track schema version
-            await conn.execute(
-                """
-                INSERT INTO schema_version (version)
-                VALUES ($1)
-                ON CONFLICT (version) DO NOTHING
-                """,
-                self.SCHEMA_VERSION,
-            )
-
-            # Idempotent migrations for existing databases
-            await conn.execute("ALTER TABLE sessions ADD COLUMN IF NOT EXISTS session_name TEXT")
-            await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_sessions_session_name "
-                "ON sessions(session_name) WHERE session_name IS NOT NULL"
-            )
-            await conn.execute(
-                "ALTER TABLE project_learnings ADD COLUMN IF NOT EXISTS project_name TEXT"
-            )
-            await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_learnings_project_name "
-                "ON project_learnings(project_name) WHERE project_name IS NOT NULL"
-            )
-            # Issue #87: idempotent migration for existing databases: add
-            # the supersedes pointer used to retire corrected entries.
-            await conn.execute("ALTER TABLE decisions ADD COLUMN IF NOT EXISTS supersedes TEXT")
-            await conn.execute(
-                "ALTER TABLE project_learnings ADD COLUMN IF NOT EXISTS supersedes TEXT"
-            )
-
-            # Issue #82: idempotent migration for existing databases: add
-            # last_seen_at heartbeat column to sessions and agent_executions.
-            # Immediately backfilled from the start-time column so existing
-            # rows do not become more reap-able than they are today.
-            await conn.execute(
-                "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ"
-            )
-            await conn.execute(
-                "UPDATE sessions SET last_seen_at = started_at WHERE last_seen_at IS NULL"
-            )
-            await conn.execute(
-                "ALTER TABLE agent_executions ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ"
-            )
-            await conn.execute(
-                "UPDATE agent_executions SET last_seen_at = started_at WHERE last_seen_at IS NULL"
-            )
-
-            # Issue #106: idempotent migration for existing databases: add the
-            # caller-authored notebook body. Distinct from summary_markdown,
-            # which is a regenerated snapshot.
-            await conn.execute(
-                "ALTER TABLE session_summaries ADD COLUMN IF NOT EXISTS authored_body TEXT"
-            )
+        try:
+            async with self._pool.acquire() as conn:
+                current = await self._schema_is_current(conn)
+            if current:
+                logger.info("PostgreSQL schema is current; skipping DDL (fast path)")
+            else:
+                logger.info("PostgreSQL schema fingerprint not found; applying DDL (slow path)")
+                await self._apply_schema_with_retry()
+        except BaseException:
+            await self.close()
+            raise
 
         self._is_connected = True
         logger.info(f"PostgreSQL database initialized: {sanitize_dsn(self.dsn)}")
+
+    @staticmethod
+    async def _schema_is_current(conn: Any) -> bool:
+        """Whether the schema_fingerprint table holds this module's fingerprint."""
+        if not await conn.fetchval("SELECT to_regclass('schema_fingerprint') IS NOT NULL"):
+            return False
+        row = await conn.fetchval(
+            "SELECT 1 FROM schema_fingerprint WHERE fingerprint = $1", _SCHEMA_FINGERPRINT
+        )
+        return row is not None
+
+    async def _apply_schema_with_retry(self) -> None:
+        """Run the slow path, retrying when a lock cannot be acquired in time."""
+        for attempt in range(1, self._ddl_max_attempts + 1):
+            try:
+                await self._apply_schema()
+                return
+            except asyncpg.exceptions.LockNotAvailableError as e:
+                if attempt >= self._ddl_max_attempts:
+                    raise
+                logger.warning(
+                    f"Schema DDL lock not available (attempt {attempt}/"
+                    f"{self._ddl_max_attempts}): {e}; retrying"
+                )
+                await asyncio.sleep(_DDL_BACKOFF_SECONDS * attempt)
+
+    async def _apply_schema(self) -> None:
+        """Apply all DDL statement by statement under lock_timeout (idempotent)."""
+        assert self._pool is not None
+        async with self._pool.acquire() as conn:
+            await conn.execute(f"SET lock_timeout = '{int(self._lock_timeout_ms)}ms'")
+            try:
+                # Split schema into individual statements for PostgreSQL
+                statements = [s.strip() for s in self.SCHEMA.split(";") if s.strip()]
+                for statement in statements:
+                    try:
+                        await conn.execute(statement)
+                    except asyncpg.exceptions.LockNotAvailableError:
+                        raise
+                    except Exception as e:
+                        # Ignore "already exists" errors
+                        if "already exists" not in str(e).lower():
+                            logger.warning(f"Schema statement warning: {e}")
+
+                await conn.execute(_SCHEMA_VERSION_INSERT, self.SCHEMA_VERSION)
+                for statement in _MIGRATIONS:
+                    await conn.execute(statement)
+
+                # Last step: only a fully applied schema is marked current.
+                await conn.execute(_FINGERPRINT_TABLE_DDL)
+                await conn.execute(_FINGERPRINT_INSERT, _SCHEMA_FINGERPRINT)
+            finally:
+                await conn.execute("RESET lock_timeout")
 
     async def close(self) -> None:
         """Close database connection pool."""
@@ -2792,3 +2851,21 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 )
 
         return [dict(row) for row in rows]
+
+
+def _compute_schema_fingerprint() -> str:
+    """sha256 over every DDL text initialize() can run, so any edit invalidates it."""
+    digest = hashlib.sha256()
+    for part in (
+        PostgreSQLBackend.SCHEMA,
+        _SCHEMA_VERSION_INSERT,
+        str(PostgreSQLBackend.SCHEMA_VERSION),
+        *_MIGRATIONS,
+        _FINGERPRINT_TABLE_DDL,
+    ):
+        digest.update(part.encode("utf-8"))
+        digest.update(b"\x00")
+    return digest.hexdigest()
+
+
+_SCHEMA_FINGERPRINT = _compute_schema_fingerprint()

@@ -477,7 +477,7 @@ class LeanMCPInterface:
                         ),
                     },
                 },
-                "required": ["session_id"],
+                "required": [],
             },
             "examples": [
                 {"session_id": "session-123", "health_checks": ["continuity", "files"]},

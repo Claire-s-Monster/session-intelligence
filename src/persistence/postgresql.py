@@ -584,6 +584,34 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         """Save or update a session."""
         pool = self._ensure_connected()
 
+        async with pool.acquire() as conn:
+            await self._save_session_on(conn, session_data)
+
+    @db_retry
+    async def persist_batch(
+        self,
+        sessions: list[dict[str, Any]],
+        decisions: list[dict[str, Any]],
+        executions: list[dict[str, Any]],
+    ) -> None:
+        """Write sessions, decisions and executions in ONE transaction (issue #190).
+
+        Runs the same statements as save_session/save_decision/
+        save_agent_execution on a single connection; any failure rolls the whole
+        batch back. pg_notify is delivered on commit.
+        """
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn, conn.transaction():
+            for session_data in sessions:
+                await self._save_session_on(conn, session_data)
+            for decision_data in decisions:
+                await self._save_decision_on(conn, decision_data)
+            for execution_data in executions:
+                await self._save_agent_execution_on(conn, execution_data)
+
+    async def _save_session_on(self, conn: Any, session_data: dict[str, Any]) -> None:
+        """Upsert a session (and notify) on ``conn``; shared by save_session/persist_batch."""
         from datetime import datetime
 
         started_at = session_data.get("started") or session_data.get("started_at")
@@ -598,41 +626,40 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         if isinstance(last_seen_at, str):
             last_seen_at = datetime.fromisoformat(last_seen_at.replace("Z", "+00:00"))
 
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO sessions
-                (id, started_at, ended_at, last_seen_at, project_path, project_name,
-                 session_name, mode, status, metadata, performance_metrics, health_status)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                ON CONFLICT (id) DO UPDATE SET
-                    ended_at = EXCLUDED.ended_at,
-                    last_seen_at = EXCLUDED.last_seen_at,
-                    status = EXCLUDED.status,
-                    session_name = EXCLUDED.session_name,
-                    metadata = EXCLUDED.metadata,
-                    performance_metrics = EXCLUDED.performance_metrics,
-                    health_status = EXCLUDED.health_status
-                """,
-                session_data["id"],
-                started_at,
-                ended_at,
-                last_seen_at,
-                session_data.get("project_path", ""),
-                session_data.get("project_name"),
-                session_data.get("session_name"),
-                session_data.get("mode", "local"),
-                session_data.get("status", "active"),
-                json.dumps(session_data.get("metadata", {})),
-                json.dumps(session_data.get("performance_metrics", {})),
-                json.dumps(session_data.get("health_status", {})),
-            )
+        await conn.execute(
+            """
+            INSERT INTO sessions
+            (id, started_at, ended_at, last_seen_at, project_path, project_name,
+             session_name, mode, status, metadata, performance_metrics, health_status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ON CONFLICT (id) DO UPDATE SET
+                ended_at = EXCLUDED.ended_at,
+                last_seen_at = EXCLUDED.last_seen_at,
+                status = EXCLUDED.status,
+                session_name = EXCLUDED.session_name,
+                metadata = EXCLUDED.metadata,
+                performance_metrics = EXCLUDED.performance_metrics,
+                health_status = EXCLUDED.health_status
+            """,
+            session_data["id"],
+            started_at,
+            ended_at,
+            last_seen_at,
+            session_data.get("project_path", ""),
+            session_data.get("project_name"),
+            session_data.get("session_name"),
+            session_data.get("mode", "local"),
+            session_data.get("status", "active"),
+            json.dumps(session_data.get("metadata", {})),
+            json.dumps(session_data.get("performance_metrics", {})),
+            json.dumps(session_data.get("health_status", {})),
+        )
 
-            # Notify listeners of session change
-            await conn.execute(
-                "SELECT pg_notify('session_changes', $1)",
-                json.dumps({"session_id": session_data["id"], "action": "upsert"}),
-            )
+        # Notify listeners of session change
+        await conn.execute(
+            "SELECT pg_notify('session_changes', $1)",
+            json.dumps({"session_id": session_data["id"], "action": "upsert"}),
+        )
 
     @db_retry
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
@@ -906,36 +933,40 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         """Save a decision."""
         pool = self._ensure_connected()
 
+        async with pool.acquire() as conn:
+            await self._save_decision_on(conn, decision_data)
+
+    async def _save_decision_on(self, conn: Any, decision_data: dict[str, Any]) -> None:
+        """Upsert a decision on ``conn``; shared by save_decision/persist_batch."""
         from datetime import datetime
 
         timestamp = decision_data.get("timestamp", self._get_timestamp())
         if isinstance(timestamp, str):
             timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
 
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO decisions
-                (id, session_id, timestamp, category, description, rationale,
-                 context, impact_level, artifacts, supersedes)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-                ON CONFLICT (id) DO UPDATE SET
-                    description = EXCLUDED.description,
-                    rationale = EXCLUDED.rationale,
-                    context = EXCLUDED.context,
-                    supersedes = EXCLUDED.supersedes
-                """,
-                decision_data.get("decision_id") or decision_data.get("id"),
-                decision_data["session_id"],
-                timestamp,
-                decision_data.get("category"),
-                decision_data.get("description") or decision_data.get("decision", ""),
-                decision_data.get("rationale"),
-                json.dumps(decision_data.get("context", {})),
-                decision_data.get("impact_level", "medium"),
-                json.dumps(decision_data.get("artifacts", [])),
-                decision_data.get("supersedes"),
-            )
+        await conn.execute(
+            """
+            INSERT INTO decisions
+            (id, session_id, timestamp, category, description, rationale,
+             context, impact_level, artifacts, supersedes)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            ON CONFLICT (id) DO UPDATE SET
+                description = EXCLUDED.description,
+                rationale = EXCLUDED.rationale,
+                context = EXCLUDED.context,
+                supersedes = EXCLUDED.supersedes
+            """,
+            decision_data.get("decision_id") or decision_data.get("id"),
+            decision_data["session_id"],
+            timestamp,
+            decision_data.get("category"),
+            decision_data.get("description") or decision_data.get("decision", ""),
+            decision_data.get("rationale"),
+            json.dumps(decision_data.get("context", {})),
+            decision_data.get("impact_level", "medium"),
+            json.dumps(decision_data.get("artifacts", [])),
+            decision_data.get("supersedes"),
+        )
 
     @db_retry
     async def query_decisions_by_category(
@@ -1610,6 +1641,11 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         """
         pool = self._ensure_connected()
 
+        async with pool.acquire() as conn:
+            await self._save_agent_execution_on(conn, execution_data)
+
+    async def _save_agent_execution_on(self, conn: Any, execution_data: dict[str, Any]) -> None:
+        """Upsert an agent execution on ``conn``; shared by save_agent_execution/persist_batch."""
         from datetime import datetime
 
         execution_id = execution_data.get("id") or execution_data.get("execution_id")
@@ -1634,33 +1670,32 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         if isinstance(last_seen_at, str):
             last_seen_at = datetime.fromisoformat(last_seen_at.replace("Z", "+00:00"))
 
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """
-                INSERT INTO agent_executions
-                (id, session_id, agent_name, agent_type, started_at, completed_at,
-                 last_seen_at, status, execution_steps, performance, errors)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                ON CONFLICT (id) DO UPDATE SET
-                    completed_at = EXCLUDED.completed_at,
-                    last_seen_at = EXCLUDED.last_seen_at,
-                    status = EXCLUDED.status,
-                    execution_steps = EXCLUDED.execution_steps,
-                    performance = EXCLUDED.performance,
-                    errors = EXCLUDED.errors
-                """,
-                execution_id,
-                execution_data["session_id"],
-                execution_data["agent_name"],
-                execution_data.get("agent_type"),
-                started_at,
-                completed_at,
-                last_seen_at,
-                str(execution_data.get("status", "running")),
-                json.dumps(execution_data.get("execution_steps", []), default=str),
-                json.dumps(execution_data.get("performance", {}), default=str),
-                json.dumps(execution_data.get("errors", []), default=str),
-            )
+        await conn.execute(
+            """
+            INSERT INTO agent_executions
+            (id, session_id, agent_name, agent_type, started_at, completed_at,
+             last_seen_at, status, execution_steps, performance, errors)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            ON CONFLICT (id) DO UPDATE SET
+                completed_at = EXCLUDED.completed_at,
+                last_seen_at = EXCLUDED.last_seen_at,
+                status = EXCLUDED.status,
+                execution_steps = EXCLUDED.execution_steps,
+                performance = EXCLUDED.performance,
+                errors = EXCLUDED.errors
+            """,
+            execution_id,
+            execution_data["session_id"],
+            execution_data["agent_name"],
+            execution_data.get("agent_type"),
+            started_at,
+            completed_at,
+            last_seen_at,
+            str(execution_data.get("status", "running")),
+            json.dumps(execution_data.get("execution_steps", []), default=str),
+            json.dumps(execution_data.get("performance", {}), default=str),
+            json.dumps(execution_data.get("errors", []), default=str),
+        )
 
     async def query_agent_executions(
         self,

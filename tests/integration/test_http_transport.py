@@ -426,18 +426,15 @@ async def test_persist_sessions_survives_cache_mutation_during_iteration(tmp_pat
     engine.session_cache["s2"] = _make_session("s2", str(tmp_path))
 
     persisted_ids: list[str] = []
-    original_save_session = db.save_session
-    call_count = {"n": 0}
+    original_persist_batch = db.persist_batch
 
-    async def racy_save_session(session_data):
-        call_count["n"] += 1
-        persisted_ids.append(session_data["id"])
-        if call_count["n"] == 1:
-            # Simulate a concurrent request adding a new session mid-iteration.
-            engine.session_cache["s3-concurrent"] = _make_session("s3-concurrent", str(tmp_path))
-        await original_save_session(session_data)
+    async def racy_persist_batch(sessions, decisions, executions):
+        persisted_ids.extend(s["id"] for s in sessions)
+        # Simulate a concurrent request adding a new session mid-persist.
+        engine.session_cache["s3-concurrent"] = _make_session("s3-concurrent", str(tmp_path))
+        await original_persist_batch(sessions, decisions, executions)
 
-    db.save_session = racy_save_session
+    db.persist_batch = racy_persist_batch
 
     from persistence import DatabaseConfig
 

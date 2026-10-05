@@ -212,7 +212,10 @@ async def test_server_info_includes_stall_diagnostics(client):
         "in_flight",
         "pool",
         "events",
+        "session_cache_size",  # issue #190
+        "persist",  # issue #190
     }
+    assert isinstance(diag["session_cache_size"], int)
     # the server_info request itself is in flight while the snapshot is taken
     assert diag["in_flight"][0]["tool"] == "server_info"
     assert diag["pool"] is None

@@ -38,10 +38,13 @@ import asyncio
 import dataclasses
 import json
 import logging
+import os
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Any
 
 import uvicorn
@@ -55,6 +58,7 @@ from lean_mcp_interface import LeanMCPInterface
 from persistence import DatabaseConfig, create_database, sanitize_dsn
 from transport.mcp_session_manager import MCPSessionManager
 from transport.mcp_session_pruner import MCPSessionPruner
+from transport.persist_sweep import PendingBatch, collect_session, write_pending
 from transport.persist_tracker import PersistDigestTracker
 from transport.security import (
     LocalhostOnlyMiddleware,
@@ -84,6 +88,19 @@ class DataclassJSONEncoder(json.JSONEncoder):
 
 
 logger = logging.getLogger(__name__)
+
+
+def _now() -> float:
+    """Monotonic clock for the persist sweep's periodic full walk (patchable in tests)."""
+    return time.monotonic()
+
+
+def _full_walk_interval_s() -> float:
+    """SESSION_PERSIST_FULL_WALK_INTERVAL_S (default 60): max age of the last full walk."""
+    try:
+        return float(os.environ.get("SESSION_PERSIST_FULL_WALK_INTERVAL_S", "60"))
+    except ValueError:
+        return 60.0
 
 
 class NotificationManager:
@@ -176,7 +193,10 @@ class HTTPSessionIntelligenceServer:
 
         # Issue #174: stall evidence (loop lag, sync tools, slow requests/DB, pool).
         # PostgreSQL exposes an asyncpg pool as ``_pool``; other backends yield None.
-        self.stall_monitor = StallMonitor(pool_getter=lambda: getattr(self.database, "_pool", None))
+        self.stall_monitor = StallMonitor(
+            pool_getter=lambda: getattr(self.database, "_pool", None),
+            extra_stats=self._stall_extra_stats,
+        )
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI) -> AsyncGenerator[None, None]:
@@ -261,8 +281,26 @@ class HTTPSessionIntelligenceServer:
         logger.info("Shutting down HTTP server")
         await self.mcp_session_pruner.stop()
         await self.stall_monitor.stop()
+        await self._persist_full_walk_at_shutdown(app)
         await self.mcp_session_manager.drain_pending_saves(timeout=5.0)
         await self.database.close()
+
+    async def _persist_full_walk_at_shutdown(self, app: FastAPI, timeout: float = 10.0) -> None:
+        """Backstop: flush any unmarked mutation before the DB closes (issue #190)."""
+        request = SimpleNamespace(app=app)
+        try:
+            await asyncio.wait_for(
+                self._persist_sessions_to_database(
+                    request,  # type: ignore[arg-type]
+                    tool="shutdown",
+                    mode="full_shutdown",
+                ),
+                timeout=timeout,
+            )
+        except TimeoutError:
+            logger.warning(f"Shutdown full-walk persist timed out after {timeout}s")
+        except Exception:
+            logger.warning("Shutdown full-walk persist failed", exc_info=True)
 
     def create_app(self) -> FastAPI:
         """Create the FastAPI application with MCP endpoints."""
@@ -643,7 +681,60 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                 return kind, target
         return kind, name if isinstance(name, str) else None
 
-    async def _persist_sessions_to_database(self, request: Request) -> None:
+    def _stall_extra_stats(self) -> dict[str, Any]:
+        """Extra stall_diagnostics keys: cache size and persist-sweep counters (#190)."""
+        engine = getattr(self, "session_engine", None)
+        return {
+            "session_cache_size": len(engine.session_cache) if engine is not None else 0,
+            "persist": dict(self._persist_counters()),
+        }
+
+    def _persist_counters(self) -> dict[str, Any]:
+        """Persist-sweep counters (lazily created; exposed in stall_diagnostics)."""
+        counters = self.__dict__.get("persist_metrics")
+        if counters is None:
+            counters = self.persist_metrics = {
+                "calls": 0,
+                "dirty_walks": 0,
+                "full_walk_first": 0,
+                "full_walk_fallbacks": 0,
+                "full_walk_periodic": 0,
+                "full_walk_shutdown": 0,
+                "last_full_walk": _now(),
+                "full_walk_fallbacks_by_tool": {},
+                "batch_failures": 0,
+                "full_walk_done": False,
+            }
+        return counters
+
+    def _choose_persist_mode(self, dirty: dict[str, int], tool: str | None) -> str:
+        """Pick dirty / full_first / full_periodic / full_fallback; bump its counter."""
+        counters = self._persist_counters()
+        if not counters["full_walk_done"]:
+            counters["full_walk_first"] += 1
+            return "full_first"
+        # Backstop for mutations that bypass mark_dirty while another session is dirty.
+        interval = _full_walk_interval_s()
+        if _now() - counters["last_full_walk"] > interval:
+            counters["full_walk_periodic"] += 1
+            return "full_periodic"
+        if not dirty:
+            # Fail-safe: a session-modifying tool finished with nothing marked,
+            # so a mutation site may be missing a mark_dirty -- walk everything.
+            counters["full_walk_fallbacks"] += 1
+            by_tool = counters["full_walk_fallbacks_by_tool"]
+            by_tool[tool or "?"] = by_tool.get(tool or "?", 0) + 1
+            return "full_fallback"
+        counters["dirty_walks"] += 1
+        return "dirty"
+
+    async def _persist_sessions_to_database(
+        self,
+        request: Request,
+        tool: str | None = None,
+        stats: dict[str, Any] | None = None,
+        mode: str | None = None,
+    ) -> dict[str, Any]:
         """Persist changed sessions from engine cache to database.
 
         Saves session-level data AND related records (decisions, agent_executions).
@@ -652,83 +743,75 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
         sent to the database (issue #67). Without this, every session-modifying
         tool call re-upserted the entire cache, producing millions of no-op
         UPDATEs on ``agent_executions`` and keeping autovacuum continuously busy.
+
+        Issue #190: normally only the sessions the engine marked dirty are
+        walked. The first sweep after startup, and any sweep that finds nothing
+        marked, walk the whole cache instead (fail-safe against a missed
+        ``mark_dirty``); the digest filter applies in every mode. Changed
+        entities are written in one transaction (see ``persist_sweep``).
+
+        Returns (and fills ``stats`` if given) with the mode, counts and the
+        walk/digest vs write timings, for the slow_db event.
         """
         database = request.app.state.database
         session_engine = request.app.state.session_engine
         tracker = self.persist_tracker
+        cache = session_engine.session_cache
+        stats = stats if stats is not None else {}
+        self._persist_counters()["calls"] += 1
 
-        written = 0
-        skipped = 0
+        dirty_fn = getattr(session_engine, "dirty_snapshot", None)
+        dirty: dict[str, int] = dirty_fn() if callable(dirty_fn) else {}
+        if mode is None:
+            mode = self._choose_persist_mode(dirty, tool)
+        else:  # forced full walk (shutdown)
+            self._persist_counters()["full_walk_shutdown"] += 1
 
-        for session_id, session in list(session_engine.session_cache.items()):
-            try:
-                session_data = session.model_dump()
+        started = time.perf_counter()
+        if mode == "dirty":
+            targets = [(sid, cache[sid]) for sid in dirty if sid in cache]
+        else:
+            targets = list(cache.items())  # snapshot: tools may mutate the cache while we await
+        batch = PendingBatch()
+        for session_id, session in targets:
+            collect_session(tracker, session_id, session, batch)
+        collected = time.perf_counter()
 
-                # Children are persisted separately below and are not columns of
-                # the sessions row, so they must not influence the session digest.
-                session_row = {
-                    key: value
-                    for key, value in session_data.items()
-                    if key not in ("decisions", "agents_executed")
-                }
-                digest = tracker.digest_if_changed(session_id, "session", session_row)
-                if digest is None:
-                    skipped += 1
-                else:
-                    await database.save_session(session_data)
-                    tracker.commit(session_id, "session", digest)
-                    written += 1
+        outcome = await write_pending(database, tracker, batch)
+        finished = time.perf_counter()
 
-                # Also persist decisions
-                for index, decision in enumerate(session.decisions):
-                    try:
-                        decision_data = (
-                            decision.model_dump() if hasattr(decision, "model_dump") else decision
-                        )
-                        decision_data["session_id"] = session_id
-                        entity_key = f"decision:{decision_data.get('id') or index}"
-                        digest = tracker.digest_if_changed(session_id, entity_key, decision_data)
-                        if digest is None:
-                            skipped += 1
-                            continue
-                        await database.save_decision(decision_data)
-                        tracker.commit(session_id, entity_key, digest)
-                        written += 1
-                    except Exception as e:
-                        logger.warning(f"Failed to persist decision: {e}")
-
-                # Also persist agent executions
-                for index, agent_exec in enumerate(session.agents_executed):
-                    try:
-                        exec_data = (
-                            agent_exec.model_dump()
-                            if hasattr(agent_exec, "model_dump")
-                            else agent_exec
-                        )
-                        exec_data["session_id"] = session_id
-                        exec_id = exec_data.get("id") or exec_data.get("execution_id") or index
-                        entity_key = f"execution:{exec_id}"
-                        digest = tracker.digest_if_changed(session_id, entity_key, exec_data)
-                        if digest is None:
-                            skipped += 1
-                            continue
-                        await database.save_agent_execution(exec_data)
-                        tracker.commit(session_id, entity_key, digest)
-                        written += 1
-                    except Exception as e:
-                        logger.warning(f"Failed to persist agent execution: {e}")
-
-                logger.debug(
-                    f"Persisted session {session_id} with {len(session.decisions)} decisions"
-                )
-            except Exception as e:
-                logger.error(f"Failed to persist session {session_id}: {e}")
+        failed = batch.failed_sessions | outcome.failed_sessions
+        clear_fn = getattr(session_engine, "clear_dirty", None)
+        if callable(clear_fn):
+            for session_id, version in dirty.items():
+                if session_id not in failed:
+                    clear_fn(session_id, version)
+        mark_fn = getattr(session_engine, "mark_dirty", None)
+        if callable(mark_fn):
+            for session_id in failed - dirty.keys():
+                mark_fn(session_id)  # keep a failed write retryable in dirty mode
+        if mode != "dirty":
+            self._persist_counters()["full_walk_done"] = True
+            self._persist_counters()["last_full_walk"] = _now()
+        if outcome.batch_failed:
+            self._persist_counters()["batch_failures"] += 1
 
         # Digests only shadow the cache; drop entries for sessions that have left
         # it so the tracker cannot grow without bound.
-        tracker.retain(session_engine.session_cache.keys())
+        tracker.retain(cache.keys())
 
-        logger.debug(f"Persist pass: {written} written, {skipped} unchanged")
+        stats.update(
+            persist_mode=mode,
+            dirty_sessions=len(dirty),
+            sessions_walked=len(targets),
+            entities_digested=batch.digested,
+            entities_written=outcome.written,
+            batch_fallback=outcome.batch_failed,
+            walk_digest_ms=round((collected - started) * 1000.0, 1),
+            write_ms=round((finished - collected) * 1000.0, 1),
+        )
+        logger.debug(f"Persist pass: {stats}")
+        return stats
 
     async def _ensure_sessions_loaded_from_database(self, request: Request) -> None:
         """Load active sessions from database into engine cache if cache is empty.
@@ -905,8 +988,13 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
 
                     # Persist session changes to database after session-modifying operations
                     if target in session_modifying_tools:
-                        async with self.stall_monitor.timed_db("persist_sessions"):
-                            await self._persist_sessions_to_database(request)
+                        persist_stats: dict[str, Any] = {}
+                        async with self.stall_monitor.timed_db(
+                            "persist_sessions", extra=persist_stats
+                        ):
+                            await self._persist_sessions_to_database(
+                                request, tool=target, stats=persist_stats
+                            )
 
                 except Exception as e:
                     logger.exception(f"Error executing tool {target}")

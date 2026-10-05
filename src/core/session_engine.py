@@ -11,6 +11,7 @@ import json
 import re
 import secrets
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -266,6 +267,23 @@ class ResolvedSessionContext:
     project_path: str | None
 
 
+class _DirtyTrackingCache(dict[str, Session]):
+    """Session cache that reports every key (re)assignment to ``on_set``.
+
+    Every insertion of a Session object into the cache (create, hydrate,
+    resume-from-disk, startup restore) therefore marks that session dirty
+    without each call site having to remember to (issue #190).
+    """
+
+    def __init__(self, on_set: Callable[[str], None]) -> None:
+        super().__init__()
+        self._on_set = on_set
+
+    def __setitem__(self, key: str, value: Session) -> None:
+        super().__setitem__(key, value)
+        self._on_set(key)
+
+
 class SessionIntelligenceEngine:
     """
     Core session intelligence engine providing unified session management,
@@ -297,7 +315,12 @@ class SessionIntelligenceEngine:
             f"use_filesystem: {use_filesystem}"
         )
 
-        self.session_cache: dict[str, Session] = {}
+        # Sessions whose cached state may differ from the database, mapped to a
+        # version bumped on every mark. The HTTP persist sweep writes only these
+        # (issue #190) and clears an id only if its version is unchanged, so a
+        # mutation landing while a write is awaited is never lost.
+        self._dirty_sessions: dict[str, int] = {}
+        self.session_cache: dict[str, Session] = _DirtyTrackingCache(self.mark_dirty)
         self.pattern_cache: dict[str, list[PatternAnalysis]] = {}
         # Caches the last known-real agent_type per agent_name so a later
         # call (e.g. SubagentStop, which may report an empty string due to
@@ -337,6 +360,19 @@ class SessionIntelligenceEngine:
             debug_logger.info("Filesystem persistence disabled - using memory only")
 
         self._agent_validator = AgentValidator()  # env-driven config, defaults to strict
+
+    def mark_dirty(self, session_id: str) -> None:
+        """Record that a cached session was created or mutated (issue #190)."""
+        self._dirty_sessions[session_id] = self._dirty_sessions.get(session_id, 0) + 1
+
+    def dirty_snapshot(self) -> dict[str, int]:
+        """Copy of the dirty map (session_id -> version) for a persist sweep."""
+        return dict(self._dirty_sessions)
+
+    def clear_dirty(self, session_id: str, version: int) -> None:
+        """Clear ``session_id`` only if not re-marked since ``version`` was read."""
+        if self._dirty_sessions.get(session_id) == version:
+            del self._dirty_sessions[session_id]
 
     async def _derive_project_path(
         self, project_name: str | None, caller_path: str | None
@@ -1070,6 +1106,7 @@ class SessionIntelligenceEngine:
             )
 
         session = self.session_cache[session_id]
+        self.mark_dirty(session_id)
 
         # Update session status
         session.status = SessionStatus.COMPLETED
@@ -1210,6 +1247,7 @@ class SessionIntelligenceEngine:
 
         session_id = resolved.session_id
         session = self.session_cache[session_id]
+        self.mark_dirty(session_id)
 
         # Perform validation checks
         issues = []
@@ -1445,6 +1483,9 @@ class SessionIntelligenceEngine:
                 )
 
         session = self.session_cache[session_id]
+        # Issue #190: every mutation below (heartbeat, executions, steps, metrics)
+        # belongs to this one session; the post-call sweep persists only it.
+        self.mark_dirty(session_id)
         debug_logger.info(f"Found session in cache: {session.id}")
         debug_logger.info(f"Session project_path: {session.project_path}")
         debug_logger.info(f"Session agents_executed count: {len(session.agents_executed)}")
@@ -1904,6 +1945,7 @@ class SessionIntelligenceEngine:
             # Update in-memory cache if session exists there
             if session_id and session_id in self.session_cache:
                 session = self.session_cache[session_id]
+                self.mark_dirty(session_id)
 
                 from models.session_models import DecisionContext
 

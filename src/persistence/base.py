@@ -302,6 +302,19 @@ class DatabaseBackend(Protocol):
         """Save agent execution record."""
         ...
 
+    async def persist_batch(
+        self,
+        sessions: list[dict[str, Any]],
+        decisions: list[dict[str, Any]],
+        executions: list[dict[str, Any]],
+    ) -> None:
+        """Write sessions, decisions and executions atomically in one transaction.
+
+        Same statements as save_session/save_decision/save_agent_execution
+        (issue #190). On any failure nothing from the batch is committed.
+        """
+        ...
+
     async def query_agent_executions(
         self,
         session_id: str | None = None,

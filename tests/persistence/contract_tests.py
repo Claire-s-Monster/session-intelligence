@@ -745,6 +745,43 @@ class PersistenceContractTests:
         assert result is not None
         assert result["engine_session_id"] == s["id"]
 
+    async def test_delete_stale_mcp_sessions_keeps_fresh_rows(self, backend):
+        old_ts = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
+        old = _mcp_session(created_at=old_ts, last_activity=old_ts)
+        fresh = _mcp_session()
+        await backend.save_mcp_session(old)
+        await backend.save_mcp_session(fresh)
+
+        deleted = await backend.delete_stale_mcp_sessions(timedelta(hours=24))
+
+        # >= 1: the count is exact only if the table held no other stale rows.
+        assert deleted >= 1
+        assert await backend.get_mcp_session(old["mcp_session_id"]) is None
+        assert await backend.get_mcp_session(fresh["mcp_session_id"]) is not None
+
+    async def test_delete_stale_mcp_sessions_batches(self, backend):
+        old_ts = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
+        olds = [_mcp_session(created_at=old_ts, last_activity=old_ts) for _ in range(7)]
+        fresh = _mcp_session()
+        for m in [*olds, fresh]:
+            await backend.save_mcp_session(m)
+
+        # batch_size 3 over 7 stale rows -> batches of 3, 3, 1
+        deleted = await backend.delete_stale_mcp_sessions(timedelta(hours=24), batch_size=3)
+
+        assert deleted >= 7
+        for m in olds:
+            assert await backend.get_mcp_session(m["mcp_session_id"]) is None
+        assert await backend.get_mcp_session(fresh["mcp_session_id"]) is not None
+
+    async def test_delete_stale_mcp_sessions_exact_batch_multiple(self, backend):
+        old_ts = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
+        for _ in range(4):
+            await backend.save_mcp_session(_mcp_session(created_at=old_ts, last_activity=old_ts))
+
+        assert await backend.delete_stale_mcp_sessions(timedelta(hours=24), batch_size=2) >= 4
+        assert await backend.delete_stale_mcp_sessions(timedelta(hours=24), batch_size=2) == 0
+
     async def test_default_timestamps_are_timezone_aware_utc(self, backend):
         """Timestamps a backend fills in itself are aware and near UTC now (#112).
 

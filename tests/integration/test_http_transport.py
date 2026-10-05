@@ -288,14 +288,46 @@ async def test_missing_session_id_returns_400(asgi_client):
     assert "Missing MCP-Session-Id" in resp.json()["error"]["message"]
 
 
-async def test_invalid_session_id_returns_401(asgi_client):
-    """MCP request with a bogus session ID returns 401."""
+async def test_unknown_session_id_returns_404(asgi_client):
+    """MCP request with an unknown session ID returns 404 (spec: client re-initializes)."""
     resp = await asgi_client.post(
         "/mcp",
         headers={"MCP-Session-Id": "totally-bogus-id-99999"},
         json=_mcp_body("tools/list"),
     )
-    assert resp.status_code == 401
+    assert resp.status_code == 404
+    assert resp.json()["error"]["message"] == "Session not found"
+
+
+async def test_pruned_session_gets_404_then_reinitialize_works(asgi_client, app, db):
+    """A session removed by the prune sweep gets 404; a fresh initialize then works."""
+    from datetime import UTC, datetime, timedelta
+
+    from transport.mcp_session_pruner import MCPSessionPruner
+
+    mgr = app.state.mcp_session_manager
+    session_id = await _initialize_mcp(asgi_client)
+    await mgr.drain_pending_saves()
+    # Age the session in both the DB row and the in-memory entry.
+    old = (datetime.now(UTC) - timedelta(hours=48)).isoformat()
+    await db.save_mcp_session(
+        {"mcp_session_id": session_id, "created_at": old, "last_activity": old}
+    )
+    mgr._active_sessions[session_id]["last_activity"] = old
+
+    assert await MCPSessionPruner(db, mgr, retention=timedelta(hours=24)).prune_once() == 1
+
+    resp = await asgi_client.post(
+        "/mcp", headers={"MCP-Session-Id": session_id}, json=_mcp_body("tools/list")
+    )
+    assert resp.status_code == 404
+
+    new_id = await _initialize_mcp(asgi_client)
+    ok = await asgi_client.post(
+        "/mcp", headers={"MCP-Session-Id": new_id}, json=_mcp_body("tools/list")
+    )
+    assert new_id != session_id
+    assert ok.status_code == 200
 
 
 async def test_unknown_mcp_method_returns_500(asgi_client):

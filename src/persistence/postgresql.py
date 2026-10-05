@@ -1889,6 +1889,28 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 mcp_session_id,
             )
 
+    async def delete_stale_mcp_sessions(self, older_than: timedelta, batch_size: int = 1000) -> int:
+        """Delete mcp_sessions idle longer than ``older_than``, in batches (issue #174)."""
+        pool = self._ensure_connected()
+        cutoff = datetime.now(UTC) - older_than
+        total = 0
+        while True:
+            async with pool.acquire() as conn:
+                status = await conn.execute(
+                    """
+                    DELETE FROM mcp_sessions WHERE mcp_session_id IN (
+                        SELECT mcp_session_id FROM mcp_sessions
+                        WHERE last_activity < $1 LIMIT $2
+                    )
+                    """,
+                    cutoff,
+                    batch_size,
+                )
+            deleted = int(status.rsplit(" ", 1)[-1])
+            total += deleted
+            if deleted < batch_size:
+                return total
+
     async def query_mcp_sessions(self, limit: int = 1000, offset: int = 0) -> list[dict[str, Any]]:
         """Query MCP session mappings, ordered by mcp_session_id (the primary key)."""
         pool = self._ensure_connected()

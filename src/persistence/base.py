@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -339,6 +339,15 @@ class DatabaseBackend(Protocol):
 
     async def link_mcp_to_engine_session(self, mcp_session_id: str, engine_session_id: str) -> None:
         """Link MCP session to engine session."""
+        ...
+
+    async def delete_stale_mcp_sessions(self, older_than: timedelta, batch_size: int = 1000) -> int:
+        """Delete mcp_sessions rows whose last_activity is older than ``older_than``.
+
+        Issue #174: every hook invocation runs initialize, and nothing else removes
+        the rows. Deletes in batches of ``batch_size`` so no long lock is held.
+        Returns the total number of rows deleted.
+        """
         ...
 
     # Maintenance operations

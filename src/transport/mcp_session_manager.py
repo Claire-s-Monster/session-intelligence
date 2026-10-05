@@ -10,6 +10,8 @@ This manager:
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -18,6 +20,9 @@ from typing import TYPE_CHECKING, Any
 from persistence.base import _as_aware_utc
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from contextlib import AbstractAsyncContextManager
+
     from persistence.base import DatabaseBackend as Database
 
 logger = logging.getLogger(__name__)
@@ -26,12 +31,24 @@ logger = logging.getLogger(__name__)
 class MCPSessionManager:
     """Manages MCP session IDs and their mapping to engine sessions."""
 
-    def __init__(self, database: Database | None = None) -> None:
+    def __init__(
+        self,
+        database: Database | None = None,
+        db_timer: Callable[[str], AbstractAsyncContextManager[None]] | None = None,
+    ) -> None:
         self.database = database
+        self._db_timer = db_timer
         self._active_sessions: dict[str, dict[str, Any]] = {}
+        # Issue #174: the initialize DB write runs off the response path. Tasks
+        # are referenced here (not just by the loop, which holds them weakly).
+        self._pending_saves: dict[str, asyncio.Task[None]] = {}
 
     async def create_mcp_session(self, client_info: dict[str, Any] | None = None) -> str:
-        """Create a new MCP session."""
+        """Create a new MCP session.
+
+        The session is registered in memory synchronously and the id returned at
+        once; the DB row is written by a background task (issue #174).
+        """
         mcp_session_id = f"mcp-{uuid.uuid4().hex[:16]}"
         now = datetime.now(UTC).isoformat()
 
@@ -46,13 +63,51 @@ class MCPSessionManager:
         self._active_sessions[mcp_session_id] = session_data
 
         if self.database:
-            try:
-                await self.database.save_mcp_session(session_data)
-            except Exception as e:
-                logger.warning(f"Failed to persist MCP session: {e}")
+            task = asyncio.get_running_loop().create_task(
+                self._persist_new_session(session_data),
+                name=f"mcp-session-save-{mcp_session_id}",
+            )
+            self._pending_saves[mcp_session_id] = task
+            task.add_done_callback(functools.partial(self._drop_pending, mcp_session_id))
 
         logger.info(f"Created MCP session: {mcp_session_id}")
         return mcp_session_id
+
+    def _drop_pending(self, mcp_session_id: str, _task: asyncio.Task[None]) -> None:
+        self._pending_saves.pop(mcp_session_id, None)
+
+    async def _persist_new_session(self, session_data: dict[str, Any]) -> None:
+        """Background DB write for a new session; never raises."""
+        mcp_session_id = session_data["mcp_session_id"]
+        database = self.database
+        if database is None:
+            return
+        try:
+            if self._db_timer is not None:
+                async with self._db_timer("initialize.save_mcp_session"):
+                    await database.save_mcp_session(session_data)
+            else:
+                await database.save_mcp_session(session_data)
+        except Exception as e:
+            logger.warning(f"Failed to persist MCP session {mcp_session_id}: {e}")
+
+    async def _await_pending_save(self, mcp_session_id: str) -> None:
+        """Wait for the session's initial insert, if still in flight."""
+        task = self._pending_saves.get(mcp_session_id)
+        if task is not None:
+            await asyncio.shield(task)
+
+    async def drain_pending_saves(self, timeout: float = 5.0) -> None:
+        """Give in-flight initial saves a bounded time to finish (shutdown)."""
+        pending = list(self._pending_saves.values())
+        if not pending:
+            return
+        _, still_pending = await asyncio.wait(pending, timeout=timeout)
+        if still_pending:
+            logger.warning(f"{len(still_pending)} MCP session save(s) unfinished at shutdown")
+            for task in still_pending:
+                task.cancel()
+            await asyncio.gather(*still_pending, return_exceptions=True)
 
     async def get_engine_session_id(self, mcp_session_id: str) -> str | None:
         """Get the engine session ID for an MCP session."""
@@ -60,6 +115,7 @@ class MCPSessionManager:
             return self._active_sessions[mcp_session_id].get("engine_session_id")
 
         if self.database:
+            await self._await_pending_save(mcp_session_id)
             try:
                 mcp_session = await self.database.get_mcp_session(mcp_session_id)
                 if mcp_session:
@@ -77,6 +133,9 @@ class MCPSessionManager:
 
         if self.database:
             try:
+                # The link is a bare UPDATE: before the initial INSERT lands it would
+                # match 0 rows and be lost, so wait for the insert first.
+                await self._await_pending_save(mcp_session_id)
                 await self.database.link_mcp_to_engine_session(mcp_session_id, engine_session_id)
             except Exception as e:
                 logger.warning(f"Failed to persist engine session link: {e}")
@@ -90,7 +149,10 @@ class MCPSessionManager:
         if mcp_session_id in self._active_sessions:
             self._active_sessions[mcp_session_id]["last_activity"] = now
 
-        if self.database:
+        # While the initial INSERT is pending, an UPDATE would match 0 rows. Skip it:
+        # the INSERT reads last_activity from the in-memory dict (just refreshed above)
+        # and, being the session's first write, is at most a few ms stale.
+        if self.database and mcp_session_id not in self._pending_saves:
             try:
                 await self.database.update_mcp_session_activity(mcp_session_id)
             except Exception as e:
@@ -103,6 +165,7 @@ class MCPSessionManager:
 
         if self.database:
             try:
+                await self._await_pending_save(mcp_session_id)
                 mcp_session = await self.database.get_mcp_session(mcp_session_id)
                 if mcp_session:
                     self._active_sessions[mcp_session_id] = mcp_session

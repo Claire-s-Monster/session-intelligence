@@ -84,6 +84,34 @@ async def test_validate_explicit_id_that_does_not_exist_names_the_id(engine):
     assert "not found" in result.message
 
 
+@pytest.mark.regression
+async def test_finalize_explicit_id_of_uncached_abandoned_session(engine):
+    await _save_db_only_abandoned_session(engine)
+    assert ABANDONED_ID not in engine.session_cache
+
+    result = await engine.session_manage_lifecycle(operation="finalize", session_id=ABANDONED_ID)
+
+    assert result.status == "success"
+    assert result.session_id == ABANDONED_ID
+    assert result.session_data is not None
+    assert str(result.session_data.status).lower().endswith("completed")
+
+    row = await engine.database.get_session(ABANDONED_ID)
+    assert row is not None
+    assert row["status"] == "completed"
+    assert row["completed"]
+
+
+@pytest.mark.regression
+async def test_finalize_explicit_id_that_does_not_exist_names_the_id(engine):
+    result = await engine.session_manage_lifecycle(operation="finalize", session_id=MISSING_ID)
+
+    assert result.status == "error"
+    assert result.session_id == MISSING_ID
+    assert MISSING_ID in result.message
+    assert "not found" in result.message
+
+
 # ---------------------------------------------------------------------------
 # #148
 # ---------------------------------------------------------------------------

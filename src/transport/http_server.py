@@ -54,6 +54,7 @@ from core.session_engine import SessionIntelligenceEngine, usable_project_path
 from lean_mcp_interface import LeanMCPInterface
 from persistence import DatabaseConfig, create_database, sanitize_dsn
 from transport.mcp_session_manager import MCPSessionManager
+from transport.mcp_session_pruner import MCPSessionPruner
 from transport.persist_tracker import PersistDigestTracker
 from transport.security import (
     LocalhostOnlyMiddleware,
@@ -165,6 +166,7 @@ class HTTPSessionIntelligenceServer:
         self.session_engine: SessionIntelligenceEngine | None = None
         self.lean_interface: LeanMCPInterface | None = None
         self.mcp_session_manager: MCPSessionManager | None = None
+        self.mcp_session_pruner: MCPSessionPruner | None = None
         self.notification_manager: NotificationManager | None = None
 
         # Change detection for _persist_sessions_to_database (issue #67): skips
@@ -234,8 +236,15 @@ class HTTPSessionIntelligenceServer:
             )
 
         self.lean_interface = LeanMCPInterface(self.session_engine)
-        self.mcp_session_manager = MCPSessionManager(self.database)
+        self.mcp_session_manager = MCPSessionManager(
+            self.database, db_timer=self.stall_monitor.timed_db
+        )
         self.notification_manager = NotificationManager()
+
+        # Issue #174: mcp_sessions grows by one row per hook initialize; prune
+        # once now (startup) and then periodically. Never raises.
+        self.mcp_session_pruner = MCPSessionPruner(self.database, self.mcp_session_manager)
+        await self.mcp_session_pruner.prune_once()
 
         app.state.database = self.database
         app.state.session_engine = self.session_engine
@@ -244,12 +253,15 @@ class HTTPSessionIntelligenceServer:
         app.state.notification_manager = self.notification_manager
 
         self.stall_monitor.start()
+        self.mcp_session_pruner.start()
         logger.info("Session Intelligence HTTP server ready")
 
         yield
 
         logger.info("Shutting down HTTP server")
+        await self.mcp_session_pruner.stop()
         await self.stall_monitor.stop()
+        await self.mcp_session_manager.drain_pending_saves(timeout=5.0)
         await self.database.close()
 
     def create_app(self) -> FastAPI:
@@ -358,10 +370,10 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             lean_interface = request.app.state.lean_interface
 
             if method == "initialize":
-                async with self.stall_monitor.timed_db("initialize.save_mcp_session"):
-                    new_session_id = await mcp_manager.create_mcp_session(
-                        client_info=params.get("clientInfo")
-                    )
+                # DB write is backgrounded (and timed) inside the manager (issue #174).
+                new_session_id = await mcp_manager.create_mcp_session(
+                    client_info=params.get("clientInfo")
+                )
                 response = JSONResponse(
                     content={
                         "jsonrpc": "2.0",
@@ -393,11 +405,11 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
 
             if not await mcp_manager.validate_session(mcp_session_id):
                 return JSONResponse(
-                    status_code=401,
+                    status_code=404,
                     content={
                         "jsonrpc": "2.0",
                         "id": req_id,
-                        "error": {"code": -32600, "message": "Invalid MCP-Session-Id"},
+                        "error": {"code": -32600, "message": "Session not found"},
                     },
                 )
 
@@ -432,7 +444,7 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             notification_manager = request.app.state.notification_manager
 
             if not await mcp_manager.validate_session(mcp_session_id):
-                raise HTTPException(status_code=401, detail="Invalid MCP-Session-Id")
+                raise HTTPException(status_code=404, detail="Session not found")
 
             async def event_generator() -> AsyncGenerator[str, None]:
                 try:

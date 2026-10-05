@@ -701,6 +701,37 @@ class PersistenceContractTests:
         assert len(results) >= 1
         assert all(r["session_id"] == s["id"] for r in results)
 
+    async def test_persist_batch_writes_everything(self, backend):
+        s = _session()
+        d = _decision(session_id=s["id"])
+        e = _agent_execution(session_id=s["id"], agent_name="batch-agent")
+
+        await backend.persist_batch([s], [d], [e])
+
+        assert (await backend.get_session(s["id"])) is not None
+        decision_ids = {
+            r.get("id") or r.get("decision_id")
+            for r in await backend.query_decisions_by_session(s["id"])
+        }
+        assert d["id"] in decision_ids
+        assert [r["id"] for r in await backend.query_agent_executions(session_id=s["id"])] == [
+            e["id"]
+        ]
+
+    async def test_persist_batch_is_atomic(self, backend):
+        """A malformed execution (no agent_name) must roll back the whole batch (#190)."""
+        s = _session()
+        d = _decision(session_id=s["id"])
+        bad = _agent_execution(session_id=s["id"], agent_name="bad-agent")
+        del bad["agent_name"]
+
+        with pytest.raises(KeyError):
+            await backend.persist_batch([s], [d], [bad])
+
+        assert await backend.get_session(s["id"]) is None
+        assert await backend.query_decisions_by_session(s["id"]) == []
+        assert await backend.query_agent_executions(session_id=s["id"]) == []
+
     # ------------------------------------------------------------------
     # MCP Sessions
     # ------------------------------------------------------------------

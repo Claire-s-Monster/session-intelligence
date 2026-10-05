@@ -16,7 +16,7 @@ import logging
 import os
 import time
 from collections import deque
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping
 from contextlib import asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -49,6 +49,7 @@ class StallMonitor:
         slow_db_ms: float | None = None,
         interval_ms: float | None = None,
         pool_getter: Callable[[], Any | None] | None = None,
+        extra_stats: Callable[[], dict[str, Any]] | None = None,
         max_events: int = 200,
     ) -> None:
         self.loop_lag_warn_ms = (
@@ -75,6 +76,7 @@ class StallMonitor:
             else _env_ms("SESSION_LOOP_LAG_INTERVAL_MS", 200.0)
         )
         self._pool_getter = pool_getter
+        self._extra_stats = extra_stats
         self._events: deque[dict[str, Any]] = deque(maxlen=max_events)
         self._counters: dict[str, int] = dict.fromkeys(EVENT_TYPES, 0)
         self._max_loop_lag_ms = 0.0
@@ -193,8 +195,14 @@ class StallMonitor:
             self.record_sync_tool(name, (time.monotonic() - start) * 1000.0)
 
     @asynccontextmanager
-    async def timed_db(self, label: str) -> AsyncIterator[None]:
-        """Time an awaited DB operation; record slow_db at/above threshold."""
+    async def timed_db(
+        self, label: str, extra: Mapping[str, Any] | None = None
+    ) -> AsyncIterator[None]:
+        """Time an awaited DB operation; record slow_db at/above threshold.
+
+        ``extra`` may be a dict the body fills in while it runs; its contents at
+        exit are attached to the slow_db event (e.g. persist counts, issue #190).
+        """
         start = time.monotonic()
         try:
             yield
@@ -203,7 +211,10 @@ class StallMonitor:
             if duration_ms >= self.slow_db_ms:
                 if self._slowest_db is None or duration_ms > self._slowest_db["ms"]:
                     self._slowest_db = {"label": label, "ms": round(duration_ms, 1)}
-                self._record("slow_db", label=label, duration_ms=round(duration_ms, 1))
+                fields = dict(extra) if extra else {}
+                self._record(
+                    "slow_db", **{**fields, "label": label, "duration_ms": round(duration_ms, 1)}
+                )
                 logger.warning("Slow DB operation %s: %.0fms", label, duration_ms)
 
     # -- reading -----------------------------------------------------------
@@ -222,6 +233,15 @@ class StallMonitor:
             logger.debug("Could not read pool stats", exc_info=True)
             return None
 
+    def _read_extra_stats(self) -> dict[str, Any]:
+        if self._extra_stats is None:
+            return {}
+        try:
+            return dict(self._extra_stats())
+        except Exception:
+            logger.debug("Could not read extra stall stats", exc_info=True)
+            return {}
+
     def in_flight_snapshot(self) -> list[dict[str, Any]]:
         now = time.monotonic()
         return [
@@ -237,6 +257,7 @@ class StallMonitor:
         recent = list(self._events)[-events:] if events > 0 else []
         slowest_sync = max(self._sync_tools.items(), key=lambda kv: kv[1]["max_ms"], default=None)
         return {
+            **self._read_extra_stats(),
             "thresholds": {
                 "loop_lag_warn_ms": self.loop_lag_warn_ms,
                 "slow_request_ms": self.slow_request_ms,

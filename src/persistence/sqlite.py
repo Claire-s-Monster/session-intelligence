@@ -507,6 +507,38 @@ class SQLiteBackend(BaseDatabaseBackend):
         """Save or update a session."""
         conn = self._ensure_connected()
 
+        await self._save_session_on(conn, session_data)
+        await conn.commit()
+
+    async def persist_batch(
+        self,
+        sessions: list[dict[str, Any]],
+        decisions: list[dict[str, Any]],
+        executions: list[dict[str, Any]],
+    ) -> None:
+        """Write sessions, decisions and executions in ONE transaction (issue #190).
+
+        Runs the same statements as the save_* methods on the shared connection
+        with a single commit at the end; any failure rolls the whole batch back.
+        """
+        conn = self._ensure_connected()
+
+        try:
+            for session_data in sessions:
+                await self._save_session_on(conn, session_data)
+            for decision_data in decisions:
+                await self._save_decision_on(conn, decision_data)
+            for execution_data in executions:
+                await self._save_agent_execution_on(conn, execution_data)
+            await conn.commit()
+        except BaseException:
+            await conn.rollback()
+            raise
+
+    async def _save_session_on(
+        self, conn: aiosqlite.Connection, session_data: dict[str, Any]
+    ) -> None:
+        """Upsert a session without committing; shared by save_session/persist_batch."""
         started_at = session_data.get("started") or session_data.get("started_at")
 
         await conn.execute(
@@ -531,7 +563,6 @@ class SQLiteBackend(BaseDatabaseBackend):
                 self._serialize_json(session_data.get("health_status", {})),
             ),
         )
-        await conn.commit()
 
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
         """Get a session by ID."""
@@ -780,6 +811,13 @@ class SQLiteBackend(BaseDatabaseBackend):
         """Save a decision."""
         conn = self._ensure_connected()
 
+        await self._save_decision_on(conn, decision_data)
+        await conn.commit()
+
+    async def _save_decision_on(
+        self, conn: aiosqlite.Connection, decision_data: dict[str, Any]
+    ) -> None:
+        """Upsert a decision without committing; shared by save_decision/persist_batch."""
         await conn.execute(
             """
             INSERT INTO decisions
@@ -805,7 +843,6 @@ class SQLiteBackend(BaseDatabaseBackend):
                 decision_data.get("supersedes"),
             ),
         )
-        await conn.commit()
 
     async def query_decisions_by_category(
         self, category: str, limit: int = 100, offset: int = 0
@@ -1208,6 +1245,13 @@ class SQLiteBackend(BaseDatabaseBackend):
         """
         conn = self._ensure_connected()
 
+        await self._save_agent_execution_on(conn, execution_data)
+        await conn.commit()
+
+    async def _save_agent_execution_on(
+        self, conn: aiosqlite.Connection, execution_data: dict[str, Any]
+    ) -> None:
+        """Upsert an execution without committing; shared by save_agent_execution/persist_batch."""
         execution_id = execution_data.get("id") or execution_data.get("execution_id")
         if not execution_id:
             raise ValueError(
@@ -1243,7 +1287,6 @@ class SQLiteBackend(BaseDatabaseBackend):
                 self._serialize_json(execution_data.get("errors", [])),
             ),
         )
-        await conn.commit()
 
     async def query_agent_executions(
         self,

@@ -381,9 +381,12 @@ class TestExecuteSessionTrackMissingFunctions:
 
 class TestExecuteSessionGetDashboard:
     async def test_execute_session_get_dashboard(self, lean_interface):
-        """session_get_dashboard succeeds with no required params."""
+        """session_get_dashboard succeeds when scoped by project_name (#147)."""
         execute = _get_meta_tool(lean_interface, "execute_tool")
-        result = await execute("session_get_dashboard", {})
+        await execute(
+            "session_manage_lifecycle", {"operation": "create", "project_name": "test-project"}
+        )
+        result = await execute("session_get_dashboard", {"project_name": "test-project"})
         assert result["status"] == "success"
 
 
@@ -644,7 +647,6 @@ class TestToolWrapperIntegrity:
             "session_orchestrate_workflow",
             "session_analyze_commands",
             "session_track_missing_functions",
-            "session_get_dashboard",
         }
 
         for tool_name, tool_info in lean_interface.tool_registry.items():

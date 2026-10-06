@@ -940,6 +940,8 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                     # scope through the database (issue #77), so it needs the same
                     # pre-call DB sync as the other scope-resolving tools.
                     "session_monitor_health",
+                    # #147: session_get_dashboard resolves scope the same way.
+                    "session_get_dashboard",
                 }
 
                 try:

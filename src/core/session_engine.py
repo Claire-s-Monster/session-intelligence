@@ -2208,6 +2208,51 @@ class SessionIntelligenceEngine:
                 issues=[f"Health monitoring error: {str(e)}"],
             )
 
+    async def _resolve_scoped_session_id(
+        self,
+        tool_name: str,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        project_path: str | None = None,
+        allow_unbound: bool = False,
+    ) -> str | None:
+        """Resolve a read-only tool's session from name/project scope (#77).
+
+        Derives project_name from an absolute project_path, raises
+        SessionContextRequiredError (naming tool_name) when no scope is given,
+        and returns None when nothing resolves. Never creates a session.
+        """
+        if (
+            not (session_name or project_name)
+            and not allow_unbound
+            and project_path
+            and project_path != UNKNOWN_PROJECT_PATH
+            and Path(project_path).is_absolute()
+        ):
+            derived_name = derive_project_name(project_path)
+            if derived_name != UNBOUND:
+                project_name = derived_name
+
+        if not (session_name or project_name) and not allow_unbound:
+            raise SessionContextRequiredError(
+                f"{tool_name} requires at least one of: "
+                "session_id, session_name, project_name. "
+                "(Pass allow_unbound=True to opt into the legacy '_unbound_' fallback.)"
+            )
+
+        try:
+            resolved = await self._resolve_session_context(
+                session_id=None,
+                session_name=session_name,
+                project_name=project_name,
+                allow_unbound=allow_unbound,
+                create_if_missing=False,
+                project_path=project_path,
+            )
+        except ValueError:
+            return None
+        return resolved.session_id
+
     async def _monitor_health_sync(
         self,
         session_id: str | None,
@@ -2227,36 +2272,13 @@ class SessionIntelligenceEngine:
         # Get current session, scoped -- replaces the ambient
         # `list(self.session_cache.keys())[-1]` pick (issue #77).
         if not session_id:
-            if (
-                not (session_name or project_name)
-                and not allow_unbound
-                and project_path
-                and project_path != UNKNOWN_PROJECT_PATH
-                and Path(project_path).is_absolute()
-            ):
-                derived_name = derive_project_name(project_path)
-                if derived_name != UNBOUND:
-                    project_name = derived_name
-
-            if not (session_name or project_name) and not allow_unbound:
-                raise SessionContextRequiredError(
-                    "session_monitor_health requires at least one of: "
-                    "session_id, session_name, project_name. "
-                    "(Pass allow_unbound=True to opt into the legacy '_unbound_' fallback.)"
-                )
-
-            try:
-                resolved = await self._resolve_session_context(
-                    session_id=None,
-                    session_name=session_name,
-                    project_name=project_name,
-                    allow_unbound=allow_unbound,
-                    create_if_missing=False,
-                    project_path=project_path,
-                )
-                session_id = resolved.session_id
-            except ValueError:
-                session_id = None
+            session_id = await self._resolve_scoped_session_id(
+                "session_monitor_health",
+                session_name=session_name,
+                project_name=project_name,
+                project_path=project_path,
+                allow_unbound=allow_unbound,
+            )
 
         # #148: hydrate DB-only sessions (e.g. after a restart) the way
         # validate/finalize do (#145), instead of gating on cache membership.
@@ -2380,16 +2402,144 @@ class SessionIntelligenceEngine:
             impact={},
         )
 
-    def session_get_dashboard(self, **kwargs) -> DashboardResult:
-        """Dashboard generation - placeholder implementation."""
+    async def session_get_dashboard(
+        self,
+        dashboard_type: str = "overview",
+        session_id: str | None = None,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        project_path: str | None = None,
+        allow_unbound: bool = False,
+    ) -> DashboardResult:
+        """JSON dashboard for one session (issue #147).
+
+        Views (all derived from the hydrated Session, scoped like
+        session_monitor_health):
+          overview     counts, status, and efficiency from agents/decisions
+          performance  session.performance_metrics plus derived outcome counts
+          agents       per-agent executions and a status breakdown
+          decisions    decision count and the most recent decisions
+          health       health_score/issues/recovery_actions from monitor_health
+
+        Raises SessionContextRequiredError when no scope is given, and
+        ValueError when the session is not found or dashboard_type is invalid.
+        """
+        try:
+            view = DashboardType(dashboard_type)
+        except ValueError:
+            valid = ", ".join(t.value for t in DashboardType)
+            raise ValueError(
+                f"Invalid dashboard_type {dashboard_type!r}; valid values: {valid}"
+            ) from None
+
+        if not session_id:
+            session_id = await self._resolve_scoped_session_id(
+                "session_get_dashboard",
+                session_name=session_name,
+                project_name=project_name,
+                project_path=project_path,
+                allow_unbound=allow_unbound,
+            )
+
+        session = await self._hydrate_session(session_id) if session_id else None
+        if session_id is None or session is None:
+            raise ValueError(f"Session {session_id or '(unresolved)'} not found")
+
+        if view == DashboardType.HEALTH:
+            metrics = await self._dashboard_health_metrics(session_id)
+        else:
+            metrics = {
+                DashboardType.OVERVIEW: self._dashboard_overview_metrics,
+                DashboardType.PERFORMANCE: self._dashboard_performance_metrics,
+                DashboardType.AGENTS: self._dashboard_agents_metrics,
+                DashboardType.DECISIONS: self._dashboard_decisions_metrics,
+            }[view](session)
+
+        insights: list[str] = []
+        failed = self._derive_execution_counts(session)["failed_executions"]
+        if failed and view != DashboardType.HEALTH:
+            insights.append(f"{failed} agent execution(s) ended in ERROR")
+
         return DashboardResult(
-            dashboard_type=DashboardType.OVERVIEW,
-            session_id=kwargs.get("session_id"),
-            metrics={},
-            visualizations=[],
-            insights=[],
-            recommendations=[],
+            dashboard_type=view,
+            session_id=session_id,
+            metrics=metrics,
+            insights=insights,
+            real_time_data=False,
         )
+
+    def _dashboard_overview_metrics(self, session: Session) -> dict[str, Any]:
+        counts = self._derive_execution_counts(session)
+        return {
+            "project_name": session.project_name,
+            "session_status": session.status.value,
+            "started": session.started.isoformat(),
+            "completed": session.completed.isoformat() if session.completed else None,
+            **counts,
+            "decisions": len(session.decisions),
+            "efficiency_score": session.performance_metrics.efficiency_score,
+        }
+
+    def _dashboard_performance_metrics(self, session: Session) -> dict[str, Any]:
+        stored = session.performance_metrics
+        return {
+            **self._derive_execution_counts(session),
+            "total_execution_time_ms": stored.total_execution_time_ms,
+            "average_execution_time_ms": stored.average_execution_time_ms,
+            "efficiency_score": stored.efficiency_score,
+            "decisions": len(session.decisions),
+        }
+
+    def _dashboard_agents_metrics(self, session: Session) -> dict[str, Any]:
+        breakdown: dict[str, int] = {}
+        for agent in session.agents_executed:
+            breakdown[agent.status.value] = breakdown.get(agent.status.value, 0) + 1
+        return {
+            "agents_executed": len(session.agents_executed),
+            "status_breakdown": breakdown,
+            "agents": [
+                {
+                    "agent_name": agent.agent_name,
+                    "agent_type": agent.agent_type,
+                    "execution_id": agent.execution_id,
+                    "status": agent.status.value,
+                    "started": agent.started.isoformat(),
+                    "completed": agent.completed.isoformat() if agent.completed else None,
+                    "error_count": len(agent.errors),
+                }
+                for agent in session.agents_executed
+            ],
+        }
+
+    def _dashboard_decisions_metrics(self, session: Session) -> dict[str, Any]:
+        recent = sorted(session.decisions, key=lambda d: d.timestamp, reverse=True)[:10]
+        return {
+            "decisions": len(session.decisions),
+            "recent_decisions": [
+                {
+                    "decision_id": d.decision_id,
+                    "timestamp": d.timestamp.isoformat(),
+                    "description": d.description,
+                    "impact_level": d.impact_level.value,
+                    "supersedes": d.supersedes,
+                }
+                for d in recent
+            ],
+        }
+
+    async def _dashboard_health_metrics(self, session_id: str) -> dict[str, Any]:
+        health = await self._monitor_health_sync(
+            session_id=session_id,
+            health_checks=["continuity", "files", "state", "agents"],
+            auto_recover=False,
+            alert_thresholds=None,
+            include_diagnostics=True,
+        )
+        return {
+            "health_score": health.health_score,
+            "issues": health.issues,
+            "recovery_actions": health.recovery_actions,
+        }
 
     # ===== SESSION HYDRATION =====
 
@@ -3075,6 +3225,30 @@ class SessionIntelligenceEngine:
 
         return "\n".join(lines), decisions_made
 
+    @staticmethod
+    def _derive_execution_counts(session: Session) -> dict[str, int]:
+        """Count executions by outcome from session.agents_executed.
+
+        Shared by the notebook metrics table and the dashboard views so both
+        report the same numbers (see _generate_metrics_section for why these
+        are derived rather than read from the stored performance blob).
+        """
+        agents = session.agents_executed
+
+        def by_status(status: ExecutionStatus) -> int:
+            return sum(1 for agent in agents if agent.status == status)
+
+        return {
+            "agents_executed": len(agents),
+            "successful_executions": by_status(ExecutionStatus.SUCCESS),
+            "failed_executions": by_status(ExecutionStatus.ERROR),
+            "indeterminate_executions": by_status(ExecutionStatus.INDETERMINATE),
+            "abandoned_executions": by_status(ExecutionStatus.ABANDONED),
+            "commands_executed": sum(
+                len(step.commands_executed) for agent in agents for step in agent.execution_steps
+            ),
+        }
+
     def _generate_metrics_section(self, session: Session) -> str:
         """Generate performance metrics section.
 
@@ -3095,23 +3269,12 @@ class SessionIntelligenceEngine:
         """
         metrics = session.performance_metrics
 
-        successful = sum(
-            1 for agent in session.agents_executed if agent.status == ExecutionStatus.SUCCESS
-        )
-        failed = sum(
-            1 for agent in session.agents_executed if agent.status == ExecutionStatus.ERROR
-        )
-        indeterminate = sum(
-            1 for agent in session.agents_executed if agent.status == ExecutionStatus.INDETERMINATE
-        )
-        abandoned = sum(
-            1 for agent in session.agents_executed if agent.status == ExecutionStatus.ABANDONED
-        )
-        commands = sum(
-            len(step.commands_executed)
-            for agent in session.agents_executed
-            for step in agent.execution_steps
-        )
+        counts = self._derive_execution_counts(session)
+        successful = counts["successful_executions"]
+        failed = counts["failed_executions"]
+        indeterminate = counts["indeterminate_executions"]
+        abandoned = counts["abandoned_executions"]
+        commands = counts["commands_executed"]
 
         # Unmeasured ("n/a") is distinct from measured-as-zero -- an
         # unfinalized session has never recorded a wall-clock time, and a

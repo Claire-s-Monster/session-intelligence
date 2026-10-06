@@ -552,8 +552,12 @@ class LeanMCPInterface:
         }
 
         registry["session_get_dashboard"] = {
-            "implementation": self._wrap_tool(self.session_engine.session_get_dashboard),
-            "description": "Comprehensive intelligence dashboard with real-time insights",
+            "implementation": self._wrap_async_tool(self.session_engine.session_get_dashboard),
+            "description": (
+                "JSON-only dashboard for one session (overview, performance, agents, "
+                "decisions, health). Scoped like the other session_* tools: pass "
+                "session_id, session_name, or project_name (or an absolute project_path)."
+            ),
             "schema": {
                 "type": "object",
                 "properties": {
@@ -565,21 +569,30 @@ class LeanMCPInterface:
                     },
                     "session_id": {
                         "type": "string",
-                        "description": "Session or cross-session view",
+                        "description": (
+                            "Session to show. If omitted, session_name or project_name is required."
+                        ),
                     },
-                    "real_time": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": "Enable real-time updates",
-                    },
-                    "export_format": {
+                    "session_name": {
                         "type": "string",
-                        "enum": ["json", "html", "markdown"],
-                        "description": "Export format",
+                        "description": "Session name to resolve when session_id is omitted.",
+                    },
+                    "project_name": {
+                        "type": "string",
+                        "description": "Project context to show when session_id is omitted.",
+                    },
+                    "project_path": {
+                        "type": "string",
+                        "description": (
+                            "Absolute path to the caller's project; a project_name is "
+                            "derived from it when session_id is omitted. Relative paths "
+                            "are ignored."
+                        ),
                     },
                 },
+                "required": [],
             },
-            "examples": [{"dashboard_type": "performance", "real_time": True}],
+            "examples": [{"dashboard_type": "performance", "project_name": "my-project"}],
         }
 
         registry["session_create_notebook"] = {

@@ -823,6 +823,16 @@ class SolutionSearchResult(BaseModel):
     solutions: list[ErrorSolution] = Field(default_factory=list)
     project_specific_count: int = 0
     universal_count: int = 0
+    degraded: bool = Field(
+        default=False,
+        description=(
+            "True when the search did not run or its results are incomplete; see degraded_reason"
+        ),
+    )
+    degraded_reason: str | None = Field(
+        default=None,
+        description="Why the result is degraded (truncated), or None",
+    )
 
 
 # ===== AGENT SYSTEM MODELS =====

@@ -41,14 +41,20 @@ async def engine(tmp_path, monkeypatch):
 
 
 async def _save_db_only_abandoned_session(engine: SessionIntelligenceEngine) -> None:
+    await _save_db_only_session(engine, ABANDONED_ID, "abandoned")
+
+
+async def _save_db_only_session(
+    engine: SessionIntelligenceEngine, session_id: str, status: str
+) -> None:
     await engine.database.save_session(
         {
-            "id": ABANDONED_ID,
+            "id": session_id,
             "started": datetime.now(UTC).isoformat(),
             "project_name": PROJECT,
             "project_path": "",
             "mode": "local",
-            "status": "abandoned",
+            "status": status,
             "metadata": {},
             "performance_metrics": {},
             "health_status": {},
@@ -137,3 +143,41 @@ async def test_monitor_health_engine_level_without_session_id(engine):
 
     assert result.session_id == created.session_id
     assert not any("Health monitoring error" in issue for issue in result.issues)
+
+
+# The two tests above create the session in-process, so it is always cached.
+# After a restart the cache is empty; monitor_health must hydrate from the DB
+# the way validate/finalize do (#145), not report "No active session found".
+
+
+@pytest.mark.regression
+async def test_monitor_health_explicit_id_of_uncached_session(engine):
+    await _save_db_only_abandoned_session(engine)
+    assert ABANDONED_ID not in engine.session_cache
+
+    result = await engine.session_monitor_health(session_id=ABANDONED_ID)
+
+    assert result.session_id == ABANDONED_ID
+    assert "No active session found" not in result.issues
+    assert result.health_score > 0.0
+
+
+@pytest.mark.regression
+async def test_monitor_health_project_name_only_after_restart(engine):
+    active_id = "3c7e2b90-1d4a-4f6e-8b2c-5a9d0e1f2a33"
+    await _save_db_only_session(engine, active_id, "active")
+    assert not engine.session_cache
+
+    result = await engine.session_monitor_health(project_name=PROJECT)
+
+    assert result.session_id == active_id
+    assert "No active session found" not in result.issues
+    assert result.health_score > 0.0
+
+
+@pytest.mark.regression
+async def test_monitor_health_explicit_id_that_does_not_exist(engine):
+    result = await engine.session_monitor_health(session_id=MISSING_ID)
+
+    assert result.session_id == MISSING_ID
+    assert result.health_score == 0.0

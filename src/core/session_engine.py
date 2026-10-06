@@ -997,16 +997,27 @@ class SessionIntelligenceEngine:
             resolved = None
 
         # Scoped cache lookup (replaces the ambient last-cache-key pick)
-        if resolved is not None and resolved.session_id in self.session_cache:
-            resumed_id = resolved.session_id
-            self._current_session_id = resumed_id
-            return SessionResult(
-                session_id=resumed_id,
-                operation="resume",
-                status="success",
-                message=f"Resumed session {resumed_id} from cache",
-                recovery_options=(["Validate continuity", "Check health"] if auto_recovery else []),
-            )
+        # Issue #144: on a cache miss (e.g. after a restart, with
+        # use_filesystem=False) load the session from the database via
+        # _hydrate_session, which also caches it. Resume changes neither status
+        # nor dirty state, so a hydrated session needs no extra handling.
+        if resolved is not None:
+            from_cache = resolved.session_id in self.session_cache
+            session = await self._hydrate_session(resolved.session_id)
+            if session is not None:
+                resumed_id = resolved.session_id
+                self._current_session_id = resumed_id
+                source = "cache" if from_cache else "database"
+                return SessionResult(
+                    session_id=resumed_id,
+                    operation="resume",
+                    status="success",
+                    message=f"Resumed session {resumed_id} from {source}",
+                    session_data=session,
+                    recovery_options=(
+                        ["Validate continuity", "Check health"] if auto_recovery else []
+                    ),
+                )
 
         # If filesystem enabled, try to load from disk
         if self.use_filesystem:

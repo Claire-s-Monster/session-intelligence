@@ -997,16 +997,27 @@ class SessionIntelligenceEngine:
             resolved = None
 
         # Scoped cache lookup (replaces the ambient last-cache-key pick)
-        if resolved is not None and resolved.session_id in self.session_cache:
-            resumed_id = resolved.session_id
-            self._current_session_id = resumed_id
-            return SessionResult(
-                session_id=resumed_id,
-                operation="resume",
-                status="success",
-                message=f"Resumed session {resumed_id} from cache",
-                recovery_options=(["Validate continuity", "Check health"] if auto_recovery else []),
-            )
+        # Issue #144: on a cache miss (e.g. after a restart, with
+        # use_filesystem=False) load the session from the database via
+        # _hydrate_session, which also caches it. Resume changes neither status
+        # nor dirty state, so a hydrated session needs no extra handling.
+        if resolved is not None:
+            from_cache = resolved.session_id in self.session_cache
+            session = await self._hydrate_session(resolved.session_id)
+            if session is not None:
+                resumed_id = resolved.session_id
+                self._current_session_id = resumed_id
+                source = "cache" if from_cache else "database"
+                return SessionResult(
+                    session_id=resumed_id,
+                    operation="resume",
+                    status="success",
+                    message=f"Resumed session {resumed_id} from {source}",
+                    session_data=session,
+                    recovery_options=(
+                        ["Validate continuity", "Check health"] if auto_recovery else []
+                    ),
+                )
 
         # If filesystem enabled, try to load from disk
         if self.use_filesystem:
@@ -2260,8 +2271,10 @@ class SessionIntelligenceEngine:
         recovery_actions = []
         health_score = 100.0
 
+        # #195: filesystem checks only apply when filesystem persistence is on
+        # (DB-backed servers never write these files).
         # Continuity check
-        if "continuity" in health_checks:
+        if self.use_filesystem and "continuity" in health_checks:
             session_dir = self.claude_sessions_path / session_id
             if not session_dir.exists():
                 issues.append("Session directory missing")
@@ -2269,7 +2282,7 @@ class SessionIntelligenceEngine:
                 health_score -= 25.0
 
         # Files check
-        if "files" in health_checks:
+        if self.use_filesystem and "files" in health_checks:
             session_dir = self.claude_sessions_path / session_id
             required_files = ["session-metadata.json"]
             for file_name in required_files:
@@ -2295,11 +2308,9 @@ class SessionIntelligenceEngine:
                 recovery_actions.append("Restart failed agents")
                 health_score -= len(failed_agents) * 5.0
 
-        # Auto-recovery
+        # No auto-recovery is implemented, so the result must not claim an
+        # attempt (#195). `auto_recover` is kept for signature compatibility.
         auto_recovery_attempted = False
-        if auto_recover and recovery_actions:
-            auto_recovery_attempted = True
-            # Implement basic auto-recovery logic here
 
         # Diagnostics
         diagnostics = {}

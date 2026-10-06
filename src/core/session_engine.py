@@ -3892,12 +3892,18 @@ class SessionIntelligenceEngine:
                 "usable (relative path or unknown sentinel); returning no "
                 "results instead of querying unscoped"
             )
+            # issue #164: flag degraded so this isn't read as a genuine miss.
             return SolutionSearchResult(
                 error_text=error_text,
                 total_found=0,
                 solutions=[],
                 project_specific_count=0,
                 universal_count=0,
+                degraded=True,
+                degraded_reason=(
+                    f"unusable project_path {project_path!r} "
+                    "(relative or unknown sentinel); not queried"
+                ),
             )
         effective_project = project_path or str(self.claude_sessions_path.parent)
 
@@ -3908,6 +3914,8 @@ class SessionIntelligenceEngine:
                 solutions=[],
                 project_specific_count=0,
                 universal_count=0,
+                degraded=True,
+                degraded_reason="no database configured",
             )
 
         try:
@@ -3920,6 +3928,7 @@ class SessionIntelligenceEngine:
 
             # Convert datetime fields and build ErrorSolution objects
             solutions = []
+            skipped_malformed = 0
             for s in raw_solutions:
                 for key in ("created_at", "last_used"):
                     if s.get(key) and hasattr(s[key], "isoformat"):
@@ -3927,12 +3936,13 @@ class SessionIntelligenceEngine:
                 try:
                     solutions.append(ErrorSolution(**s))
                 except Exception:
-                    pass  # Skip malformed records
+                    skipped_malformed += 1  # Skip malformed records (reported, #164)
 
             # Also query project_learnings for matching content. This is wrapped in its
             # own try/except (issue #158) so a failure here can't discard the `solutions`
             # list already built above from the unrelated error_solutions query.
             matching_count = 0
+            learnings_failure: str | None = None
             try:
                 learnings = await self.database.query_project_learnings(
                     project_path=effective_project,
@@ -3954,9 +3964,17 @@ class SessionIntelligenceEngine:
                 )
             except Exception as e:
                 debug_logger.error(f"Error matching project_learnings: {e}")
+                learnings_failure = f"project_learnings query failed: {type(e).__name__}: {e}"[:300]
 
             project_count = sum(1 for s in solutions if s.project_path == effective_project)
             total = len(solutions) + matching_count
+
+            # issue #164: partial failures keep their results but are flagged.
+            reasons = []
+            if skipped_malformed:
+                reasons.append(f"skipped {skipped_malformed} malformed error_solutions record(s)")
+            if learnings_failure:
+                reasons.append(learnings_failure)
 
             return SolutionSearchResult(
                 error_text=error_text,
@@ -3964,15 +3982,21 @@ class SessionIntelligenceEngine:
                 solutions=solutions,
                 project_specific_count=project_count + matching_count,
                 universal_count=total - project_count - matching_count,
+                degraded=bool(reasons),
+                degraded_reason="; ".join(reasons) or None,
             )
         except Exception as e:
             debug_logger.error(f"Error finding solutions: {e}")
+            # issue #164: stay degraded rather than raising, but flag it so callers
+            # can tell a failed search from one that genuinely matched nothing.
             return SolutionSearchResult(
                 error_text=error_text,
                 total_found=0,
                 solutions=[],
                 project_specific_count=0,
                 universal_count=0,
+                degraded=True,
+                degraded_reason=f"{type(e).__name__}: {e}"[:300],
             )
 
     async def session_update_solution_outcome(

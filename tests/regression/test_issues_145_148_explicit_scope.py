@@ -181,3 +181,31 @@ async def test_monitor_health_explicit_id_that_does_not_exist(engine):
 
     assert result.session_id == MISSING_ID
     assert result.health_score == 0.0
+
+
+# ---------------------------------------------------------------------------
+# #195
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.regression
+async def test_monitor_health_skips_filesystem_checks_when_filesystem_disabled(engine):
+    active_id = "7a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+    await _save_db_only_session(engine, active_id, "active")
+
+    result = await engine.session_monitor_health(session_id=active_id)
+
+    assert result.health_score == 100.0
+    assert result.issues == []
+    assert result.recovery_actions == []
+
+
+@pytest.mark.regression
+async def test_monitor_health_does_not_claim_unimplemented_auto_recovery(engine):
+    failed_id = "8b2c3d4e-5f6a-4b7c-9d8e-0f1a2b3c4d5e"
+    await _save_db_only_session(engine, failed_id, "failed")
+
+    result = await engine.session_monitor_health(session_id=failed_id, auto_recover=True)
+
+    assert result.recovery_actions
+    assert result.auto_recovery_attempted is False

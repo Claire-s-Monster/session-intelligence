@@ -2271,8 +2271,10 @@ class SessionIntelligenceEngine:
         recovery_actions = []
         health_score = 100.0
 
+        # #195: filesystem checks only apply when filesystem persistence is on
+        # (DB-backed servers never write these files).
         # Continuity check
-        if "continuity" in health_checks:
+        if self.use_filesystem and "continuity" in health_checks:
             session_dir = self.claude_sessions_path / session_id
             if not session_dir.exists():
                 issues.append("Session directory missing")
@@ -2280,7 +2282,7 @@ class SessionIntelligenceEngine:
                 health_score -= 25.0
 
         # Files check
-        if "files" in health_checks:
+        if self.use_filesystem and "files" in health_checks:
             session_dir = self.claude_sessions_path / session_id
             required_files = ["session-metadata.json"]
             for file_name in required_files:
@@ -2306,11 +2308,9 @@ class SessionIntelligenceEngine:
                 recovery_actions.append("Restart failed agents")
                 health_score -= len(failed_agents) * 5.0
 
-        # Auto-recovery
+        # No auto-recovery is implemented, so the result must not claim an
+        # attempt (#195). `auto_recover` is kept for signature compatibility.
         auto_recovery_attempted = False
-        if auto_recover and recovery_actions:
-            auto_recovery_attempted = True
-            # Implement basic auto-recovery logic here
 
         # Diagnostics
         diagnostics = {}

@@ -1093,11 +1093,18 @@ class SessionIntelligenceEngine:
                 create_if_missing=False,
                 project_path=project_path,
             )
-            session_id = resolved.session_id
         except ValueError:
-            session_id = None
+            resolved = None
 
-        if not session_id or session_id not in self.session_cache:
+        if resolved is None:
+            # #145: an explicit id that resolves to nothing is reported by id.
+            if session_id:
+                return SessionResult(
+                    session_id=session_id,
+                    operation="finalize",
+                    status="error",
+                    message=f"Session {session_id!r} not found",
+                )
             return SessionResult(
                 session_id="none",
                 operation="finalize",
@@ -1105,7 +1112,17 @@ class SessionIntelligenceEngine:
                 message="No active session to finalize",
             )
 
-        session = self.session_cache[session_id]
+        # #145: hydrate DB-only sessions (e.g. abandoned) instead of discarding the id.
+        session = await self._hydrate_session(resolved.session_id)
+        if session is None:
+            return SessionResult(
+                session_id=resolved.session_id,
+                operation="finalize",
+                status="error",
+                message=f"Session {resolved.session_id!r} not found",
+            )
+
+        session_id = resolved.session_id
         self.mark_dirty(session_id)
 
         # Update session status
@@ -1237,7 +1254,15 @@ class SessionIntelligenceEngine:
         except ValueError:
             resolved = None
 
-        if resolved is None or resolved.session_id not in self.session_cache:
+        if resolved is None:
+            # #145: an explicit id that resolves to nothing is reported by id.
+            if session_id:
+                return SessionResult(
+                    session_id=session_id,
+                    operation="validate",
+                    status="error",
+                    message=f"Session {session_id!r} not found",
+                )
             return SessionResult(
                 session_id="none",
                 operation="validate",
@@ -1245,8 +1270,17 @@ class SessionIntelligenceEngine:
                 message="No active session to validate",
             )
 
+        # #145: hydrate DB-only sessions (e.g. abandoned) instead of discarding the id.
+        session = await self._hydrate_session(resolved.session_id)
+        if session is None:
+            return SessionResult(
+                session_id=resolved.session_id,
+                operation="validate",
+                status="error",
+                message=f"Session {resolved.session_id!r} not found",
+            )
+
         session_id = resolved.session_id
-        session = self.session_cache[session_id]
         self.mark_dirty(session_id)
 
         # Perform validation checks
@@ -2117,7 +2151,7 @@ class SessionIntelligenceEngine:
 
     async def session_monitor_health(
         self,
-        session_id: str | None,
+        session_id: str | None = None,
         health_checks: list[str] | None = None,
         auto_recover: bool = True,
         alert_thresholds: dict[str, float] | None = None,

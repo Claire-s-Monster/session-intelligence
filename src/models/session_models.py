@@ -572,6 +572,9 @@ class SessionHealthResult(BaseModel):
     session_id: str
     health_score: float = Field(ge=0.0, le=100.0)
     issues: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(
+        default_factory=list, description="Non-fatal findings that lower the score"
+    )
     recovery_actions: list[str] = Field(default_factory=list)
     diagnostics: dict[str, Any] = Field(default_factory=dict)
     auto_recovery_attempted: bool = False

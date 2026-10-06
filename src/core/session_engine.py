@@ -2247,14 +2247,15 @@ class SessionIntelligenceEngine:
             except ValueError:
                 session_id = None
 
-        if not session_id or session_id not in self.session_cache:
+        # #148: hydrate DB-only sessions (e.g. after a restart) the way
+        # validate/finalize do (#145), instead of gating on cache membership.
+        session = await self._hydrate_session(session_id) if session_id else None
+        if not session_id or session is None:
             return SessionHealthResult(
                 session_id=session_id or "unknown",
                 health_score=0.0,
                 issues=["No active session found"],
             )
-
-        session = self.session_cache[session_id]
         issues = []
         recovery_actions = []
         health_score = 100.0

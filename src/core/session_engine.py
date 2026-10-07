@@ -22,6 +22,7 @@ from core.debug_logging import configure_debug_logger
 from core.notebook_windowing import (
     apply_window,
     extract_section,
+    find_matches,
     parse_outline,
     validate_window_params,
 )
@@ -3668,13 +3669,31 @@ class SessionIntelligenceEngine:
         section: str | None,
         offset: int,
         max_chars: int | None,
+        search: str | None = None,
+        include_key_changes: bool = False,
     ) -> None:
-        """Apply outline / section / window to a notebook row in place (issue #141)."""
+        """Apply outline / search / section / window to a notebook row in place (issue #141).
+
+        outline and search take precedence: when either is set, section / offset /
+        max_chars are ignored, bodies are dropped and no ``_body_window`` is added.
+        """
+        if not include_key_changes:
+            row["key_changes_count"] = len(row.pop("key_changes", None) or [])
         fields = [f for f in ("authored_body", "summary_markdown") if row.get(f)]
-        if outline:
-            source = fields[0] if fields else None
-            row["outline"] = parse_outline(row[source]) if source else []
-            row["outline_source"] = source
+        if outline or search is not None:
+            if outline:
+                source = fields[0] if fields else None
+                row["outline"] = parse_outline(row[source]) if source else []
+                row["outline_source"] = source
+            if search is not None:
+                row["search_matches"] = {}
+                for field in fields:
+                    found, total = find_matches(row[field], search)
+                    row["search_matches"][field] = {
+                        "total": total,
+                        "returned": len(found),
+                        "matches": found,
+                    }
             row.pop("authored_body", None)
             row.pop("summary_markdown", None)
             return
@@ -3703,15 +3722,24 @@ class SessionIntelligenceEngine:
         section: str | None = None,
         offset: int = 0,
         max_chars: int | None = None,
+        search: str | None = None,
+        include_key_changes: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Query session notebooks/summaries with optional filters.
 
         Issue #141 body controls (any of them implies summary_only=False):
-        outline replaces bodies with a heading outline; section keeps only
-        the named markdown section; offset/max_chars window the body after
-        section selection (metadata under ``_body_window``). Invalid
-        offset/max_chars raise ValueError.
+        outline replaces bodies with a heading outline; search adds
+        ``search_matches`` per body field (case-insensitive literal matches
+        with absolute offsets, nearest heading and snippet) over the FULL
+        body and drops the bodies; section keeps only the named markdown
+        section; offset/max_chars window the body after section selection
+        (metadata under ``_body_window``). Precedence: when outline and/or
+        search is set, section/offset/max_chars are ignored and no
+        ``_body_window`` is added. Invalid offset/max_chars or a blank
+        search raise ValueError. In these body modes ``key_changes`` is
+        replaced by ``key_changes_count`` unless include_key_changes=True
+        (which alone does not enable body mode).
 
         Args:
             project_path: Project path filter, accepted for convenience and
@@ -3739,8 +3767,14 @@ class SessionIntelligenceEngine:
             list (with a logged warning) rather than silently falling back
             to an unfiltered query across every project's notebooks.
         """
-        validate_window_params(offset, max_chars)
-        body_mode = outline or section is not None or offset > 0 or max_chars is not None
+        validate_window_params(offset, max_chars, search)
+        body_mode = (
+            outline
+            or search is not None
+            or section is not None
+            or offset > 0
+            or max_chars is not None
+        )
         if body_mode:
             summary_only = False
 
@@ -3805,7 +3839,9 @@ class SessionIntelligenceEngine:
                 ]
             elif body_mode:
                 for result in results:
-                    self._shape_notebook_body(result, outline, section, offset, max_chars)
+                    self._shape_notebook_body(
+                        result, outline, section, offset, max_chars, search, include_key_changes
+                    )
 
             debug_logger.info(f"session_query_notebooks returned {len(results)} results")
             return results

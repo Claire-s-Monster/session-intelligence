@@ -7,6 +7,7 @@ import pytest
 from core.notebook_windowing import (
     apply_window,
     extract_section,
+    find_matches,
     parse_outline,
     validate_window_params,
 )
@@ -146,6 +147,48 @@ class TestHelpers:
             validate_window_params(0, 0)
 
 
+class TestFindMatches:
+    def test_case_insensitive_literal_absolute_offsets(self):
+        matches, total = find_matches(BODY, "CHOSE a")
+        assert total == 1
+        assert matches[0]["offset"] == BODY.index("chose A")
+        assert BODY[matches[0]["offset"] :].startswith("chose A")
+
+    def test_literal_not_regex(self):
+        matches, total = find_matches("a.c abc a.c", ".")
+        assert total == 2
+        assert [m["offset"] for m in matches] == [1, 9]
+
+    def test_non_overlapping(self):
+        _, total = find_matches("aaaa", "aa")
+        assert total == 2
+
+    def test_heading_attribution(self):
+        matches, _ = find_matches(BODY, "deep dive")
+        assert matches[0]["heading"] == "Detail"
+        matches, _ = find_matches(BODY, "mitigate")
+        assert matches[0]["heading"] == "Risk Mitigation"
+
+    def test_heading_none_before_first_heading(self):
+        matches, _ = find_matches("preamble text\n# H\nbody\n", "preamble")
+        assert matches[0]["heading"] is None
+
+    def test_snippet_bounds_start_and_end(self):
+        body = "needle in the middle of text needle"
+        matches, _ = find_matches(body, "needle", context_chars=5)
+        assert matches[0]["snippet"] == "needle in t"
+        assert matches[1]["snippet"] == "text needle"
+
+    def test_max_matches_truncation_and_total(self):
+        body = "x " * 30
+        matches, total = find_matches(body, "x", max_matches=5)
+        assert len(matches) == 5
+        assert total == 30
+
+    def test_no_match(self):
+        assert find_matches(BODY, "zzz") == ([], 0)
+
+
 class TestEngine:
     async def test_default_call_unchanged(self, engine, db, monkeypatch):
         _stub_rows(db, monkeypatch, [_row(authored_body=BODY, summary_markdown=BODY)])
@@ -210,11 +253,95 @@ class TestEngine:
             await engine.session_query_notebooks(max_chars=0)
 
 
+class TestSearchEngine:
+    async def test_search_drops_bodies_and_reports_matches(self, engine, db, monkeypatch):
+        _stub_rows(db, monkeypatch, [_row(authored_body=BODY, summary_markdown="no hit")])
+        rows = await engine.session_query_notebooks(search="chose")
+        row = rows[0]
+        assert "authored_body" not in row
+        assert "summary_markdown" not in row
+        assert "_body_window" not in row
+        found = row["search_matches"]["authored_body"]
+        assert found["total"] == 1
+        assert found["returned"] == 1
+        assert found["matches"][0]["offset"] == BODY.index("chose")
+        assert found["matches"][0]["heading"] == "Decisions"
+        assert row["search_matches"]["summary_markdown"]["total"] == 0
+
+    async def test_empty_bodies_skipped(self, engine, db, monkeypatch):
+        _stub_rows(db, monkeypatch, [_row(authored_body=BODY, summary_markdown=None)])
+        rows = await engine.session_query_notebooks(search="chose")
+        assert set(rows[0]["search_matches"]) == {"authored_body"}
+
+    async def test_search_and_outline_combined(self, engine, db, monkeypatch):
+        _stub_rows(db, monkeypatch, [_row(authored_body=BODY)])
+        rows = await engine.session_query_notebooks(search="risk", outline=True)
+        assert len(rows[0]["outline"]) == 5
+        assert rows[0]["search_matches"]["authored_body"]["total"] >= 1
+        assert "authored_body" not in rows[0]
+
+    async def test_search_ignores_section_and_max_chars(self, engine, db, monkeypatch):
+        _stub_rows(db, monkeypatch, [_row(authored_body=BODY)])
+        rows = await engine.session_query_notebooks(
+            search="mitigate", section="Decisions", offset=3, max_chars=5
+        )
+        assert "_body_window" not in rows[0]
+        assert "_section_error" not in rows[0]
+        found = rows[0]["search_matches"]["authored_body"]
+        assert found["total"] == 1
+        assert found["matches"][0]["offset"] == BODY.index("mitigate")
+
+    @pytest.mark.parametrize("bad", ["", "   "])
+    async def test_empty_search_raises(self, engine, bad):
+        with pytest.raises(ValueError):
+            await engine.session_query_notebooks(search=bad)
+
+
+class TestKeyChanges:
+    KC = ["/a/b/c.py", "/a/b/d.py"]
+
+    async def test_body_mode_replaces_with_count(self, engine, db, monkeypatch):
+        _stub_rows(db, monkeypatch, [_row(authored_body="abc", key_changes=self.KC)])
+        rows = await engine.session_query_notebooks(max_chars=2)
+        assert "key_changes" not in rows[0]
+        assert rows[0]["key_changes_count"] == 2
+
+    async def test_count_zero_when_missing_or_none(self, engine, db, monkeypatch):
+        _stub_rows(db, monkeypatch, [_row(authored_body="abc"), _row(key_changes=None)])
+        rows = await engine.session_query_notebooks(outline=True)
+        assert [r["key_changes_count"] for r in rows] == [0, 0]
+        assert all("key_changes" not in r for r in rows)
+
+    async def test_search_mode_replaces_with_count(self, engine, db, monkeypatch):
+        _stub_rows(db, monkeypatch, [_row(authored_body="abc", key_changes=self.KC)])
+        rows = await engine.session_query_notebooks(search="a")
+        assert rows[0]["key_changes_count"] == 2
+
+    async def test_include_key_changes_keeps_list(self, engine, db, monkeypatch):
+        _stub_rows(db, monkeypatch, [_row(authored_body="abc", key_changes=self.KC)])
+        rows = await engine.session_query_notebooks(max_chars=2, include_key_changes=True)
+        assert rows[0]["key_changes"] == self.KC
+        assert "key_changes_count" not in rows[0]
+
+    async def test_include_alone_does_not_trigger_body_mode(self, engine, db, monkeypatch):
+        _stub_rows(db, monkeypatch, [_row(authored_body="abc", key_changes=self.KC)])
+        rows = await engine.session_query_notebooks(include_key_changes=True)
+        assert set(rows[0]) <= {"session_id", "title", "tags", "created_at", "project_name"}
+
+    async def test_summary_only_false_untouched(self, engine, db, monkeypatch):
+        _stub_rows(db, monkeypatch, [_row(authored_body="abc", key_changes=self.KC)])
+        rows = await engine.session_query_notebooks(summary_only=False)
+        assert rows[0]["key_changes"] == self.KC
+        assert "key_changes_count" not in rows[0]
+
+
 class TestSchema:
     def test_schema_accepts_new_params(self, engine):
         interface = LeanMCPInterface(engine)
         props = interface.tool_registry["session_query_notebooks"]["schema"]["properties"]
-        for name in ("outline", "section", "offset", "max_chars"):
+        for name in ("outline", "section", "offset", "max_chars", "search", "include_key_changes"):
             assert name in props
         params = {"outline": True, "section": "x", "offset": 1, "max_chars": 5}
+        assert interface.validate_tool_parameters("session_query_notebooks", params) is None
+        params = {"search": "needle", "include_key_changes": True}
         assert interface.validate_tool_parameters("session_query_notebooks", params) is None

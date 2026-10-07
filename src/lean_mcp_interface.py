@@ -863,10 +863,32 @@ class LeanMCPInterface:
                             "selection, from offset). Implies summary_only=false."
                         ),
                     },
+                    "search": {
+                        "type": "string",
+                        "description": (
+                            "Case-insensitive literal search within each body. Adds "
+                            "search_matches[field] = {total, returned, matches: [{offset, "
+                            "heading, snippet}]} (max 20 matches; offset is absolute in the "
+                            "full body, usable with offset/max_chars). Drops bodies. Searches "
+                            "the full body: section/offset/max_chars are ignored (as with "
+                            "outline; outline+search may be combined). Must be non-blank. "
+                            "Implies summary_only=false."
+                        ),
+                    },
+                    "include_key_changes": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "In outline/section/offset/max_chars/search modes key_changes is "
+                            "replaced by key_changes_count; set true to keep the list. Does "
+                            "not by itself change the result shape."
+                        ),
+                    },
                 },
             },
             "examples": [
                 {"limit": 10},
+                {"project_name": "session-intelligence", "search": "root cause", "limit": 3},
                 {"project_name": "session-intelligence", "outline": True, "limit": 1},
                 {
                     "project_name": "session-intelligence",

@@ -3,18 +3,50 @@
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from typing import Any
 
 _HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*$")
 _MAX_LISTED_HEADINGS = 50
 
 
-def validate_window_params(offset: int, max_chars: int | None) -> None:
-    """Raise ValueError for a negative offset or a non-positive max_chars."""
+def validate_window_params(offset: int, max_chars: int | None, search: str | None = None) -> None:
+    """Raise ValueError for a negative offset, non-positive max_chars or blank search."""
     if offset < 0:
         raise ValueError(f"offset must be >= 0, got {offset}")
     if max_chars is not None and max_chars < 1:
         raise ValueError(f"max_chars must be >= 1, got {max_chars}")
+    if search is not None and not search.strip():
+        raise ValueError("search must be a non-empty, non-whitespace string")
+
+
+def find_matches(
+    body: str, query: str, context_chars: int = 120, max_matches: int = 20
+) -> tuple[list[dict[str, Any]], int]:
+    """Find case-insensitive literal, non-overlapping occurrences of ``query``.
+
+    Returns (matches, total_found); ``matches`` holds at most ``max_matches``
+    dicts of {offset (absolute, in ``body``), heading (nearest enclosing
+    heading or None), snippet}.
+    """
+    outline = parse_outline(body)
+    heading_offsets = [h["offset"] for h in outline]
+    matches: list[dict[str, Any]] = []
+    total = 0
+    for hit in re.finditer(re.escape(query), body, re.IGNORECASE):
+        total += 1
+        if len(matches) >= max_matches:
+            continue
+        start = hit.start()
+        idx = bisect_right(heading_offsets, start) - 1
+        matches.append(
+            {
+                "offset": start,
+                "heading": outline[idx]["heading"] if idx >= 0 else None,
+                "snippet": body[max(0, start - context_chars) : hit.end() + context_chars],
+            }
+        )
+    return matches, total
 
 
 def parse_outline(body: str) -> list[dict[str, Any]]:

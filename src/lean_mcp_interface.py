@@ -783,7 +783,9 @@ class LeanMCPInterface:
                 "Returns compact pointers by default ({session_id, title, tags, "
                 "created_at, project_name} — see summary_only); pass "
                 "summary_only=false to retrieve full notebook bodies "
-                "(summary_markdown, authored_body, key_changes)."
+                "(summary_markdown, authored_body, key_changes). Use outline, "
+                "section, offset and max_chars to fetch headings, one section, "
+                "or a paged window of a body."
             ),
             "schema": {
                 "type": "object",
@@ -825,10 +827,53 @@ class LeanMCPInterface:
                             "the default limit. Pass false to retrieve full notebook bodies."
                         ),
                     },
+                    "outline": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Return a per-row heading outline instead of bodies: list of "
+                            "{heading, level, offset, chars} for markdown ATX headings "
+                            "(fenced code ignored). Implies summary_only=false."
+                        ),
+                    },
+                    "section": {
+                        "type": "string",
+                        "description": (
+                            "Return only the named markdown section of each body (heading "
+                            "line up to the next heading of same or higher level). "
+                            "Case-insensitive; exact match first, then unique substring. "
+                            "No/ambiguous match yields '' plus _section_error listing "
+                            "headings. Implies summary_only=false."
+                        ),
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "default": 0,
+                        "minimum": 0,
+                        "description": (
+                            "Character offset into each body (after section selection). "
+                            "See _body_window.next_offset to page. Implies summary_only=false."
+                        ),
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": (
+                            "Maximum characters returned per body field (after section "
+                            "selection, from offset). Implies summary_only=false."
+                        ),
+                    },
                 },
             },
             "examples": [
                 {"limit": 10},
+                {"project_name": "session-intelligence", "outline": True, "limit": 1},
+                {
+                    "project_name": "session-intelligence",
+                    "section": "Decisions",
+                    "max_chars": 4000,
+                    "limit": 1,
+                },
                 {"project_path": "/home/user/my-project", "limit": 5},
                 {"project_name": "session-intelligence", "limit": 5},
                 {"tags": ["feature", "bugfix"]},

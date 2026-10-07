@@ -19,6 +19,12 @@ from typing import Any
 
 from core.agent_validator import AgentValidator
 from core.debug_logging import configure_debug_logger
+from core.notebook_windowing import (
+    apply_window,
+    extract_section,
+    parse_outline,
+    validate_window_params,
+)
 from core.project_naming import UNBOUND, derive_project_name
 from models.session_models import (
     UNKNOWN_PROJECT_PATH,
@@ -3655,6 +3661,37 @@ class SessionIntelligenceEngine:
             debug_logger.error(f"Error in session_search: {e}")
             return SearchResults(query=query, total_results=0, results=[])
 
+    @staticmethod
+    def _shape_notebook_body(
+        row: dict[str, Any],
+        outline: bool,
+        section: str | None,
+        offset: int,
+        max_chars: int | None,
+    ) -> None:
+        """Apply outline / section / window to a notebook row in place (issue #141)."""
+        fields = [f for f in ("authored_body", "summary_markdown") if row.get(f)]
+        if outline:
+            source = fields[0] if fields else None
+            row["outline"] = parse_outline(row[source]) if source else []
+            row["outline_source"] = source
+            row.pop("authored_body", None)
+            row.pop("summary_markdown", None)
+            return
+
+        windows: dict[str, dict[str, int | None]] = {}
+        errors: list[str] = []
+        for field in fields:
+            text = row[field]
+            if section is not None:
+                text, error = extract_section(text, section)
+                if error:
+                    errors.append(f"{field}: {error}")
+            row[field], windows[field] = apply_window(text, offset, max_chars)
+        row["_body_window"] = windows
+        if errors:
+            row["_section_error"] = "; ".join(errors)
+
     async def session_query_notebooks(
         self,
         project_path: str | None = None,
@@ -3662,9 +3699,19 @@ class SessionIntelligenceEngine:
         tags: list[str] | None = None,
         limit: int = 20,
         summary_only: bool = True,
+        outline: bool = False,
+        section: str | None = None,
+        offset: int = 0,
+        max_chars: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Query session notebooks/summaries with optional filters.
+
+        Issue #141 body controls (any of them implies summary_only=False):
+        outline replaces bodies with a heading outline; section keeps only
+        the named markdown section; offset/max_chars window the body after
+        section selection (metadata under ``_body_window``). Invalid
+        offset/max_chars raise ValueError.
 
         Args:
             project_path: Project path filter, accepted for convenience and
@@ -3692,6 +3739,11 @@ class SessionIntelligenceEngine:
             list (with a logged warning) rather than silently falling back
             to an unfiltered query across every project's notebooks.
         """
+        validate_window_params(offset, max_chars)
+        body_mode = outline or section is not None or offset > 0 or max_chars is not None
+        if body_mode:
+            summary_only = False
+
         if not self.database:
             debug_logger.warning("No database configured for session_query_notebooks")
             return []
@@ -3751,6 +3803,9 @@ class SessionIntelligenceEngine:
                     {key: result[key] for key in summary_keys if key in result}
                     for result in results
                 ]
+            elif body_mode:
+                for result in results:
+                    self._shape_notebook_body(result, outline, section, offset, max_chars)
 
             debug_logger.info(f"session_query_notebooks returned {len(results)} results")
             return results

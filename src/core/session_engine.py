@@ -11,7 +11,7 @@ import json
 import re
 import secrets
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -2290,6 +2290,8 @@ class SessionIntelligenceEngine:
                 issues=["No active session found"],
             )
         issues = []
+        warnings: list[str] = []
+        split_peers: list[str] = []
         recovery_actions = []
         health_score = 100.0
 
@@ -2330,12 +2332,30 @@ class SessionIntelligenceEngine:
                 recovery_actions.append("Restart failed agents")
                 health_score -= len(failed_agents) * 5.0
 
+            # #146: an orphaned session (no executions) while an active peer of
+            # the same project recorded executions after it started.
+            split_peers = await self._find_split_binding_peers(session_id, session)
+            if split_peers:
+                shown = ", ".join(split_peers[:3])
+                warnings.append(
+                    "Possible split binding: this session has no recorded executions, "
+                    f"but active session(s) {shown} for project '{session.project_name}' "
+                    "recorded executions after it started. Activity may be bound to a "
+                    "different session id."
+                )
+                recovery_actions.append(
+                    "Create the session with the native Claude Code session UUID as "
+                    "session_id (session_manage_lifecycle create) so hooks and the "
+                    "caller bind to one session"
+                )
+                health_score -= 10.0
+
         # No auto-recovery is implemented, so the result must not claim an
         # attempt (#195). `auto_recover` is kept for signature compatibility.
         auto_recovery_attempted = False
 
         # Diagnostics
-        diagnostics = {}
+        diagnostics: dict[str, Any] = {}
         if include_diagnostics:
             diagnostics = {
                 "session_age_minutes": ((datetime.now(UTC) - session.started).total_seconds() / 60),
@@ -2346,15 +2366,64 @@ class SessionIntelligenceEngine:
                 # coercing to 0.0, which would assert "0% efficient".
                 "performance_score": session.performance_metrics.efficiency_score,
             }
+            if split_peers:
+                diagnostics["split_binding_peers"] = split_peers
 
         return SessionHealthResult(
             session_id=session_id,
             health_score=max(0.0, health_score),
             issues=issues,
+            warnings=warnings,
             recovery_actions=recovery_actions,
             diagnostics=diagnostics,
             auto_recovery_attempted=auto_recovery_attempted,
         )
+
+    async def _iter_active_sessions(
+        self, page_size: int = 100, max_pages: int = 10
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield active session rows page by page (bounded by `max_pages`)."""
+        if self.database is None:
+            return
+        for page in range(max_pages):
+            rows = await self.database.query_sessions(
+                status="active", limit=page_size, offset=page * page_size
+            )
+            for row in rows:
+                yield row
+            if len(rows) < page_size:
+                return
+
+    async def _find_split_binding_peers(self, session_id: str, session: Session) -> list[str]:
+        """Return ids of active same-project peers with executions newer than
+        `session.started` when `session` itself has none (#146). Never raises."""
+        project = session.project_name
+        if self.database is None or not project or project == UNBOUND:
+            return []
+        try:
+            own = await self.database.query_agent_executions(session_id=session_id, limit=1)
+            if own or session.agents_executed:
+                return []
+            started = session.started
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=UTC)
+            matched: list[str] = []
+            async for peer in self._iter_active_sessions():
+                peer_id = peer.get("id")
+                if not peer_id or peer_id == session_id or peer.get("project_name") != project:
+                    continue
+                rows = await self.database.query_agent_executions(session_id=peer_id, limit=1)
+                newest = safe_parse_datetime(rows[0].get("started_at")) if rows else None
+                if newest is None:
+                    continue
+                if newest.tzinfo is None:
+                    newest = newest.replace(tzinfo=UTC)
+                if newest > started:
+                    matched.append(peer_id)
+            return matched
+        except Exception as e:
+            debug_logger.warning(f"Split-binding check skipped for {session_id}: {e}")
+            return []
 
     # ===== PLACEHOLDER IMPLEMENTATIONS FOR OTHER FUNCTIONS =====
 

@@ -142,7 +142,7 @@ class PerformanceMetrics(BaseModel):
     # from); 0.0 means "measured as zero". Derived in
     # _recompute_derived_metrics, never incremented directly.
     average_execution_time_ms: float | None = None
-    commands_executed: int = 0
+    commands_executed: int | None = None  # None = never measured (#201)
     decisions_made: int = 0
     # None means "never measured" (no terminal successful/failed executions
     # recorded yet); 0.0 means "measured as zero percent". Derived in

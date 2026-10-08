@@ -28,6 +28,8 @@ try:
 except ImportError:
     asyncpg = None  # type: ignore
 
+from models.session_models import INTERNAL_AGENT_NAMES
+
 from .base import (
     DEFAULT_POSTGRES_DSN,
     BaseDatabaseBackend,
@@ -772,6 +774,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         so an execution whose stop event never arrives doesn't stay 'running'
         forever and inflate the success_rate denominator (see get_agent_stats).
         Issue #82: staleness is judged by COALESCE(last_seen_at, started_at).
+        Issue #208: rows for INTERNAL_AGENT_NAMES never get agent_stop by
+        design, so they become 'indeterminate' instead of 'abandoned'.
         """
         pool = self._ensure_connected()
         hours = older_than_hours if older_than_hours is not None else get_execution_max_age_hours()
@@ -781,10 +785,13 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             result = await conn.execute(
                 """
                 UPDATE agent_executions
-                SET status = 'abandoned', completed_at = COALESCE(completed_at, NOW())
+                SET status = CASE WHEN agent_name = ANY($2::text[])
+                                  THEN 'indeterminate' ELSE 'abandoned' END,
+                    completed_at = COALESCE(completed_at, NOW())
                 WHERE status = 'running' AND COALESCE(last_seen_at, started_at) < $1
                 """,
                 cutoff,
+                sorted(INTERNAL_AGENT_NAMES),
             )
             try:
                 return int(result.split()[-1])

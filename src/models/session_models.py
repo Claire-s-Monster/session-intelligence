@@ -19,6 +19,14 @@ from pydantic import BaseModel, Field, computed_field
 # UNKNOWN_PROJECT_PATH` working for existing importers.
 UNKNOWN_PROJECT_PATH = "_unknown_"
 
+# Issue #108: internal hook-driven pseudo-agents that never report a real
+# `agent_type`. Canonical home (issue #208): shared by core.session_engine and
+# the persistence layer (persistence cannot import core), and re-exported from
+# core.session_engine for existing importers. They are hook-side record-keeping
+# containers that never receive agent_stop, so a RUNNING one is closed as
+# INDETERMINATE rather than ABANDONED and kept out of duration averages.
+INTERNAL_AGENT_NAMES = frozenset({"task-manager", "bash-executor"})
+
 # ===== ENUMS =====
 
 

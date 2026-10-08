@@ -19,6 +19,8 @@ from typing import Any
 
 import aiosqlite
 
+from models.session_models import INTERNAL_AGENT_NAMES
+
 from .base import (
     DEFAULT_SQLITE_PATH,
     BaseDatabaseBackend,
@@ -660,19 +662,25 @@ class SQLiteBackend(BaseDatabaseBackend):
         Issue #70: see postgresql.py counterpart for rationale. Run once at
         server startup, alongside reap_abandoned_sessions. Issue #82:
         staleness is judged by COALESCE(last_seen_at, started_at).
+        Issue #208: rows for INTERNAL_AGENT_NAMES never get agent_stop by
+        design, so they become 'indeterminate' instead of 'abandoned'.
         """
         conn = self._ensure_connected()
         hours = older_than_hours if older_than_hours is not None else get_execution_max_age_hours()
         cutoff = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
         now = datetime.now(UTC).isoformat()
+        internal = sorted(INTERNAL_AGENT_NAMES)
+        placeholders = ", ".join("?" for _ in internal)
 
         cursor = await conn.execute(
-            """
+            f"""
             UPDATE agent_executions
-            SET status = 'abandoned', completed_at = COALESCE(completed_at, ?)
+            SET status = CASE WHEN agent_name IN ({placeholders})
+                              THEN 'indeterminate' ELSE 'abandoned' END,
+                completed_at = COALESCE(completed_at, ?)
             WHERE status = 'running' AND COALESCE(last_seen_at, started_at) < ?
-            """,
-            (now, cutoff),
+            """,  # noqa: S608 -- placeholders are "?" only; names are bound
+            (*internal, now, cutoff),
         )
         await conn.commit()
         return cursor.rowcount

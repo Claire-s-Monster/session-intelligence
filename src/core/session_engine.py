@@ -2840,11 +2840,7 @@ class SessionIntelligenceEngine:
             if agent_exec.status == ExecutionStatus.INDETERMINATE
         )
         metrics.decisions_made = len(session.decisions)
-        metrics.commands_executed = sum(
-            len(step.commands_executed)
-            for agent_exec in session.agents_executed
-            for step in agent_exec.execution_steps
-        )
+        metrics.commands_executed = self._count_commands(session)
 
         durations_ms = [
             (agent_exec.completed - agent_exec.started).total_seconds() * 1000
@@ -3302,7 +3298,21 @@ class SessionIntelligenceEngine:
         return "\n".join(lines), decisions_made
 
     @staticmethod
-    def _derive_execution_counts(session: Session) -> dict[str, int]:
+    def _count_commands(session: Session) -> int | None:
+        """Total recorded commands, or None when no step ever carried one.
+
+        None means "never measured" (#161/#201), distinct from a measured 0.
+        """
+        per_step = [
+            len(step.commands_executed)
+            for agent in session.agents_executed
+            for step in agent.execution_steps
+        ]
+        total = sum(per_step)
+        return total if total else None
+
+    @staticmethod
+    def _derive_execution_counts(session: Session) -> dict[str, int | None]:
         """Count executions by outcome from session.agents_executed.
 
         Shared by the notebook metrics table and the dashboard views so both
@@ -3320,9 +3330,7 @@ class SessionIntelligenceEngine:
             "failed_executions": by_status(ExecutionStatus.ERROR),
             "indeterminate_executions": by_status(ExecutionStatus.INDETERMINATE),
             "abandoned_executions": by_status(ExecutionStatus.ABANDONED),
-            "commands_executed": sum(
-                len(step.commands_executed) for agent in agents for step in agent.execution_steps
-            ),
+            "commands_executed": SessionIntelligenceEngine._count_commands(session),
         }
 
     def _generate_metrics_section(self, session: Session) -> str:
@@ -3350,7 +3358,7 @@ class SessionIntelligenceEngine:
         failed = counts["failed_executions"]
         indeterminate = counts["indeterminate_executions"]
         abandoned = counts["abandoned_executions"]
-        commands = counts["commands_executed"]
+        commands = "n/a" if counts["commands_executed"] is None else counts["commands_executed"]
 
         # Unmeasured ("n/a") is distinct from measured-as-zero -- an
         # unfinalized session has never recorded a wall-clock time, and a

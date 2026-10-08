@@ -2,8 +2,9 @@
 
 Fix under test:
 * the engine marks the sessions it creates/mutates dirty, and the HTTP sweep
-  persists only those (full walk on the first sweep and whenever nothing is
-  marked, as a fail-safe; the #67 digest filter applies in every mode);
+  persists only those (full walk on the first sweep and periodically as a
+  backstop; an empty dirty set is skipped; the #67 digest filter applies in
+  every walking mode);
 * changed entities are written in one ``persist_batch`` transaction, with an
   entity-by-entity retry if the batch fails (poison-row fallback);
 * the sweep's counts/timings ride on the ``persist_sessions`` slow_db event and
@@ -146,6 +147,44 @@ class TestDirtyMarking:
 
         assert sid in engine.dirty_snapshot()
 
+    async def test_track_file_operation_heartbeat_marks_and_persists_its_session(self, engine):
+        sid_a = await _create(engine, "p-fileop-a")
+        sid_b = await _create(engine, "p-fileop-b")
+        database = CountingDatabase()
+        server = make_server()
+        request = make_request(database, engine)
+        await server._persist_sessions_to_database(request)  # first full walk
+        database.reset()
+
+        await engine.session_track_file_operation(
+            operation="edit", file_path="/tmp/x.py", project_name="p-fileop-a"
+        )
+
+        assert set(engine.dirty_snapshot()) == {sid_a}
+        assert sid_b not in engine.dirty_snapshot()
+        stats = await server._persist_sessions_to_database(request, tool="t")
+        assert stats["persist_mode"] == "dirty"
+        assert database.sessions == [sid_a]
+
+    async def test_log_learning_heartbeat_marks_and_persists_its_session(self, engine):
+        sid_a = await _create(engine, "p-learn-a")
+        sid_b = await _create(engine, "p-learn-b")
+        database = CountingDatabase()
+        server = make_server()
+        request = make_request(database, engine)
+        await server._persist_sessions_to_database(request)  # first full walk
+        database.reset()
+
+        await engine.session_log_learning(
+            category="pattern", learning_content="x", project_name="p-learn-a"
+        )
+
+        assert set(engine.dirty_snapshot()) == {sid_a}
+        assert sid_b not in engine.dirty_snapshot()
+        stats = await server._persist_sessions_to_database(request, tool="t")
+        assert stats["persist_mode"] == "dirty"
+        assert database.sessions == [sid_a]
+
     async def test_clear_dirty_ignores_a_stale_version(self, engine):
         sid = await _create(engine, "p-version")
         stale = engine.dirty_snapshot()[sid]
@@ -194,7 +233,13 @@ class TestScopedSweep:
         assert not engine.dirty_snapshot(), "a successful write clears the dirty mark"
         assert server.persist_metrics["dirty_walks"] == 1
 
-    async def test_empty_dirty_set_falls_back_to_full_walk(self, engine):
+    async def test_empty_dirty_set_skips_the_sweep(self, engine):
+        """An empty dirty set means nothing to persist (it used to trigger a full walk).
+
+        Every cache mutation now marks its session dirty (#190), so a clean call
+        needs no walk; the periodic and shutdown full walks are the backstop for
+        a missed mark_dirty. full_walk_fallbacks stays 0 for stats consumers.
+        """
         await self._three_sessions(engine)
         database = CountingDatabase()
         server = make_server()
@@ -202,13 +247,16 @@ class TestScopedSweep:
         await server._persist_sessions_to_database(request)
         database.reset()
 
-        stats = await server._persist_sessions_to_database(request, tool="session_log_learning")
+        stats = await server._persist_sessions_to_database(request, tool="session_get_dashboard")
 
-        assert stats["persist_mode"] == "full_fallback"
-        assert stats["sessions_walked"] == 3
-        assert stats["entities_written"] == 0  # digest filter still skips everything
-        assert server.persist_metrics["full_walk_fallbacks"] == 1
-        assert server.persist_metrics["full_walk_fallbacks_by_tool"] == {"session_log_learning": 1}
+        assert stats["persist_mode"] == "skip"
+        assert stats["sessions_walked"] == 0
+        assert stats["entities_digested"] == 0
+        assert stats["entities_written"] == 0
+        assert database.sessions == [] and database.decisions == []
+        assert server.persist_metrics["skipped_clean"] == 1
+        assert server.persist_metrics["full_walk_fallbacks"] == 0
+        assert server.persist_metrics["dirty_walks"] == 0
 
     async def test_failed_write_stays_dirty_and_is_retried(self, engine):
         sid = await _create(engine, "p-fail")

@@ -696,6 +696,7 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             counters = self.persist_metrics = {
                 "calls": 0,
                 "dirty_walks": 0,
+                "skipped_clean": 0,
                 "full_walk_first": 0,
                 "full_walk_fallbacks": 0,
                 "full_walk_periodic": 0,
@@ -708,7 +709,7 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
         return counters
 
     def _choose_persist_mode(self, dirty: dict[str, int], tool: str | None) -> str:
-        """Pick dirty / full_first / full_periodic / full_fallback; bump its counter."""
+        """Pick dirty / skip / full_first / full_periodic; bump its counter."""
         counters = self._persist_counters()
         if not counters["full_walk_done"]:
             counters["full_walk_first"] += 1
@@ -719,12 +720,11 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             counters["full_walk_periodic"] += 1
             return "full_periodic"
         if not dirty:
-            # Fail-safe: a session-modifying tool finished with nothing marked,
-            # so a mutation site may be missing a mark_dirty -- walk everything.
-            counters["full_walk_fallbacks"] += 1
-            by_tool = counters["full_walk_fallbacks_by_tool"]
-            by_tool[tool or "?"] = by_tool.get(tool or "?", 0) + 1
-            return "full_fallback"
+            # #190: every cache mutation marks its session dirty, so an empty set
+            # means nothing changed. The periodic walk above is the backstop for a
+            # missed mark_dirty; full_walk_fallbacks stays 0 (kept for consumers).
+            counters["skipped_clean"] += 1
+            return "skip"
         counters["dirty_walks"] += 1
         return "dirty"
 
@@ -745,9 +745,10 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
         UPDATEs on ``agent_executions`` and keeping autovacuum continuously busy.
 
         Issue #190: normally only the sessions the engine marked dirty are
-        walked. The first sweep after startup, and any sweep that finds nothing
-        marked, walk the whole cache instead (fail-safe against a missed
-        ``mark_dirty``); the digest filter applies in every mode. Changed
+        walked; a sweep that finds nothing marked is skipped outright. The first
+        sweep after startup and the periodic sweep walk the whole cache instead
+        (backstop against a missed ``mark_dirty``); the digest filter applies in
+        every walking mode. Changed
         entities are written in one transaction (see ``persist_sweep``).
 
         Returns (and fills ``stats`` if given) with the mode, counts and the
@@ -766,6 +767,20 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             mode = self._choose_persist_mode(dirty, tool)
         else:  # forced full walk (shutdown)
             self._persist_counters()["full_walk_shutdown"] += 1
+
+        if mode == "skip":  # nothing dirty: no walk, no digests, no writes (#190)
+            tracker.retain(cache.keys())  # still bound the tracker to the live cache
+            stats.update(
+                persist_mode=mode,
+                dirty_sessions=0,
+                sessions_walked=0,
+                entities_digested=0,
+                entities_written=0,
+                batch_fallback=False,
+                walk_digest_ms=0.0,
+                write_ms=0.0,
+            )
+            return stats
 
         started = time.perf_counter()
         if mode == "dirty":

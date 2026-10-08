@@ -90,7 +90,13 @@ def make_server() -> HTTPSessionIntelligenceServer:
 
 
 def make_request(database, session_cache):
-    engine = SimpleNamespace(session_cache=session_cache)
+    # Every cached session counts as dirty: these tests exercise the digest
+    # filter, and an empty dirty set is skipped outright since #190.
+    engine = SimpleNamespace(
+        session_cache=session_cache,
+        dirty_snapshot=lambda: dict.fromkeys(session_cache, 1),
+        clear_dirty=lambda session_id, version: None,
+    )
     return SimpleNamespace(
         app=SimpleNamespace(state=SimpleNamespace(database=database, session_engine=engine))
     )

@@ -1988,6 +1988,7 @@ class SessionIntelligenceEngine:
                         # Issue #82: bump before persisting, not after, so
                         # this save carries the fresh heartbeat instead of
                         # whatever last_seen_at the object already had.
+                        self.mark_dirty(resolved_id)  # #190: heartbeat mutates the cache
                         cached.last_seen_at = datetime.now(UTC)
                         await self.database.save_session(cached.model_dump(mode="python"))
                     except Exception:
@@ -2135,6 +2136,7 @@ class SessionIntelligenceEngine:
             if cached and self.database:
                 try:
                     # Issue #82: bump before persisting (see session_log_decision).
+                    self.mark_dirty(resolved_id)  # #190: heartbeat mutates the cached session
                     cached.last_seen_at = datetime.now(UTC)
                     await self.database.save_session(cached.model_dump(mode="python"))
                 except Exception:
@@ -4114,6 +4116,7 @@ class SessionIntelligenceEngine:
                 if cached and self.database:
                     try:
                         # Issue #82: bump before persisting (see session_log_decision).
+                        self.mark_dirty(resolved_session_id)  # #190: heartbeat mutates the cache
                         cached.last_seen_at = datetime.now(UTC)
                         await self.database.save_session(cached.model_dump(mode="python"))
                     except Exception:

@@ -28,6 +28,7 @@ from core.notebook_windowing import (
 )
 from core.project_naming import UNBOUND, derive_project_name
 from models.session_models import (
+    INTERNAL_AGENT_NAMES,
     UNKNOWN_PROJECT_PATH,
     Agent,
     AgentContext,
@@ -104,10 +105,10 @@ debug_logger = configure_debug_logger(
 AGENT_EXECUTION_PAGE_SIZE = 200
 AGENT_EXECUTION_MAX_PAGES = 100
 
-# Issue #108: internal hook-driven pseudo-agents that never report a real
+# Issue #108: INTERNAL_AGENT_NAMES (imported from models.session_models,
+# issue #208) are internal hook-driven pseudo-agents that never report a real
 # `agent_type`. Sessions tracked under these names are resolved to
 # agent_type "internal" instead of persisting "unknown".
-INTERNAL_AGENT_NAMES = frozenset({"task-manager", "bash-executor"})
 
 
 def usable_project_path(candidate: str | None) -> str | None:
@@ -1161,15 +1162,23 @@ class SessionIntelligenceEngine:
         # happen BEFORE the session is persisted below, and each reconciled
         # execution must also be persisted individually since agent_executions
         # is a separate table from sessions.
+        # Issue #208: INTERNAL_AGENT_NAMES executions are hook-side containers
+        # that never get agent_stop by design, so they close as INDETERMINATE
+        # (no outcome to judge), not ABANDONED.
         reconciled_at = session.completed
         for agent_exec in session.agents_executed:
             if agent_exec.status != ExecutionStatus.RUNNING:
                 continue
-            agent_exec.status = ExecutionStatus.ABANDONED
+            closed_status = (
+                ExecutionStatus.INDETERMINATE
+                if agent_exec.agent_name in INTERNAL_AGENT_NAMES
+                else ExecutionStatus.ABANDONED
+            )
+            agent_exec.status = closed_status
             agent_exec.completed = reconciled_at
             for step in agent_exec.execution_steps:
                 if step.status == ExecutionStatus.RUNNING:
-                    step.status = ExecutionStatus.ABANDONED
+                    step.status = closed_status
                     step.completed = reconciled_at
             if self.database:
                 try:
@@ -1178,7 +1187,7 @@ class SessionIntelligenceEngine:
                     await self.database.save_agent_execution(exec_data)
                 except Exception as e:
                     debug_logger.error(
-                        f"Error persisting reconciled (abandoned) execution "
+                        f"Error persisting reconciled ({closed_status.value}) execution "
                         f"{agent_exec.execution_id}: {e}"
                     )
 
@@ -2844,10 +2853,14 @@ class SessionIntelligenceEngine:
         metrics.decisions_made = len(session.decisions)
         metrics.commands_executed = self._count_commands(session)
 
+        # Issue #208: INTERNAL_AGENT_NAMES executions are excluded too; their
+        # `completed` is the finalize/sweep time, not a measurement.
         durations_ms = [
             (agent_exec.completed - agent_exec.started).total_seconds() * 1000
             for agent_exec in session.agents_executed
-            if agent_exec.completed is not None and agent_exec.status != ExecutionStatus.ABANDONED
+            if agent_exec.completed is not None
+            and agent_exec.status != ExecutionStatus.ABANDONED
+            and agent_exec.agent_name not in INTERNAL_AGENT_NAMES
         ]
         metrics.average_execution_time_ms = (
             sum(durations_ms) / len(durations_ms) if durations_ms else None

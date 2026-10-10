@@ -63,6 +63,12 @@ def get_session_max_age_hours() -> int:
 # SESSION_INTELLIGENCE_EXECUTION_MAX_AGE_HOURS.
 DEFAULT_EXECUTION_MAX_AGE_HOURS = 24
 
+# Issue #150: columns editable in place via update_project_learning /
+# update_decision. Identity, supersedes, timestamps, project scope and the
+# retired_* pair are deliberately absent (retire via set_*_retired).
+UPDATABLE_LEARNING_FIELDS = frozenset({"learning_content", "trigger_context", "category"})
+UPDATABLE_DECISION_FIELDS = frozenset({"description", "rationale", "category", "impact_level"})
+
 
 def get_execution_max_age_hours() -> int:
     """Return the staleness threshold (hours) for 'running' agent_executions."""

@@ -4070,7 +4070,7 @@ class SessionIntelligenceEngine:
             }
 
         # Convert datetimes explicitly so PostgreSQL and SQLite match.
-        for key in ("created_at", "last_used"):
+        for key in ("created_at", "last_used", "retired_at"):
             if row.get(key) is not None and hasattr(row[key], "isoformat"):
                 row[key] = row[key].isoformat()
 
@@ -4089,8 +4089,187 @@ class SessionIntelligenceEngine:
             "promoted_to_universal",
             "supersedes",
             "superseded_by",
+            "retired_at",
+            "retired_reason",
         )
         return {"status": "success", "learning": {k: row.get(k) for k in keys}}
+
+    async def _retire_row(
+        self,
+        tool: str,
+        id_key: str,
+        row_id: str,
+        reason: str | None,
+        unretire: bool,
+        setter_name: str,
+    ) -> dict[str, Any]:
+        """Shared retire/un-retire flow for learnings and decisions (Issue #150)."""
+        if not row_id or not row_id.strip():
+            return {"status": "error", "message": f"{id_key} is required"}
+        if not self.database:
+            return {"status": "error", "message": "No database configured"}
+        try:
+            found = await getattr(self.database, setter_name)(row_id, not unretire, reason)
+        except Exception as e:
+            debug_logger.error(f"Error in {tool}: {e}")
+            return {"status": "error", id_key: row_id, "message": f"{tool} failed: {e}"}
+        if not found:
+            return {"status": "error", id_key: row_id, "message": f"'{row_id}' not found"}
+        return {
+            "status": "success",
+            id_key: row_id,
+            "retired": not unretire,
+            "message": "Entry restored" if unretire else "Entry retired",
+        }
+
+    async def _update_row(
+        self,
+        tool: str,
+        id_key: str,
+        row_id: str,
+        fields: dict[str, Any],
+        updater_name: str,
+    ) -> dict[str, Any]:
+        """Shared in-place edit flow for learnings and decisions (Issue #150)."""
+        if not row_id or not row_id.strip():
+            return {"status": "error", "message": f"{id_key} is required"}
+        if not self.database:
+            return {"status": "error", "message": "No database configured"}
+        fields = {k: v for k, v in fields.items() if v is not None}
+        if not fields:
+            return {"status": "error", "message": "Nothing to update: pass at least one field"}
+        for name, value in fields.items():
+            if isinstance(value, str) and not value.strip() and name != "trigger_context":
+                return {"status": "error", "message": f"{name} must not be empty"}
+        try:
+            updated = await getattr(self.database, updater_name)(row_id, **fields)
+        except Exception as e:
+            debug_logger.error(f"Error in {tool}: {e}")
+            return {"status": "error", id_key: row_id, "message": f"{tool} failed: {e}"}
+        if not updated:
+            return {"status": "error", id_key: row_id, "message": f"'{row_id}' not found"}
+        return {
+            "status": "success",
+            id_key: row_id,
+            "updated_fields": sorted(fields),
+            "message": "Entry updated successfully",
+        }
+
+    async def session_retire_learning(
+        self, learning_id: str, reason: str | None = None, unretire: bool = False
+    ) -> dict[str, Any]:
+        """Retire a learning without a successor (or restore it with unretire=True)."""
+        return await self._retire_row(
+            "session_retire_learning",
+            "learning_id",
+            learning_id,
+            reason,
+            unretire,
+            "set_learning_retired",
+        )
+
+    async def session_retire_decision(
+        self, decision_id: str, reason: str | None = None, unretire: bool = False
+    ) -> dict[str, Any]:
+        """Retire a decision without a successor (or restore it with unretire=True)."""
+        return await self._retire_row(
+            "session_retire_decision",
+            "decision_id",
+            decision_id,
+            reason,
+            unretire,
+            "set_decision_retired",
+        )
+
+    async def session_update_learning(
+        self,
+        learning_id: str,
+        learning_content: str | None = None,
+        trigger_context: str | None = None,
+        category: str | None = None,
+    ) -> dict[str, Any]:
+        """Edit a learning in place. Only content fields are editable."""
+        if category is not None:
+            try:
+                category = LearningCategory(category).value
+            except ValueError:
+                allowed = [c.value for c in LearningCategory]
+                return {"status": "error", "message": f"Invalid category; use one of {allowed}"}
+        if learning_content is not None:
+            _reject_tool_result_envelope(
+                "session_update_learning", "learning_content", learning_content
+            )
+        return await self._update_row(
+            "session_update_learning",
+            "learning_id",
+            learning_id,
+            {
+                "learning_content": learning_content,
+                "trigger_context": trigger_context,
+                "category": category,
+            },
+            "update_project_learning",
+        )
+
+    async def session_update_decision(
+        self,
+        decision_id: str,
+        decision: str | None = None,
+        rationale: str | None = None,
+        category: str | None = None,
+        impact_level: str | None = None,
+    ) -> dict[str, Any]:
+        """Edit a decision in place. `decision` maps to the stored description."""
+        if impact_level is not None:
+            try:
+                impact_level = ImpactLevel(impact_level).value
+            except ValueError:
+                allowed = [i.value for i in ImpactLevel]
+                return {"status": "error", "message": f"Invalid impact_level; use one of {allowed}"}
+        if decision is not None:
+            _reject_tool_result_envelope("session_update_decision", "decision", decision)
+        result = await self._update_row(
+            "session_update_decision",
+            "decision_id",
+            decision_id,
+            {
+                "description": decision,
+                "rationale": rationale,
+                "category": category,
+                "impact_level": impact_level,
+            },
+            "update_decision",
+        )
+        if result.get("status") == "success":
+            self._sync_cached_decision(decision_id, decision, rationale, impact_level)
+        return result
+
+    def _sync_cached_decision(
+        self,
+        decision_id: str,
+        description: str | None,
+        rationale: str | None,
+        impact_level: str | None,
+    ) -> None:
+        """Mirror an in-place decision edit onto the cached Decision.
+
+        The persist sweep re-upserts cached decisions (description, rationale,
+        context, supersedes all overwrite on conflict), so a stale cached copy
+        would revert the edit. `category` is not a model attribute and is not
+        in the upsert's update set, so the sweep cannot clobber it.
+        """
+        for session_id, session in self.session_cache.items():
+            for cached in session.decisions:
+                if cached.decision_id != decision_id:
+                    continue
+                if description is not None:
+                    cached.description = description
+                if rationale is not None:
+                    cached.rationale = rationale
+                if impact_level is not None:
+                    cached.impact_level = ImpactLevel(impact_level)
+                self.mark_dirty(session_id)
+                return
 
     # ===== KNOWLEDGE SYSTEM =====
 
@@ -4358,6 +4537,7 @@ class SessionIntelligenceEngine:
                 learnings = await self.database.query_project_learnings(
                     project_path=effective_project,
                     category=error_category,
+                    exclude_superseded=True,
                 )
 
                 # Filter learnings by text match and count them. trigger_context is a

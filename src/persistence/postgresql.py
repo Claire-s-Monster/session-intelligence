@@ -32,6 +32,8 @@ from models.session_models import INTERNAL_AGENT_NAMES
 
 from .base import (
     DEFAULT_POSTGRES_DSN,
+    UPDATABLE_DECISION_FIELDS,
+    UPDATABLE_LEARNING_FIELDS,
     BaseDatabaseBackend,
     db_retry,
     execution_duration_ms,
@@ -92,6 +94,11 @@ _MIGRATIONS = (
     # Issue #106: caller-authored notebook body, distinct from the regenerated
     # summary_markdown snapshot.
     "ALTER TABLE session_summaries ADD COLUMN IF NOT EXISTS authored_body TEXT",
+    # Issue #150: soft-retire columns for decisions and learnings.
+    "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS retired_at TIMESTAMPTZ",
+    "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS retired_reason TEXT",
+    "ALTER TABLE project_learnings ADD COLUMN IF NOT EXISTS retired_at TIMESTAMPTZ",
+    "ALTER TABLE project_learnings ADD COLUMN IF NOT EXISTS retired_reason TEXT",
 )
 
 
@@ -139,7 +146,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         context JSONB DEFAULT '{}',
         impact_level TEXT DEFAULT 'medium',
         artifacts JSONB DEFAULT '[]',
-        supersedes TEXT
+        supersedes TEXT,
+        retired_at TIMESTAMPTZ,
+        retired_reason TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_decisions_session ON decisions(session_id);
@@ -288,7 +297,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         last_used TIMESTAMPTZ,
         promoted_to_universal BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        supersedes TEXT
+        supersedes TEXT,
+        retired_at TIMESTAMPTZ,
+        retired_reason TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_learnings_project ON project_learnings(project_path);
@@ -1026,6 +1037,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                   AND id NOT IN (
                       SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
                   )
+                  AND retired_at IS NULL
             """
             if exclude_superseded
             else ""
@@ -1554,6 +1566,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                       AND d.id NOT IN (
                           SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
                       )
+                      AND d.retired_at IS NULL
                     ORDER BY d.timestamp DESC
                     LIMIT $3
                     """,
@@ -1590,6 +1603,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                           SELECT supersedes FROM project_learnings
                           WHERE supersedes IS NOT NULL
                       )
+                      AND retired_at IS NULL
                     ORDER BY success_count DESC, (last_used IS NULL), last_used DESC, id
                     LIMIT $2
                     """,
@@ -2143,6 +2157,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                       SELECT supersedes FROM project_learnings
                       WHERE supersedes IS NOT NULL
                   )
+                  AND retired_at IS NULL
             """
             if exclude_superseded
             else ""
@@ -2200,6 +2215,65 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             learning = self._from_record(row)
             learning["superseded_by"] = [s["id"] for s in successors]
             return learning
+
+    async def _set_retired(
+        self, table: str, row_id: str, retired: bool, reason: str | None
+    ) -> bool:
+        """Set or clear retired_at/retired_reason. table is a fixed internal literal."""
+        pool = self._ensure_connected()
+        retired_at = datetime.now(UTC) if retired else None
+        retired_reason = reason if retired else None
+        async with pool.acquire() as conn:
+            status = await conn.execute(
+                f"UPDATE {table} SET retired_at = $1, retired_reason = $2 WHERE id = $3",  # noqa: S608
+                retired_at,
+                retired_reason,
+                row_id,
+            )
+            return int(status.split()[-1]) > 0
+
+    async def _update_fields(
+        self, table: str, row_id: str, fields: dict[str, Any], allowed: frozenset[str]
+    ) -> bool:
+        """Dynamic UPDATE restricted to an allowlist of columns. table is a fixed literal."""
+        disallowed = set(fields) - allowed
+        if disallowed:
+            raise ValueError(f"Fields not updatable: {sorted(disallowed)}")
+        if not fields:
+            return False
+        pool = self._ensure_connected()
+        set_clause = ", ".join(f"{name} = ${i}" for i, name in enumerate(fields, start=1))
+        async with pool.acquire() as conn:
+            status = await conn.execute(
+                f"UPDATE {table} SET {set_clause} WHERE id = ${len(fields) + 1}",  # noqa: S608
+                *fields.values(),
+                row_id,
+            )
+            return int(status.split()[-1]) > 0
+
+    async def set_learning_retired(
+        self, learning_id: str, retired: bool, reason: str | None = None
+    ) -> bool:
+        """Retire (or un-retire) a learning. Returns False if the id does not exist."""
+        return await self._set_retired("project_learnings", learning_id, retired, reason)
+
+    async def set_decision_retired(
+        self, decision_id: str, retired: bool, reason: str | None = None
+    ) -> bool:
+        """Retire (or un-retire) a decision. Returns False if the id does not exist."""
+        return await self._set_retired("decisions", decision_id, retired, reason)
+
+    async def update_project_learning(self, learning_id: str, **fields: Any) -> bool:
+        """Edit content fields of a learning in place. Returns False if not found."""
+        return await self._update_fields(
+            "project_learnings", learning_id, fields, UPDATABLE_LEARNING_FIELDS
+        )
+
+    async def update_decision(self, decision_id: str, **fields: Any) -> bool:
+        """Edit content fields of a decision in place. Returns False if not found."""
+        return await self._update_fields(
+            "decisions", decision_id, fields, UPDATABLE_DECISION_FIELDS
+        )
 
     async def update_learning_usage(self, learning_id: str, success: bool) -> dict[str, Any]:
         """Update success/failure count for a learning."""
@@ -2845,6 +2919,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                             coalesce(d.rationale, '')
                           )
                           @@ plainto_tsquery('english', $1)
+                      AND d.id NOT IN (
+                          SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
+                      )
+                      AND d.retired_at IS NULL
                     ORDER BY relevance DESC
                     LIMIT $2
                     """,
@@ -2886,6 +2964,11 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                             coalesce(learning_content, '')
                           )
                           @@ plainto_tsquery('english', $1)
+                      AND id NOT IN (
+                          SELECT supersedes FROM project_learnings
+                          WHERE supersedes IS NOT NULL
+                      )
+                      AND retired_at IS NULL
                     ORDER BY relevance DESC
                     LIMIT $2
                     """,

@@ -32,6 +32,8 @@ LEARNING_KEYS = {
     "promoted_to_universal",
     "supersedes",
     "superseded_by",
+    "retired_at",
+    "retired_reason",
 }
 
 

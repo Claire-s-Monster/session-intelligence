@@ -2182,6 +2182,25 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             )
             return [self._from_record(row) for row in rows]
 
+    async def get_project_learning(self, learning_id: str) -> dict[str, Any] | None:
+        """Fetch one learning by id, with the ids of rows that supersede it (Issue #207)."""
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM project_learnings WHERE id = $1",
+                learning_id,
+            )
+            if row is None:
+                return None
+            successors = await conn.fetch(
+                "SELECT id FROM project_learnings WHERE supersedes = $1 ORDER BY created_at, id",
+                learning_id,
+            )
+            learning = self._from_record(row)
+            learning["superseded_by"] = [s["id"] for s in successors]
+            return learning
+
     async def update_learning_usage(self, learning_id: str, success: bool) -> dict[str, Any]:
         """Update success/failure count for a learning."""
         pool = self._ensure_connected()
@@ -2838,6 +2857,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     """
                     SELECT
                         id as session_id,
+                        id as learning_id,
                         category as title,
                         ts_headline(
                             'english',

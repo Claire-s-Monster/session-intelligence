@@ -288,19 +288,76 @@ async def test_missing_session_id_returns_400(asgi_client):
     assert "Missing MCP-Session-Id" in resp.json()["error"]["message"]
 
 
-async def test_unknown_session_id_returns_404(asgi_client):
-    """MCP request with an unknown session ID returns 404 (spec: client re-initializes)."""
+async def test_unknown_wellformed_session_id_is_readopted(asgi_client, app):
+    """Issue #205: a well-formed unknown id is re-adopted, not 404'd."""
+    mgr = app.state.mcp_session_manager
+    unknown = "mcp-" + "0" * 16
+    for _ in range(2):
+        resp = await asgi_client.post(
+            "/mcp",
+            headers={"MCP-Session-Id": unknown},
+            json=_mcp_body("tools/list"),
+        )
+        assert resp.status_code == 200
+    assert unknown in mgr._active_sessions
+
+
+async def test_malformed_session_id_returns_404(asgi_client, app):
+    """A session id not in this server's format still returns 404."""
     resp = await asgi_client.post(
         "/mcp",
-        headers={"MCP-Session-Id": "totally-bogus-id-99999"},
+        headers={"MCP-Session-Id": "bogus-id"},
         json=_mcp_body("tools/list"),
     )
     assert resp.status_code == 404
     assert resp.json()["error"]["message"] == "Session not found"
+    assert "bogus-id" not in app.state.mcp_session_manager._active_sessions
 
 
-async def test_pruned_session_gets_404_then_reinitialize_works(asgi_client, app, db):
-    """A session removed by the prune sweep gets 404; a fresh initialize then works."""
+async def test_session_survives_simulated_restart(asgi_client, app, db):
+    """Issue #205: memory and DB row both gone (restart + prune); old id still works."""
+    mgr = app.state.mcp_session_manager
+    session_id = await _initialize_mcp(asgi_client)
+    await mgr.drain_pending_saves()
+    mgr._active_sessions.clear()
+    conn = db._ensure_connected()
+    await conn.execute("DELETE FROM mcp_sessions WHERE mcp_session_id = ?", (session_id,))
+    await conn.commit()
+    assert await db.get_mcp_session(session_id) is None
+
+    resp = await asgi_client.post(
+        "/mcp", headers={"MCP-Session-Id": session_id}, json=_mcp_body("tools/list")
+    )
+    assert resp.status_code == 200
+    assert session_id in mgr._active_sessions
+
+
+async def test_sse_unknown_wellformed_session_id_not_404(app):
+    """Issue #205: GET /mcp route path adopts the id (helper-level; SSE is a stream)."""
+    mgr = app.state.mcp_session_manager
+    unknown = "mcp-" + "a" * 16
+    assert await mgr.get_or_adopt_session(unknown) is True
+    assert await mgr.get_or_adopt_session("bogus-id") is False
+
+
+async def test_concurrent_adoption_registers_once(app, caplog):
+    """Two concurrent requests with the same unknown id adopt it exactly once."""
+    mgr = app.state.mcp_session_manager
+    unknown = "mcp-" + "b" * 16
+    with caplog.at_level("INFO", logger="transport.mcp_session_manager"):
+        results = await asyncio.gather(
+            mgr.get_or_adopt_session(unknown), mgr.get_or_adopt_session(unknown)
+        )
+    assert results == [True, True]
+    assert list(mgr._active_sessions) == [unknown]
+    assert len(mgr._pending_saves) <= 1
+    msgs = [r.getMessage() for r in caplog.records if "Re-adopted" in r.getMessage()]
+    assert msgs == [f"Re-adopted unknown MCP session id {unknown} after restart"]
+    await mgr.drain_pending_saves()
+
+
+async def test_pruned_session_is_readopted_and_reinitialize_works(asgi_client, app, db):
+    """A session removed by the prune sweep is re-adopted (#205); a fresh initialize works."""
     from datetime import UTC, datetime, timedelta
 
     from transport.mcp_session_pruner import MCPSessionPruner
@@ -320,7 +377,7 @@ async def test_pruned_session_gets_404_then_reinitialize_works(asgi_client, app,
     resp = await asgi_client.post(
         "/mcp", headers={"MCP-Session-Id": session_id}, json=_mcp_body("tools/list")
     )
-    assert resp.status_code == 404
+    assert resp.status_code == 200
 
     new_id = await _initialize_mcp(asgi_client)
     ok = await asgi_client.post(

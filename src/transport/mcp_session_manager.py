@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import re
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -26,6 +27,14 @@ if TYPE_CHECKING:
     from persistence.base import DatabaseBackend as Database
 
 logger = logging.getLogger(__name__)
+
+# Format of the ids create_mcp_session mints; get_or_adopt_session (issue #205)
+# derives its accept-pattern from the same parts so the two cannot drift.
+MCP_SESSION_ID_PREFIX = "mcp-"
+MCP_SESSION_ID_HEX_LEN = 16
+MCP_SESSION_ID_PATTERN = re.compile(
+    rf"{re.escape(MCP_SESSION_ID_PREFIX)}[0-9a-f]{{{MCP_SESSION_ID_HEX_LEN}}}"
+)
 
 
 class MCPSessionManager:
@@ -49,7 +58,15 @@ class MCPSessionManager:
         The session is registered in memory synchronously and the id returned at
         once; the DB row is written by a background task (issue #174).
         """
-        mcp_session_id = f"mcp-{uuid.uuid4().hex[:16]}"
+        mcp_session_id = f"{MCP_SESSION_ID_PREFIX}{uuid.uuid4().hex[:MCP_SESSION_ID_HEX_LEN]}"
+        self._register_session(mcp_session_id, client_info)
+        logger.info(f"Created MCP session: {mcp_session_id}")
+        return mcp_session_id
+
+    def _register_session(
+        self, mcp_session_id: str, client_info: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        """Register an entry in memory and schedule its background DB write."""
         now = datetime.now(UTC).isoformat()
 
         session_data = {
@@ -70,8 +87,29 @@ class MCPSessionManager:
             self._pending_saves[mcp_session_id] = task
             task.add_done_callback(functools.partial(self._drop_pending, mcp_session_id))
 
-        logger.info(f"Created MCP session: {mcp_session_id}")
-        return mcp_session_id
+        return session_data
+
+    async def get_or_adopt_session(self, mcp_session_id: str) -> bool:
+        """Validate a session, re-adopting an unknown id this server could have minted.
+
+        Issue #205: after a restart (or a prune) clients still hold ids the server no
+        longer knows; answering 404 forces every client to reconnect. An unknown id
+        in our own format is adopted instead. Anything else returns False (404).
+        """
+        if await self.validate_session(mcp_session_id):
+            return True
+
+        if not MCP_SESSION_ID_PATTERN.fullmatch(mcp_session_id):
+            return False
+
+        # validate_session awaited the DB; a concurrent request may have adopted the
+        # id meanwhile. No await between this check and the insert, so only one wins.
+        if mcp_session_id in self._active_sessions:
+            return True
+
+        self._register_session(mcp_session_id, {"adopted": True})
+        logger.info(f"Re-adopted unknown MCP session id {mcp_session_id} after restart")
+        return True
 
     def _drop_pending(self, mcp_session_id: str, _task: asyncio.Task[None]) -> None:
         self._pending_saves.pop(mcp_session_id, None)

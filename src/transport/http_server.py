@@ -441,7 +441,7 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                     },
                 )
 
-            if not await mcp_manager.validate_session(mcp_session_id):
+            if not await mcp_manager.get_or_adopt_session(mcp_session_id):
                 return JSONResponse(
                     status_code=404,
                     content={
@@ -481,7 +481,7 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
             mcp_manager = request.app.state.mcp_session_manager
             notification_manager = request.app.state.notification_manager
 
-            if not await mcp_manager.validate_session(mcp_session_id):
+            if not await mcp_manager.get_or_adopt_session(mcp_session_id):
                 raise HTTPException(status_code=404, detail="Session not found")
 
             async def event_generator() -> AsyncGenerator[str, None]:

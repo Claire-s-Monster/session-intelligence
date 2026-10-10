@@ -238,8 +238,9 @@ class LeanMCPInterface:
                 "same ground; extend or supersede rather than re-log. "
                 "**DISCIPLINE**: pass project_name explicitly — never let it fall back "
                 "to _unbound_. "
-                "**CORRECTING**: pass supersedes=<prior entry id> to retire a wrong "
-                "entry instead of logging a contradictory duplicate."
+                "**CORRECTING**: pass supersedes=<prior entry id> to replace a wrong "
+                "entry with a corrected one; session_retire_decision retires an entry "
+                "with no successor; session_update_decision edits in place."
             ),
             "schema": {
                 "type": "object",
@@ -1049,6 +1050,85 @@ class LeanMCPInterface:
             "examples": [{"learning_id": "learn_0123456789ab"}],
         }
 
+        for kind, noun in (("learning", "learning"), ("decision", "decision")):
+            id_key = f"{kind}_id"
+            registry[f"session_retire_{kind}"] = {
+                "implementation": self._wrap_async_tool(
+                    getattr(self.session_engine, f"session_retire_{kind}")
+                ),
+                "description": (
+                    f"Retire a {noun} with no successor, or restore it with unretire=true. "
+                    f"Retired {noun}s are hidden from recall, search and find_solution but "
+                    "kept in the database. Errors if the id does not exist."
+                ),
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        id_key: {"type": "string", "description": f"Id of the {noun}"},
+                        "reason": {"type": "string", "description": "Why it is retired"},
+                        "unretire": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "If True, clear the retirement instead",
+                        },
+                    },
+                    "required": [id_key],
+                },
+                "examples": [
+                    {id_key: f"{kind[:5]}_0123456789ab", "reason": "No longer true"},
+                    {id_key: f"{kind[:5]}_0123456789ab", "unretire": True},
+                ],
+            }
+
+        registry["session_update_learning"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.session_update_learning),
+            "description": (
+                "Edit a learning in place (learning_content, trigger_context, category). "
+                "Use session_log_learning(supersedes=...) instead to keep history. "
+                "Errors if the id does not exist or no field is given."
+            ),
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "learning_id": {"type": "string", "description": "Id of the learning"},
+                    "learning_content": {"type": "string", "description": "New content"},
+                    "trigger_context": {"type": "string", "description": "New trigger context"},
+                    "category": {
+                        "type": "string",
+                        "enum": ["error_fix", "pattern", "preference", "workflow"],
+                        "description": "New category",
+                    },
+                },
+                "required": ["learning_id"],
+            },
+            "examples": [{"learning_id": "learn_0123456789ab", "learning_content": "Corrected"}],
+        }
+
+        registry["session_update_decision"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.session_update_decision),
+            "description": (
+                "Edit a decision in place (decision text, rationale, category, impact_level). "
+                "Use session_log_decision(supersedes=...) instead to keep history. "
+                "Errors if the id does not exist or no field is given."
+            ),
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "decision_id": {"type": "string", "description": "Id of the decision"},
+                    "decision": {"type": "string", "description": "New decision text"},
+                    "rationale": {"type": "string", "description": "New rationale"},
+                    "category": {"type": "string", "description": "New category"},
+                    "impact_level": {
+                        "type": "string",
+                        "enum": ["low", "medium", "high", "critical"],
+                        "description": "New impact level",
+                    },
+                },
+                "required": ["decision_id"],
+            },
+            "examples": [{"decision_id": "dec_0123456789ab", "decision": "Corrected text"}],
+        }
+
         registry["session_log_learning"] = {
             "implementation": self._wrap_async_tool(self.session_engine.session_log_learning),
             "description": (
@@ -1061,8 +1141,9 @@ class LeanMCPInterface:
                 "**DISCIPLINE**: pass at least one of session_id, session_name, or "
                 "project_name. Use allow_unbound=true to opt into the legacy unbound "
                 "fallback (deprecated). "
-                "**CORRECTING**: pass supersedes=<prior entry id> to retire a wrong "
-                "entry instead of logging a contradictory duplicate."
+                "**CORRECTING**: pass supersedes=<prior entry id> to replace a wrong "
+                "entry with a corrected one; session_retire_learning retires an entry "
+                "with no successor; session_update_learning edits in place."
             ),
             "schema": {
                 "type": "object",

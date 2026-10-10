@@ -23,6 +23,8 @@ from models.session_models import INTERNAL_AGENT_NAMES
 
 from .base import (
     DEFAULT_SQLITE_PATH,
+    UPDATABLE_DECISION_FIELDS,
+    UPDATABLE_LEARNING_FIELDS,
     BaseDatabaseBackend,
     execution_duration_ms,
     get_execution_max_age_hours,
@@ -80,6 +82,8 @@ class SQLiteBackend(BaseDatabaseBackend):
         impact_level TEXT DEFAULT 'medium',
         artifacts TEXT,
         supersedes TEXT,
+        retired_at TEXT,
+        retired_reason TEXT,
         FOREIGN KEY (session_id) REFERENCES sessions(id)
     );
 
@@ -194,6 +198,8 @@ class SQLiteBackend(BaseDatabaseBackend):
         promoted_to_universal BOOLEAN DEFAULT FALSE,
         created_at TEXT NOT NULL,
         supersedes TEXT,
+        retired_at TEXT,
+        retired_reason TEXT,
         FOREIGN KEY (source_session_id) REFERENCES sessions(id)
     );
 
@@ -413,6 +419,16 @@ class SQLiteBackend(BaseDatabaseBackend):
         except Exception as e:
             if "duplicate column" not in str(e).lower():
                 raise
+
+        # Issue #150: retired_at / retired_reason soft-retire columns.
+        for _table in ("decisions", "project_learnings"):
+            for _col in ("retired_at", "retired_reason"):
+                try:
+                    await self._connection.execute(f"ALTER TABLE {_table} ADD COLUMN {_col} TEXT")  # noqa: S608
+                    await self._connection.commit()
+                except Exception as e:
+                    if "duplicate column" not in str(e).lower():
+                        raise
 
         # Add index for project_name on project_learnings
         try:
@@ -904,6 +920,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                   AND id NOT IN (
                       SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
                   )
+                  AND retired_at IS NULL
             """
             if exclude_superseded
             else ""
@@ -1939,7 +1956,11 @@ class SQLiteBackend(BaseDatabaseBackend):
                     '[]' as tags
                 FROM decisions d
                 JOIN sessions s ON d.session_id = s.id
-                WHERE d.description LIKE ? OR d.rationale LIKE ? OR d.category LIKE ?
+                WHERE (d.description LIKE ? OR d.rationale LIKE ? OR d.category LIKE ?)
+                  AND d.id NOT IN (
+                      SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
+                  )
+                  AND d.retired_at IS NULL
                 ORDER BY d.timestamp DESC
                 LIMIT ?
                 """,
@@ -1964,7 +1985,12 @@ class SQLiteBackend(BaseDatabaseBackend):
                     created_at as started_at,
                     '[]' as tags
                 FROM project_learnings
-                WHERE learning_content LIKE ? OR trigger_context LIKE ? OR category LIKE ?
+                WHERE (learning_content LIKE ? OR trigger_context LIKE ? OR category LIKE ?)
+                  AND id NOT IN (
+                      SELECT supersedes FROM project_learnings
+                      WHERE supersedes IS NOT NULL
+                  )
+                  AND retired_at IS NULL
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
@@ -2106,6 +2132,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                       SELECT supersedes FROM project_learnings
                       WHERE supersedes IS NOT NULL
                   )
+                  AND retired_at IS NULL
             """
             if exclude_superseded
             else ""
@@ -2165,6 +2192,62 @@ class SQLiteBackend(BaseDatabaseBackend):
         learning = dict(row)
         learning["superseded_by"] = [s["id"] for s in successors]
         return learning
+
+    async def _set_retired(
+        self, table: str, row_id: str, retired: bool, reason: str | None
+    ) -> bool:
+        """Set or clear retired_at/retired_reason. table is a fixed internal literal."""
+        conn = self._ensure_connected()
+        retired_at = datetime.now(UTC).isoformat() if retired else None
+        retired_reason = reason if retired else None
+        cursor = await conn.execute(
+            f"UPDATE {table} SET retired_at = ?, retired_reason = ? WHERE id = ?",  # noqa: S608
+            (retired_at, retired_reason, row_id),
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
+    async def _update_fields(
+        self, table: str, row_id: str, fields: dict[str, Any], allowed: frozenset[str]
+    ) -> bool:
+        """Dynamic UPDATE restricted to an allowlist of columns. table is a fixed literal."""
+        disallowed = set(fields) - allowed
+        if disallowed:
+            raise ValueError(f"Fields not updatable: {sorted(disallowed)}")
+        if not fields:
+            return False
+        conn = self._ensure_connected()
+        set_clause = ", ".join(f"{name} = ?" for name in fields)
+        cursor = await conn.execute(
+            f"UPDATE {table} SET {set_clause} WHERE id = ?",  # noqa: S608
+            (*fields.values(), row_id),
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
+    async def set_learning_retired(
+        self, learning_id: str, retired: bool, reason: str | None = None
+    ) -> bool:
+        """Retire (or un-retire) a learning. Returns False if the id does not exist."""
+        return await self._set_retired("project_learnings", learning_id, retired, reason)
+
+    async def set_decision_retired(
+        self, decision_id: str, retired: bool, reason: str | None = None
+    ) -> bool:
+        """Retire (or un-retire) a decision. Returns False if the id does not exist."""
+        return await self._set_retired("decisions", decision_id, retired, reason)
+
+    async def update_project_learning(self, learning_id: str, **fields: Any) -> bool:
+        """Edit content fields of a learning in place. Returns False if not found."""
+        return await self._update_fields(
+            "project_learnings", learning_id, fields, UPDATABLE_LEARNING_FIELDS
+        )
+
+    async def update_decision(self, decision_id: str, **fields: Any) -> bool:
+        """Edit content fields of a decision in place. Returns False if not found."""
+        return await self._update_fields(
+            "decisions", decision_id, fields, UPDATABLE_DECISION_FIELDS
+        )
 
     async def update_learning_usage(self, learning_id: str, success: bool) -> dict[str, Any]:
         """Update success/failure count for a learning."""
@@ -2393,6 +2476,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                   AND d.id NOT IN (
                       SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
                   )
+                  AND d.retired_at IS NULL
                 ORDER BY d.timestamp DESC
                 LIMIT ?
                 """,
@@ -2428,6 +2512,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                       SELECT supersedes FROM project_learnings
                       WHERE supersedes IS NOT NULL
                   )
+                  AND retired_at IS NULL
                 ORDER BY success_count DESC, (last_used IS NULL), last_used DESC, id
                 LIMIT ?
                 """,

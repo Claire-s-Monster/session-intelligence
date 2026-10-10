@@ -1169,6 +1169,7 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                 project_learnings = await database.query_project_learnings(
                     project_path=project_path,
                     limit=50,
+                    exclude_superseded=True,
                 )
                 # Text search filter
                 query_lower = error_context.lower()
@@ -1314,6 +1315,7 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                     project_path=project_path,
                     category=category,
                     limit=limit,
+                    exclude_superseded=True,
                 )
 
                 # Apply text search filter if provided

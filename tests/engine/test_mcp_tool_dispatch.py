@@ -4,7 +4,7 @@ Tests for the LeanMCPInterface meta-tool dispatch layer.
 Covers:
 - discover_tools() — listing and filtering
 - get_tool_spec() — schema retrieval, error handling
-- execute_tool() — dispatch for all 27 registered tools
+- execute_tool() — dispatch for registered tools
 
 asyncio_mode = "auto" (from pyproject.toml) — no @pytest.mark.asyncio needed.
 """

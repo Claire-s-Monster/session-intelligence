@@ -710,6 +710,9 @@ class SearchResult(BaseModel):
     """Result from session search."""
 
     session_id: str
+    # Issue #207: learnings-type rows carry the learning id here (session_id is
+    # kept for compatibility but mislabels it); None for other search types.
+    learning_id: str | None = None
     title: str | None = None
     snippet: str = ""
     relevance: float = 0.0

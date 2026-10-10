@@ -1955,6 +1955,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 """
                 SELECT
                     id as session_id,
+                    id as learning_id,
                     category as title,
                     learning_content as snippet,
                     NULL as relevance,
@@ -2144,6 +2145,26 @@ class SQLiteBackend(BaseDatabaseBackend):
 
         rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    async def get_project_learning(self, learning_id: str) -> dict[str, Any] | None:
+        """Fetch one learning by id, with the ids of rows that supersede it (Issue #207)."""
+        conn = self._ensure_connected()
+
+        cursor = await conn.execute(
+            "SELECT * FROM project_learnings WHERE id = ?",
+            (learning_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        cursor = await conn.execute(
+            "SELECT id FROM project_learnings WHERE supersedes = ? ORDER BY created_at, id",
+            (learning_id,),
+        )
+        successors = await cursor.fetchall()
+        learning = dict(row)
+        learning["superseded_by"] = [s["id"] for s in successors]
+        return learning
 
     async def update_learning_usage(self, learning_id: str, success: bool) -> dict[str, Any]:
         """Update success/failure count for a learning."""

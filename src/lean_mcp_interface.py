@@ -1026,6 +1026,29 @@ class LeanMCPInterface:
 
         # ===== KNOWLEDGE SYSTEM TOOLS =====
 
+        registry["session_get_learning"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.session_get_learning),
+            "description": (
+                "Fetch one project learning by id (Issue #207). "
+                "**SYSTEM**: session — project-scoped work history. "
+                "**READS**: the learnings tier — full record in the session_recall learning "
+                "shape plus project_path, promoted_to_universal, supersedes and superseded_by. "
+                "A non-empty superseded_by means the entry is retired. "
+                "An unknown id returns status error."
+            ),
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "learning_id": {
+                        "type": "string",
+                        "description": "Learning id (e.g. 'learn_0123456789ab')",
+                    },
+                },
+                "required": ["learning_id"],
+            },
+            "examples": [{"learning_id": "learn_0123456789ab"}],
+        }
+
         registry["session_log_learning"] = {
             "implementation": self._wrap_async_tool(self.session_engine.session_log_learning),
             "description": (

@@ -3668,6 +3668,7 @@ class SessionIntelligenceEngine:
                 results.append(
                     SearchResult(
                         session_id=result.get("session_id", ""),
+                        learning_id=result.get("learning_id"),
                         title=result.get("title"),
                         snippet=result.get("snippet", ""),
                         relevance=float(result.get("relevance") or 0.0),
@@ -4038,6 +4039,58 @@ class SessionIntelligenceEngine:
                 "notebooks": [],
                 "counts": {"sessions": 0, "decisions": 0, "learnings": 0, "notebooks": 0},
             }
+
+    async def session_get_learning(self, learning_id: str) -> dict[str, Any]:
+        """Fetch one project learning by id (Issue #207).
+
+        Returns the session_recall learning shape plus project_path,
+        promoted_to_universal, supersedes and superseded_by. A non-empty
+        superseded_by means the entry is retired.
+        """
+        if not learning_id or not learning_id.strip():
+            return {"status": "error", "message": "learning_id is required"}
+        if not self.database:
+            return {"status": "error", "message": "No database configured"}
+
+        try:
+            row = await self.database.get_project_learning(learning_id)
+        except Exception as e:
+            debug_logger.error(f"Error in session_get_learning: {e}")
+            return {
+                "status": "error",
+                "learning_id": learning_id,
+                "message": f"Failed to fetch learning: {str(e)}",
+            }
+
+        if row is None:
+            return {
+                "status": "error",
+                "learning_id": learning_id,
+                "message": f"Learning '{learning_id}' not found",
+            }
+
+        # Convert datetimes explicitly so PostgreSQL and SQLite match.
+        for key in ("created_at", "last_used"):
+            if row.get(key) is not None and hasattr(row[key], "isoformat"):
+                row[key] = row[key].isoformat()
+
+        keys = (
+            "id",
+            "category",
+            "trigger_context",
+            "learning_content",
+            "project_name",
+            "project_path",
+            "source_session_id",
+            "success_count",
+            "failure_count",
+            "created_at",
+            "last_used",
+            "promoted_to_universal",
+            "supersedes",
+            "superseded_by",
+        )
+        return {"status": "success", "learning": {k: row.get(k) for k in keys}}
 
     # ===== KNOWLEDGE SYSTEM =====
 

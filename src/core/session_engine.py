@@ -769,7 +769,8 @@ class SessionIntelligenceEngine:
         remain optional for create. If create is given a session_id, that id
         is used verbatim (e.g. to bind to Claude Code's native session UUID)
         instead of minting a new one; if a session already exists under that
-        id, it is adopted idempotently rather than replaced (issue #115).
+        id, it is adopted idempotently rather than replaced (issue #115); a completed or abandoned
+        session is reactivated on adoption (issue #218).
         """
         try:
             return await self._manage_lifecycle_impl(
@@ -846,16 +847,32 @@ class SessionIntelligenceEngine:
                     self._current_session_id = session_id
                     self._current_session_set_in_process = True
                     message = f"Session {session_id} already exists; adopted existing session"
+                    changed = False
+                    # Issue #218: a completed/abandoned session being reused must
+                    # become active again, or status='active' filters (e.g.
+                    # find_recent_session_by_project) and the reaper stop seeing it.
+                    if existing.status in (SessionStatus.COMPLETED, SessionStatus.ABANDONED):
+                        prior_status = existing.status.value
+                        existing.status = SessionStatus.ACTIVE
+                        existing.completed = None
+                        existing.last_seen_at = datetime.now(UTC)
+                        message = (
+                            f"Session {session_id} already exists; adopted and "
+                            f"reactivated existing session (was {prior_status})"
+                        )
+                        changed = True
                     if session_name and not existing.session_name:
                         existing.session_name = session_name
-                        self.mark_dirty(session_id)
-                        if self.database:
-                            await self.database.save_session(existing.model_dump(mode="python"))
+                        changed = True
                     elif session_name and existing.session_name != session_name:
                         message += (
                             f"; kept existing session_name {existing.session_name!r} "
                             f"(requested {session_name!r})"
                         )
+                    if changed:
+                        self.mark_dirty(session_id)
+                        if self.database:
+                            await self.database.save_session(existing.model_dump(mode="python"))
                     return SessionResult(
                         session_id=session_id,
                         operation="create",

@@ -120,9 +120,12 @@ def usable_project_path(candidate: str | None) -> str | None:
     sentinel is likewise not a caller fact. Either way, return None so the
     caller falls through to the resolver-derived value, keeping the written
     row consistent with its session row.
+
+    A trailing "/" is stripped ("/" itself kept) so "/wt/a/" and "/wt/a" match
+    on exact-path lookups; this also applies on write paths, consistently.
     """
     if candidate and candidate != UNKNOWN_PROJECT_PATH and Path(candidate).is_absolute():
-        return candidate
+        return candidate.rstrip("/") or "/"
     return None
 
 
@@ -441,13 +444,7 @@ class SessionIntelligenceEngine:
         # Only an absolute path is trustworthy: derive_project_name() and the
         # session row alike resolve a relative path against the SERVER's cwd,
         # not the caller's (see the #48/#49 rationale in session_log_decision).
-        safe_project_path = (
-            project_path
-            if project_path
-            and project_path != UNKNOWN_PROJECT_PATH
-            and Path(project_path).is_absolute()
-            else None
-        )
+        safe_project_path = usable_project_path(project_path)
 
         # 1. session_id: trust caller, validate
         if session_id is not None:
@@ -526,9 +523,21 @@ class SessionIntelligenceEngine:
         # 3. project_name: find most-recent active OR create new
         if project_name is not None:
             if self.database:
+                # Issue #98: a caller-supplied path scopes the lookup, so two
+                # worktrees sharing a project_name do not share a session.
+                path_scope = {"project_path": safe_project_path} if safe_project_path else {}
                 match = await self.database.find_recent_session_by_project(
-                    project_name, status="active"
+                    project_name, status="active", **path_scope
                 )
+                if match is None and safe_project_path:
+                    # #98: separate worktrees get separate sessions, but adopt a
+                    # legacy pathless session rather than minting a duplicate.
+                    legacy = await self.database.find_recent_session_by_project(
+                        project_name, status="active"
+                    )
+                    legacy_path = legacy.get("project_path") if legacy else None
+                    if legacy is not None and usable_project_path(legacy_path) is None:
+                        match = legacy
                 if match is not None:
                     self._current_session_id = match["id"]
                     return ResolvedSessionContext(
@@ -821,17 +830,40 @@ class SessionIntelligenceEngine:
                 if existing is not None:
                     self._current_session_id = session_id
                     self._current_session_set_in_process = True
+                    message = f"Session {session_id} already exists; adopted existing session"
+                    if session_name and not existing.session_name:
+                        existing.session_name = session_name
+                        self.mark_dirty(session_id)
+                        if self.database:
+                            await self.database.save_session(existing.model_dump(mode="python"))
+                    elif session_name and existing.session_name != session_name:
+                        message += (
+                            f"; kept existing session_name {existing.session_name!r} "
+                            f"(requested {session_name!r})"
+                        )
                     return SessionResult(
                         session_id=session_id,
                         operation="create",
                         status="success",
-                        message=f"Session {session_id} already exists; adopted existing session",
+                        message=message,
                         session_data=existing,
                         next_steps=["Initialize agent tracking", "Set up workflow state"],
                     )
 
+            created_path = usable_project_path(create_metadata.get("project_path"))
+            if not project_name and created_path:
+                # Same derivation as session_log_decision; a derived UNBOUND
+                # result is discarded so the row is not hidden behind the sentinel.
+                derived_name = derive_project_name(created_path)
+                if derived_name != UNBOUND:
+                    project_name = derived_name
+
             result = self._create_session(
-                mode, project_name, create_metadata, session_name=None, session_id=session_id
+                mode,
+                project_name,
+                create_metadata,
+                session_name=session_name,
+                session_id=session_id,
             )
             # Persist session to DB so FK references work
             if result.status == "success" and self.database:
@@ -2063,6 +2095,8 @@ class SessionIntelligenceEngine:
                 linked_decisions=[],
                 predicted_outcomes=["Continue with planned execution"],
                 supersedes=supersedes,
+                project_name=resolved.project_name,
+                project_path=resolved.project_path,
             )
         except SessionContextRequiredError:
             raise
@@ -2916,6 +2950,7 @@ class SessionIntelligenceEngine:
                 mode=row.get("mode") or "local",
                 project_name=row.get("project_name") or UNBOUND,
                 project_path=row.get("project_path") or "",
+                session_name=row.get("session_name"),
                 status=SessionStatus(row.get("status") or "active"),
                 # session_type/environment/user are REQUIRED on
                 # SessionMetadata, so a row with an empty metadata blob still
@@ -2984,6 +3019,7 @@ class SessionIntelligenceEngine:
         session_name: str | None = None,
         project_name: str | None = None,
         allow_unbound: bool = False,
+        project_path: str | None = None,
         body: str | None = None,
         include_derived_sections: bool | None = None,
         max_decisions: int | None = None,
@@ -2993,6 +3029,10 @@ class SessionIntelligenceEngine:
         """Async version: Generate notebook with full database queries.
 
         Args:
+            project_path: Absolute path scoping resolution by project_name
+                (and the project_name derived from it when none is given),
+                same semantics as session_log_learning. Ignored when
+                session_id is given.
             body: Caller-authored narrative, stored verbatim and never
                 regenerated. When supplied, the compiled sections become
                 opt-in (see include_derived_sections).
@@ -3013,11 +3053,17 @@ class SessionIntelligenceEngine:
         try:
             # Resolve session via the flexible resolver
             if session_id is None:
+                usable_path = usable_project_path(project_path)
+                if not (session_name or project_name) and not allow_unbound and usable_path:
+                    derived_name = derive_project_name(usable_path)
+                    if derived_name != UNBOUND:
+                        project_name = derived_name
                 resolved = await self._resolve_session_context(
                     session_id=None,
                     session_name=session_name,
                     project_name=project_name,
                     allow_unbound=allow_unbound,
+                    project_path=project_path,
                 )
                 session_id = resolved.session_id
             if not session_id:
@@ -3985,6 +4031,7 @@ class SessionIntelligenceEngine:
         include: list[str] | None = None,
         limit: int = 10,
         days: int = 30,
+        project_path: str | None = None,
     ) -> dict[str, Any]:
         """
         Recall project knowledge across all sessions.
@@ -3999,11 +4046,26 @@ class SessionIntelligenceEngine:
                 learnings, notebooks (default: all)
             limit: Max items per section
             days: How far back to look
+            project_path: Optional absolute path narrowing every section to
+                rows recorded under that exact path (e.g. one worktree of a
+                project). Exact match against the stored value; a relative
+                path is rejected since it can never match.
 
         Returns:
             Consolidated project knowledge dict
         """
         debug_logger.info(f"Recalling project knowledge for: {project_name}")
+
+        if project_path is not None and usable_project_path(project_path) is None:
+            return {
+                "project_name": project_name,
+                "error": (f"session_recall: project_path {project_path!r} is not an absolute path"),
+                "sessions": [],
+                "decisions": [],
+                "learnings": [],
+                "notebooks": [],
+                "counts": {"sessions": 0, "decisions": 0, "learnings": 0, "notebooks": 0},
+            }
 
         if not self.database:
             debug_logger.warning("No database configured for session_recall")
@@ -4023,6 +4085,7 @@ class SessionIntelligenceEngine:
                 include=include,
                 limit=limit,
                 days=days,
+                project_path=usable_project_path(project_path),
             )
 
             debug_logger.info(f"Recall for '{project_name}': {result.get('counts', {})}")

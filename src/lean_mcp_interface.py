@@ -112,7 +112,8 @@ class LeanMCPInterface:
                     "session_name": {
                         "type": "string",
                         "description": (
-                            "Session name to resolve against for resume/finalize/validate."
+                            "Resolve against for resume/finalize/validate; sets the "
+                            "session's name on create (an existing name is kept)."
                         ),
                     },
                     "allow_unbound": {
@@ -276,10 +277,10 @@ class LeanMCPInterface:
                     "project_path": {
                         "type": "string",
                         "description": (
-                            "Absolute path to the caller's project. When no session_id, "
-                            "session_name, or project_name is given, project_name is "
-                            "derived from this path. Relative paths are ignored (they "
-                            "would resolve against the server's cwd, not the caller's)."
+                            "Scope: pass session_id (preferred), or session_name, or "
+                            "project_name (+ optional project_path). Absolute path; "
+                            "project_name is derived from it when none is given. "
+                            "Relative paths are ignored."
                         ),
                     },
                     "allow_unbound": {
@@ -630,6 +631,15 @@ class LeanMCPInterface:
                         "description": (
                             "Project name — summarizes the most-recent active session "
                             "for that project, or creates one if needed."
+                        ),
+                    },
+                    "project_path": {
+                        "type": "string",
+                        "description": (
+                            "Scope: pass session_id (preferred), or session_name, or "
+                            "project_name (+ optional project_path). Absolute path; "
+                            "project_name is derived from it when none is given. "
+                            "Relative paths are ignored."
                         ),
                     },
                     "allow_unbound": {
@@ -993,6 +1003,13 @@ class LeanMCPInterface:
                         "type": "string",
                         "description": "Project name to recall knowledge for",
                     },
+                    "project_path": {
+                        "type": "string",
+                        "description": (
+                            "Optional absolute path; narrows every section to rows "
+                            "recorded under that exact path (e.g. one worktree)."
+                        ),
+                    },
                     "include": {
                         "type": "array",
                         "items": {
@@ -1164,8 +1181,10 @@ class LeanMCPInterface:
                     "project_path": {
                         "type": "string",
                         "description": (
-                            "Project path for scoping the learning row (back-compat). "
-                            "Does not control session binding; use project_name for that."
+                            "Scope: pass session_id (preferred), or session_name, or "
+                            "project_name (+ optional project_path). Absolute path; "
+                            "project_name is derived from it when none is given. "
+                            "Relative paths are ignored."
                         ),
                     },
                     "session_id": {

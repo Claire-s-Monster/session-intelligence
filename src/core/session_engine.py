@@ -264,6 +264,21 @@ def _reject_tool_result_envelope(tool_name: str, field_name: str, content: str) 
         )
 
 
+# #220: the agent-stop hook used to log "Agent X encountered: toolu_..." -- a bare
+# Claude Code tool_use id carries no knowledge. Full-match only, so prose that
+# merely mentions a toolu id is still accepted.
+_TOOLU_ID_ONLY_RE = re.compile(r"(?:Agent \S+ encountered: )?toolu_[A-Za-z0-9]{10,}")
+
+
+def reject_toolu_id_only(tool_name: str, field_name: str, content: str) -> None:
+    """Reject content that is only a tool_use id (optionally behind the hook template)."""
+    if isinstance(content, str) and _TOOLU_ID_ONLY_RE.fullmatch(content.strip()):
+        raise InvalidEntryContentError(
+            f"{tool_name} rejected: {field_name} is only a tool_use id, not durable "
+            "knowledge. Log what the failure taught you instead."
+        )
+
+
 @dataclass(frozen=True)
 class ResolvedSessionContext:
     """Full context returned by _resolve_session_context.
@@ -4372,6 +4387,7 @@ class SessionIntelligenceEngine:
             LearningResult with saved learning
         """
         _reject_tool_result_envelope("session_log_learning", "learning_content", learning_content)
+        reject_toolu_id_only("session_log_learning", "learning_content", learning_content)
         import uuid
 
         learning_id = f"learn_{uuid.uuid4().hex[:12]}"

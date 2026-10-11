@@ -53,7 +53,12 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from core.session_engine import SessionIntelligenceEngine, usable_project_path
+from core.session_engine import (
+    InvalidEntryContentError,
+    SessionIntelligenceEngine,
+    reject_toolu_id_only,
+    usable_project_path,
+)
 from lean_mcp_interface import LeanMCPInterface
 from persistence import DatabaseConfig, create_database, sanitize_dsn
 from transport.mcp_session_manager import MCPSessionManager
@@ -1250,6 +1255,14 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                 return JSONResponse(
                     status_code=400,
                     content={"status": "error", "message": "project_path is required"},
+                )
+            # #220: this route bypasses the engine, so apply its tool_use-id guard here.
+            try:
+                reject_toolu_id_only("log_learning", "learning_content", learning_content)
+            except InvalidEntryContentError as e:
+                return JSONResponse(
+                    status_code=400,
+                    content={"status": "error", "message": str(e)},
                 )
 
             database = request.app.state.database

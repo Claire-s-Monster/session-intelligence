@@ -434,6 +434,7 @@ class BaseDatabaseBackend:
             "last_seen_at": row.get("last_seen_at"),
             "project_path": row.get("project_path", ""),
             "project_name": row.get("project_name"),
+            "session_name": row.get("session_name"),
             "mode": row.get("mode", "local"),
             "status": row.get("status", "active"),
             "metadata": self._deserialize_json(row.get("metadata")),

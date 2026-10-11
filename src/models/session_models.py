@@ -561,6 +561,9 @@ class DecisionResult(BaseModel):
     linked_decisions: list[str] = Field(default_factory=list)
     predicted_outcomes: list[str] = Field(default_factory=list)
     supersedes: str | None = None
+    # Issue #98: the scope the decision was actually bound to.
+    project_name: str | None = None
+    project_path: str | None = None
 
 
 class PatternAnalysisResult(BaseModel):

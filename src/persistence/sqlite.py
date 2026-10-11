@@ -754,12 +754,14 @@ class SQLiteBackend(BaseDatabaseBackend):
         return None
 
     async def find_recent_session_by_project(
-        self, project_name: str, status: str = "active"
+        self, project_name: str, status: str = "active", project_path: str | None = None
     ) -> dict[str, Any] | None:
         """Find the most-recent session for a project name with the given status.
 
         Returns the most-recent match (ORDER BY started_at DESC LIMIT 1), or None
-        if no matching session exists.
+        if no matching session exists. project_path (issue #98), when given,
+        additionally requires that exact stored path, so two worktrees of one
+        project do not share a session.
 
         Issue #69: when status == 'active', excludes sessions older than
         get_session_max_age_hours() -- same staleness guard as
@@ -776,20 +778,22 @@ class SQLiteBackend(BaseDatabaseBackend):
                 SELECT * FROM sessions
                 WHERE project_name = ? AND status = ?
                   AND COALESCE(last_seen_at, started_at) >= ?
+                  AND (? IS NULL OR project_path = ?)
                 ORDER BY started_at DESC
                 LIMIT 1
                 """,
-                (project_name, status, cutoff),
+                (project_name, status, cutoff, project_path, project_path),
             )
         else:
             cursor = await conn.execute(
                 """
                 SELECT * FROM sessions
                 WHERE project_name = ? AND status = ?
+                  AND (? IS NULL OR project_path = ?)
                 ORDER BY started_at DESC
                 LIMIT 1
                 """,
-                (project_name, status),
+                (project_name, status, project_path, project_path),
             )
 
         row = await cursor.fetchone()
@@ -2429,8 +2433,13 @@ class SQLiteBackend(BaseDatabaseBackend):
         limit: int = 10,
         days: int = 30,
         query: str | None = None,
+        project_path: str | None = None,
     ) -> dict[str, Any]:
-        """Recall recent sessions, decisions, learnings, and notebooks for a project."""
+        """Recall recent sessions, decisions, learnings, and notebooks for a project.
+
+        project_path (issue #98), when given, narrows every tier to rows
+        recorded under that exact path (exact match, as stored on write).
+        """
         from datetime import UTC, datetime, timedelta
 
         conn = self._ensure_connected()
@@ -2443,6 +2452,8 @@ class SQLiteBackend(BaseDatabaseBackend):
             "learnings": [],
             "notebooks": [],
         }
+        if project_path is not None:
+            result["project_path"] = project_path
 
         if include is None or "sessions" in include:
             cursor = await conn.execute(
@@ -2450,10 +2461,11 @@ class SQLiteBackend(BaseDatabaseBackend):
                 SELECT id, started_at, ended_at, status, mode
                 FROM sessions
                 WHERE project_name = ? AND started_at > ?
+                  AND (? IS NULL OR project_path = ?)
                 ORDER BY started_at DESC
                 LIMIT ?
                 """,
-                (project_name, cutoff, limit),
+                (project_name, cutoff, project_path, project_path, limit),
             )
             rows = await cursor.fetchall()
             result["sessions"] = [
@@ -2469,10 +2481,12 @@ class SQLiteBackend(BaseDatabaseBackend):
             cursor = await conn.execute(
                 """
                 SELECT d.id, d.description, d.category, d.rationale,
-                       d.impact_level, d.timestamp, s.id AS session_id
+                       d.impact_level, d.timestamp, s.id AS session_id,
+                       s.project_path AS project_path
                 FROM decisions d
                 JOIN sessions s ON d.session_id = s.id
                 WHERE s.project_name = ? AND d.timestamp > ?
+                  AND (? IS NULL OR s.project_path = ?)
                   AND d.id NOT IN (
                       SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
                   )
@@ -2480,7 +2494,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 ORDER BY d.timestamp DESC
                 LIMIT ?
                 """,
-                (project_name, cutoff, limit),
+                (project_name, cutoff, project_path, project_path, limit),
             )
             rows = await cursor.fetchall()
             result["decisions"] = [
@@ -2489,6 +2503,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                     "category": row["category"],
                     "rationale": row["rationale"],
                     "timestamp": row["timestamp"],
+                    "project_path": row["project_path"],
                 }
                 for row in rows
             ]
@@ -2497,7 +2512,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             cursor = await conn.execute(
                 """
                 SELECT id, category, trigger_context, learning_content,
-                       project_name, source_session_id, success_count,
+                       project_name, project_path, source_session_id, success_count,
                        failure_count, created_at, last_used
                 FROM project_learnings
                 WHERE (
@@ -2508,6 +2523,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                           AND project_path IS NOT NULL
                     ))
                 )
+                  AND (? IS NULL OR project_path = ?)
                   AND id NOT IN (
                       SELECT supersedes FROM project_learnings
                       WHERE supersedes IS NOT NULL
@@ -2516,7 +2532,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 ORDER BY success_count DESC, (last_used IS NULL), last_used DESC, id
                 LIMIT ?
                 """,
-                (project_name, project_name, limit),
+                (project_name, project_name, project_path, project_path, limit),
             )
             rows = await cursor.fetchall()
             result["learnings"] = [dict(row) for row in rows]
@@ -2528,10 +2544,11 @@ class SQLiteBackend(BaseDatabaseBackend):
                 FROM session_summaries ss
                 JOIN sessions s ON ss.session_id = s.id
                 WHERE s.project_name = ? AND ss.created_at > ?
+                  AND (? IS NULL OR s.project_path = ?)
                 ORDER BY ss.created_at DESC
                 LIMIT ?
                 """,
-                (project_name, cutoff, limit),
+                (project_name, cutoff, project_path, project_path, limit),
             )
             rows = await cursor.fetchall()
             result["notebooks"] = [

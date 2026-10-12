@@ -129,6 +129,35 @@ def usable_project_path(candidate: str | None) -> str | None:
     return None
 
 
+_DECISION_CONTEXT_KEYS = frozenset(DecisionContext.model_fields)
+_UNWRAP_MAX_DEPTH = 16
+
+
+def _unwrap_decision_context(ctx: Any) -> Any:
+    """Undo #217 nesting: peel serialized DecisionContext dumps and JSON strings.
+
+    A dict is peeled only when it looks like a DecisionContext dump (dict
+    ``project_state``, a ``session_id``, keys a subset of its fields), so a
+    caller dict that merely contains a ``project_state`` key is preserved.
+    """
+    for _ in range(_UNWRAP_MAX_DEPTH):
+        if isinstance(ctx, str):
+            try:
+                ctx = json.loads(ctx)
+            except (json.JSONDecodeError, TypeError):
+                return {}
+        elif (
+            isinstance(ctx, dict)
+            and "session_id" in ctx
+            and isinstance(ctx.get("project_state"), dict)
+            and set(ctx) <= _DECISION_CONTEXT_KEYS
+        ):
+            ctx = ctx["project_state"]
+        else:
+            break
+    return ctx
+
+
 def _json_or_default(value: Any, default: Any) -> Any:
     """Decode a column that may arrive as JSON text or already parsed.
 
@@ -2098,7 +2127,9 @@ class SessionIntelligenceEngine:
                     "session_id": session_id,
                     "timestamp": datetime.now(UTC),
                     "description": decision,
-                    "context": json.dumps(context or {}),
+                    # #217: pass the dict; each backend encodes exactly once
+                    # (PG json.dumps a pre-encoded str into a JSONB string).
+                    "context": context or {},
                     "impact_level": "medium",
                     "artifacts": json.dumps(link_artifacts or []),
                     # Issue #87: supersedes is intentionally NOT validated
@@ -2706,7 +2737,7 @@ class SessionIntelligenceEngine:
         the individual CHARACTERS of a JSON string where a list was expected.
         """
         artifacts = _json_or_default(row.get("artifacts"), [])
-        context = _json_or_default(row.get("context"), {})
+        context = _unwrap_decision_context(_json_or_default(row.get("context"), {}))
 
         return Decision(
             decision_id=row.get("id") or row.get("decision_id") or "",

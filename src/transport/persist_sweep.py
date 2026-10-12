@@ -98,6 +98,11 @@ def _collect_child(
         data = _dump(entity)
         data["session_id"] = session_id
         if kind == "decision":
+            # #217: canonical stored shape is the flat caller dict, not the
+            # whole DecisionContext dump (hydrate would re-wrap it every cycle).
+            ctx = data.get("context")
+            if isinstance(ctx, dict) and isinstance(ctx.get("project_state"), dict):
+                data["context"] = ctx["project_state"]
             key = f"decision:{data.get('id') or index}"
         else:
             key = f"execution:{data.get('id') or data.get('execution_id') or index}"

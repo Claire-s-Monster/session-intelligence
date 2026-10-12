@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from transport.persist_tracker import PersistDigestTracker
+from transport.persist_tracker import PersistDigestTracker, compute_steps_digest
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,8 @@ class PendingWrite:
     entity_key: str
     digest: str
     data: dict[str, Any]
+    # Issue #209: (count, digest) of the execution steps this write persists.
+    steps_state: tuple[int, str] | None = None
 
 
 @dataclass
@@ -106,7 +108,9 @@ def _collect_child(
             key = f"decision:{data.get('id') or index}"
         else:
             key = f"execution:{data.get('id') or data.get('execution_id') or index}"
-        _queue(tracker, batch, kind, session_id, key, data)
+        pending = _queue(tracker, batch, kind, session_id, key, data)
+        if pending is not None and kind == "execution":
+            _plan_step_append(tracker, pending)
     except Exception as e:
         label = "decision" if kind == "decision" else "agent execution"
         logger.warning(f"Failed to persist {label}: {e}")
@@ -120,13 +124,38 @@ def _queue(
     session_id: str,
     entity_key: str,
     data: dict[str, Any],
-) -> None:
+) -> PendingWrite | None:
     digest = tracker.digest_if_changed(session_id, entity_key, data)
     batch.digested += 1
     if digest is None:
-        return
+        return None
     target = {"session": batch.sessions, "decision": batch.decisions}.get(kind, batch.executions)
-    target.append(PendingWrite(kind, session_id, entity_key, digest, data))
+    pending = PendingWrite(kind, session_id, entity_key, digest, data)
+    target.append(pending)
+    return pending
+
+
+def _plan_step_append(tracker: PersistDigestTracker, pending: PendingWrite) -> None:
+    """Issue #209: mark an execution payload for an append-only steps write.
+
+    The payload keeps the full ``execution_steps`` (the backend's fallback needs
+    it); ``_append_from``/``_append_steps`` tell a backend that supports it to
+    send only the new tail. Backends that do not (SQLite) ignore both keys.
+    """
+    steps = pending.data.get("execution_steps")
+    if not isinstance(steps, list):
+        return
+    pending.steps_state = (len(steps), compute_steps_digest(steps))
+    persisted = tracker.append_plan(pending.session_id, pending.entity_key, steps)
+    if persisted is not None:
+        pending.data["_append_from"] = persisted
+        pending.data["_append_steps"] = steps[persisted:]
+
+
+def _commit(tracker: PersistDigestTracker, w: PendingWrite) -> None:
+    tracker.commit(w.session_id, w.entity_key, w.digest)
+    if w.steps_state is not None:
+        tracker.commit_steps(w.session_id, w.entity_key, *w.steps_state)
 
 
 async def write_pending(
@@ -153,7 +182,7 @@ async def write_pending(
             )
         else:
             for w in pending:
-                tracker.commit(w.session_id, w.entity_key, w.digest)
+                _commit(tracker, w)
             return WriteOutcome(written=len(pending))
 
     outcome = await _write_one_by_one(database, tracker, pending)
@@ -177,6 +206,6 @@ async def _write_one_by_one(
             logger.warning(f"Failed to persist {w.kind} {w.entity_key} of {w.session_id}: {e}")
             outcome.failed_sessions.add(w.session_id)
             continue
-        tracker.commit(w.session_id, w.entity_key, w.digest)
+        _commit(tracker, w)
         outcome.written += 1
     return outcome

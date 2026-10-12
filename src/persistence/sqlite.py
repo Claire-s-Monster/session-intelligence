@@ -856,7 +856,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 description = excluded.description,
                 rationale = excluded.rationale,
                 context = excluded.context,
-                supersedes = excluded.supersedes
+                supersedes = COALESCE(excluded.supersedes, decisions.supersedes)
         """,
             (
                 decision_data.get("decision_id") or decision_data.get("id"),

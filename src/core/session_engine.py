@@ -2743,12 +2743,14 @@ class SessionIntelligenceEngine:
             decision_id=row.get("id") or row.get("decision_id") or "",
             timestamp=(safe_parse_datetime(row.get("timestamp")) or datetime.now(UTC)),
             description=row.get("description", ""),
+            rationale=row.get("rationale"),
             context=DecisionContext(
                 session_id=session_id,
                 project_state=context if isinstance(context, dict) else {},
             ),
             impact_level=ImpactLevel(row.get("impact_level", "medium")),
             artifacts=artifacts if isinstance(artifacts, list) else [],
+            supersedes=row.get("supersedes"),
         )
 
     def _agent_execution_from_row(

@@ -1714,6 +1714,13 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         if isinstance(last_seen_at, str):
             last_seen_at = datetime.fromisoformat(last_seen_at.replace("Z", "+00:00"))
 
+        # Issue #209: append-only steps write; a guard miss falls through to the
+        # full upsert below (which carries the complete steps list).
+        if execution_data.get("_append_from") is not None and await self._append_execution_steps(
+            conn, execution_id, execution_data, (completed_at, last_seen_at)
+        ):
+            return
+
         await conn.execute(
             """
             INSERT INTO agent_executions
@@ -1740,6 +1747,45 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             json.dumps(execution_data.get("performance", {}), default=str),
             json.dumps(execution_data.get("errors", []), default=str),
         )
+
+    async def _append_execution_steps(
+        self,
+        conn: Any,
+        execution_id: str,
+        execution_data: dict[str, Any],
+        timestamps: tuple[Any, Any],
+    ) -> bool:
+        """Append new steps to a stored execution (issue #209).
+
+        Applies only when the stored steps are a JSON array of exactly
+        ``_append_from`` elements, so a retried or raced write can neither
+        duplicate nor skip steps. Returns False when the guard did not match and
+        the caller must do the full upsert.
+        """
+        completed_at, last_seen_at = timestamps
+        result = await conn.execute(
+            """
+            UPDATE agent_executions SET
+                execution_steps = execution_steps || $2::jsonb,
+                completed_at = $3,
+                last_seen_at = $4,
+                status = $5,
+                performance = $6,
+                errors = $7
+            WHERE id = $1
+              AND jsonb_typeof(execution_steps) = 'array'
+              AND jsonb_array_length(execution_steps) = $8
+            """,
+            execution_id,
+            json.dumps(execution_data.get("_append_steps", []), default=str),
+            completed_at,
+            last_seen_at,
+            str(execution_data.get("status", "running")),
+            json.dumps(execution_data.get("performance", {}), default=str),
+            json.dumps(execution_data.get("errors", []), default=str),
+            int(execution_data["_append_from"]),
+        )
+        return result == "UPDATE 1"
 
     async def query_agent_executions(
         self,

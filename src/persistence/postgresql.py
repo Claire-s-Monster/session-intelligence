@@ -978,7 +978,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 description = EXCLUDED.description,
                 rationale = EXCLUDED.rationale,
                 context = EXCLUDED.context,
-                supersedes = EXCLUDED.supersedes
+                supersedes = COALESCE(EXCLUDED.supersedes, decisions.supersedes)
             """,
             decision_data.get("decision_id") or decision_data.get("id"),
             decision_data["session_id"],

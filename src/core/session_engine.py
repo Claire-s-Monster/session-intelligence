@@ -158,6 +158,22 @@ def _unwrap_decision_context(ctx: Any) -> Any:
     return ctx
 
 
+def _unwrap_decision_artifacts(value: Any) -> list[str]:
+    """Undo #226 double-encoding: peel JSON strings until a list remains.
+
+    PostgreSQL rows written before the fix hold a JSONB string scalar (the
+    list encoded twice). Anything that does not decode to a list yields [].
+    """
+    for _ in range(_UNWRAP_MAX_DEPTH):
+        if not isinstance(value, str):
+            break
+        try:
+            value = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return []
+    return value if isinstance(value, list) else []
+
+
 def _json_or_default(value: Any, default: Any) -> Any:
     """Decode a column that may arrive as JSON text or already parsed.
 
@@ -2131,7 +2147,8 @@ class SessionIntelligenceEngine:
                     # (PG json.dumps a pre-encoded str into a JSONB string).
                     "context": context or {},
                     "impact_level": "medium",
-                    "artifacts": json.dumps(link_artifacts or []),
+                    # #226: raw list too; the backend encodes exactly once.
+                    "artifacts": list(link_artifacts or []),
                     # Issue #87: supersedes is intentionally NOT validated
                     # against existing IDs. A rejection here would surface as
                     # {"status": "error"} wrapped in an HTTP 200 (in-band
@@ -2736,7 +2753,7 @@ class SessionIntelligenceEngine:
         PostgreSQL returns already-parsed JSONB -- without it, SQLite yields
         the individual CHARACTERS of a JSON string where a list was expected.
         """
-        artifacts = _json_or_default(row.get("artifacts"), [])
+        artifacts = _unwrap_decision_artifacts(row.get("artifacts"))
         context = _unwrap_decision_context(_json_or_default(row.get("context"), {}))
 
         return Decision(
@@ -2749,7 +2766,7 @@ class SessionIntelligenceEngine:
                 project_state=context if isinstance(context, dict) else {},
             ),
             impact_level=ImpactLevel(row.get("impact_level", "medium")),
-            artifacts=artifacts if isinstance(artifacts, list) else [],
+            artifacts=artifacts,
             supersedes=row.get("supersedes"),
         )
 

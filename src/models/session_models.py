@@ -564,6 +564,8 @@ class DecisionResult(BaseModel):
     # Issue #98: the scope the decision was actually bound to.
     project_name: str | None = None
     project_path: str | None = None
+    # Issue #89: non-blocking near-duplicate warnings.
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class PatternAnalysisResult(BaseModel):
@@ -780,6 +782,8 @@ class LearningResult(BaseModel):
     status: str
     message: str = ""
     learning: ProjectLearning | None = None
+    # Issue #89: non-blocking near-duplicate warnings.
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

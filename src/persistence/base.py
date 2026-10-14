@@ -242,6 +242,16 @@ class DatabaseBackend(Protocol):
         """Save a decision."""
         ...
 
+    async def recent_decision_texts(self, project_name: str, limit: int) -> list[tuple[str, str]]:
+        """(id, description) of recent live decisions for a project (issue #89)."""
+        ...
+
+    async def recent_learning_texts(
+        self, project_name: str, category: str, limit: int
+    ) -> list[tuple[str, str]]:
+        """(id, learning_content) of recent live learnings for project+category (issue #89)."""
+        ...
+
     async def query_decisions_by_category(
         self, category: str, limit: int = 100, offset: int = 0
     ) -> list[dict[str, Any]]:

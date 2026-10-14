@@ -19,6 +19,7 @@ from typing import Any
 
 from core.agent_validator import AgentValidator
 from core.debug_logging import configure_debug_logger
+from core.near_duplicate import NEAR_DUPLICATE_CANDIDATES, find_near_duplicates
 from core.notebook_windowing import (
     apply_window,
     extract_section,
@@ -2011,6 +2012,32 @@ class SessionIntelligenceEngine:
 
     # ===== DECISION LOGGING =====
 
+    async def _near_duplicate_warnings(
+        self,
+        kind: str,
+        project_name: str | None,
+        text: str,
+        supersedes: str | None,
+        category: str = "",
+    ) -> list[dict[str, Any]]:
+        """Issue #89: non-blocking near-duplicate warnings. Never raises."""
+        if not self.database or not project_name or project_name == UNBOUND:
+            return []
+        try:
+            if kind == "decision":
+                candidates = await self.database.recent_decision_texts(
+                    project_name, NEAR_DUPLICATE_CANDIDATES
+                )
+            else:
+                candidates = await self.database.recent_learning_texts(
+                    project_name, category, NEAR_DUPLICATE_CANDIDATES
+                )
+            candidates = [c for c in candidates if c[0] != supersedes]
+            return find_near_duplicates(text, candidates)
+        except Exception as e:
+            debug_logger.warning(f"Near-duplicate check failed ({kind}): {e}")
+            return []
+
     async def session_log_decision(
         self,
         decision: str,
@@ -2136,7 +2163,11 @@ class SessionIntelligenceEngine:
                 session.decisions.append(decision_obj)
 
             # Always persist to database (not gated by session_cache)
+            warnings: list[dict[str, Any]] = []
             if self.database and session_id:
+                warnings = await self._near_duplicate_warnings(
+                    "decision", resolved.project_name, decision, supersedes
+                )
                 decision_data = {
                     "id": decision_id,
                     "session_id": session_id,
@@ -2176,6 +2207,7 @@ class SessionIntelligenceEngine:
                 supersedes=supersedes,
                 project_name=resolved.project_name,
                 project_path=resolved.project_path,
+                warnings=warnings,
             )
         except SessionContextRequiredError:
             raise
@@ -4567,7 +4599,15 @@ class SessionIntelligenceEngine:
         # Persist to database
         status = "pending_save"
         message = f"Learning logged for {category}."
+        warnings: list[dict[str, Any]] = []
         if self.database:
+            warnings = await self._near_duplicate_warnings(
+                "learning",
+                effective_project_name,
+                learning_content,
+                supersedes,
+                category.value if hasattr(category, "value") else category,
+            )
             try:
                 # Validate source_session_id exists before FK insert
                 sid = None
@@ -4596,6 +4636,7 @@ class SessionIntelligenceEngine:
             status=status,
             message=message,
             learning=learning,
+            warnings=warnings,
         )
 
     async def session_find_solution(

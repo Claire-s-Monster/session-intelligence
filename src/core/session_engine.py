@@ -1819,7 +1819,6 @@ class SessionIntelligenceEngine:
         debug_logger.info(f"Agent execution steps count: {len(agent_execution.execution_steps)}")
 
         # Update performance metrics
-        session.performance_metrics.agents_executed = len(session.agents_executed)
         self._recompute_derived_metrics(session)
         debug_logger.info(
             "Updated performance metrics - agents executed: "
@@ -2944,8 +2943,12 @@ class SessionIntelligenceEngine:
         can tell "could not measure" (a non-zero excluded count alongside a
         None or unexpectedly high score) apart from "nothing ran" (an empty
         session, where both are 0).
+
+        agents_executed is derived here too (issue #229), so hydrate
+        corrects a stale stored count from the loaded execution list.
         """
         metrics = session.performance_metrics
+        metrics.agents_executed = len(session.agents_executed)
         metrics.successful_executions = sum(
             1
             for agent_exec in session.agents_executed

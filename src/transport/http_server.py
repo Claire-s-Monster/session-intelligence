@@ -60,6 +60,7 @@ from core.session_engine import (
     usable_project_path,
 )
 from lean_mcp_interface import LeanMCPInterface
+from models.session_models import normalize_summary
 from persistence import DatabaseConfig, create_database, sanitize_dsn
 from transport.mcp_session_manager import MCPSessionManager
 from transport.mcp_session_pruner import MCPSessionPruner
@@ -1265,6 +1266,15 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                     content={"status": "error", "message": str(e)},
                 )
 
+            # #86: optional summary, rejected (400) when over the limit.
+            try:
+                summary = normalize_summary(body.get("summary"))
+            except ValueError as e:
+                return JSONResponse(
+                    status_code=400,
+                    content={"status": "error", "message": str(e)},
+                )
+
             database = request.app.state.database
 
             # Generate learning ID
@@ -1278,6 +1288,7 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                     learning_content=learning_content,
                     trigger_context=trigger_context,
                     source_session_id=None,  # No MCP session required
+                    summary=summary,
                 )
 
                 return JSONResponse(

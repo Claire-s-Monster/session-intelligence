@@ -812,6 +812,27 @@ class SQLiteBackend(BaseDatabaseBackend):
             return self._normalize_session_data(dict(row))
         return None
 
+    async def count_recent_sessions_by_project(
+        self, project_name: str, status: str = "active", project_path: str | None = None
+    ) -> int:
+        """Count the sessions find_recent_session_by_project would choose among.
+
+        Same WHERE as that lookup (including the active-status staleness
+        cutoff), so a count > 1 means its LIMIT 1 pick was a guess.
+        """
+        conn = self._ensure_connected()
+        params: list[Any] = [project_name, status]
+        sql = "SELECT COUNT(*) FROM sessions WHERE project_name = ? AND status = ?"
+        if status == "active":
+            cutoff = (datetime.now(UTC) - timedelta(hours=get_session_max_age_hours())).isoformat()
+            sql += " AND COALESCE(last_seen_at, started_at) >= ?"
+            params.append(cutoff)
+        sql += " AND (? IS NULL OR project_path = ?)"
+        params += [project_path, project_path]
+        cursor = await conn.execute(sql, params)
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
     async def find_recent_project_path(self, project_name: str) -> str | None:
         """Best-effort lookup of the most recently recorded path for a project.
 

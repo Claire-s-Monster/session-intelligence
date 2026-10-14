@@ -12,7 +12,7 @@ import re
 import secrets
 import uuid
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -338,6 +338,9 @@ class ResolvedSessionContext:
     session_id: str
     project_name: str | None
     project_path: str | None
+    # Non-blocking notes about how the session was chosen (e.g. a guessed
+    # project_name binding among several active sessions).
+    warnings: list[dict[str, Any]] = field(default_factory=list)
 
 
 class _DirtyTrackingCache(dict[str, Session]):
@@ -473,6 +476,32 @@ class SessionIntelligenceEngine:
             return derived
         return None
 
+    async def _ambiguous_binding_warnings(
+        self, bound_id: str, project_name: str, path_scope: dict[str, str]
+    ) -> list[dict[str, Any]]:
+        """Warn when a project_name-only binding was a pick among several
+        active, non-stale sessions. Never raises."""
+        if not self.database:
+            return []
+        try:
+            count = await self.database.count_recent_sessions_by_project(
+                project_name, status="active", **path_scope
+            )
+        except Exception as e:
+            debug_logger.warning(f"Ambiguous-binding check failed: {e}")
+            return []
+        if count <= 1:
+            return []
+        return [
+            {
+                "kind": "ambiguous_session_binding",
+                "message": (
+                    f"bound to most recent active session {bound_id} by project_name; "
+                    f"{count} active sessions matched. Pass session_id to bind explicitly."
+                ),
+            }
+        ]
+
     async def _resolve_session_context(
         self,
         session_id: str | None = None,
@@ -600,12 +629,16 @@ class SessionIntelligenceEngine:
                     legacy_path = legacy.get("project_path") if legacy else None
                     if legacy is not None and usable_project_path(legacy_path) is None:
                         match = legacy
+                        path_scope = {}
                 if match is not None:
                     self._current_session_id = match["id"]
                     return ResolvedSessionContext(
                         session_id=match["id"],
                         project_name=match.get("project_name"),
                         project_path=match.get("project_path"),
+                        warnings=await self._ambiguous_binding_warnings(
+                            match["id"], project_name, path_scope
+                        ),
                     )
             if not create_if_missing:
                 raise ValueError(f"no active session for project_name={project_name!r}")
@@ -2167,9 +2200,9 @@ class SessionIntelligenceEngine:
                 session.decisions.append(decision_obj)
 
             # Always persist to database (not gated by session_cache)
-            warnings: list[dict[str, Any]] = []
+            warnings: list[dict[str, Any]] = list(resolved.warnings)
             if self.database and session_id:
-                warnings = await self._near_duplicate_warnings(
+                warnings += await self._near_duplicate_warnings(
                     "decision", resolved.project_name, decision, supersedes
                 )
                 decision_data = {
@@ -4609,9 +4642,9 @@ class SessionIntelligenceEngine:
         # Persist to database
         status = "pending_save"
         message = f"Learning logged for {category}."
-        warnings: list[dict[str, Any]] = []
+        warnings: list[dict[str, Any]] = list(resolved_ctx.warnings) if resolved_ctx else []
         if self.database:
-            warnings = await self._near_duplicate_warnings(
+            warnings += await self._near_duplicate_warnings(
                 "learning",
                 effective_project_name,
                 learning_content,

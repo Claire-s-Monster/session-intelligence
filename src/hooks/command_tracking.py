@@ -111,8 +111,13 @@ def _mcp_dict(tool_response: object) -> dict | None:
 def _envelope_failed(data: dict) -> bool:
     if data.get("status") == "error":
         return True
+    # A bare {"error": ...} (e.g. "Tool 'x' not found") carries no status.
+    if data.get("error") and data.get("status") != "success":
+        return True
     result = data.get("result")
     if isinstance(result, dict):
+        if result.get("status") == "error":
+            return True
         if result.get("success") is False:
             return True
         if _nonzero_exit(result.get("exit_code")):
@@ -155,7 +160,7 @@ def _response_succeeded(tool_name: str, tool_response: object) -> bool:
             return True
         if tool_name == "mcp__shell-runner__shell_execute":
             return not _shell_runner_failed(data)
-        if data.get("is_error"):
+        if data.get("is_error") or data.get("isError"):
             return False
         return not _envelope_failed(data)
     except Exception:

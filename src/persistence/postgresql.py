@@ -923,6 +923,45 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             return None
 
     @db_retry
+    async def count_recent_sessions_by_project(
+        self, project_name: str, status: str = "active", project_path: str | None = None
+    ) -> int:
+        """Count the sessions find_recent_session_by_project would choose among.
+
+        Same WHERE as that lookup (including the active-status staleness
+        cutoff), so a count > 1 means its LIMIT 1 pick was a guess.
+        """
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            if status == "active":
+                cutoff = datetime.now(UTC) - timedelta(hours=get_session_max_age_hours())
+                count = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM sessions
+                    WHERE project_name = $1 AND status = $2
+                      AND COALESCE(last_seen_at, started_at) >= $3
+                      AND ($4::text IS NULL OR project_path = $4)
+                    """,
+                    project_name,
+                    status,
+                    cutoff,
+                    project_path,
+                )
+            else:
+                count = await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM sessions
+                    WHERE project_name = $1 AND status = $2
+                      AND ($3::text IS NULL OR project_path = $3)
+                    """,
+                    project_name,
+                    status,
+                    project_path,
+                )
+            return int(count or 0)
+
+    @db_retry
     async def find_recent_project_path(self, project_name: str) -> str | None:
         """Best-effort lookup of the most recently recorded path for a project.
 

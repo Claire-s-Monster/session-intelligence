@@ -203,6 +203,35 @@ def test_bash_failure_dict_forms():
         assert got.succeeded is False
 
 
+def test_bare_error_envelope_without_status_is_failure():
+    error = "Tool 'github_close_issue' not found"
+    response = json.dumps({"error": error, "available_tools": ["a"]})
+    got = extract_tracked_command(GIT, {"tool_name": "github_close_issue"}, response)
+    assert got is not None
+    assert got.succeeded is False
+
+
+def test_camelcase_is_error_is_failure():
+    response = json.dumps({"isError": True, "content": "nope"})
+    got = extract_tracked_command(GIT, {"tool_name": "git_status"}, response)
+    assert got is not None
+    assert got.succeeded is False
+
+
+def test_nested_result_status_error_is_failure():
+    tool_input = {"tool_name": "pixi_run_task", "parameters": {"task_name": "t"}}
+    got = extract_tracked_command(PIXI, tool_input, _envelope({"status": "error"}))
+    assert got is not None
+    assert got.succeeded is False
+
+
+def test_success_status_with_error_key_is_success():
+    response = json.dumps({"tool": "x", "status": "success", "error": "stale", "result": {}})
+    got = extract_tracked_command(GIT, {"tool_name": "git_status"}, response)
+    assert got is not None
+    assert got.succeeded is True
+
+
 def test_unparseable_dict_with_is_error_is_failure():
     tool_input = {"tool_name": "pixi_run_task", "parameters": {"task_name": "t"}}
     got = extract_tracked_command(PIXI, tool_input, {"is_error": True})

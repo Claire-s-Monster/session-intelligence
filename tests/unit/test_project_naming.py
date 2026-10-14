@@ -90,6 +90,8 @@ def test_derive_project_name_remote_wins_and_toplevel_not_relied_on(
 
     def fake_run_git(args: list[str], cwd: Path) -> str | None:
         calls.append(args)
+        if args[0] == "config":  # si.projectName override (#216): unset
+            return None
         if args[0] == "remote":
             return "https://github.com/Claire-s-Monster/session-intelligence.git"
         raise AssertionError(
@@ -102,8 +104,7 @@ def test_derive_project_name_remote_wins_and_toplevel_not_relied_on(
     result = derive_project_name(str(tmp_path))
 
     assert result == "session-intelligence"
-    assert len(calls) == 1
-    assert calls[0][0] == "remote"
+    assert [c[0] for c in calls] == ["config", "remote"]
 
 
 def test_derive_project_name_falls_back_to_toplevel_when_remote_missing(
@@ -113,7 +114,7 @@ def test_derive_project_name_falls_back_to_toplevel_when_remote_missing(
     basename."""
 
     def fake_run_git(args: list[str], cwd: Path) -> str | None:
-        if args[0] == "remote":
+        if args[0] in {"config", "remote"}:
             return None
         if args[0] == "rev-parse":
             return "/some/checkout/root/my-toplevel-repo"

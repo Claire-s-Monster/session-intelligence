@@ -10,10 +10,21 @@ in hand, so the name is recoverable. This module does the recovery.
 
 Derivation order (first non-empty wins):
 
+0. ``git config --get si.projectName`` -> explicit opt-in override (must match
+   ``[A-Za-z0-9][A-Za-z0-9._@+-]{0,99}``; invalid values are ignored)
 1. ``git remote get-url origin`` -> repository basename
 2. ``git rev-parse --show-toplevel`` -> directory basename
 3. ``Path(project_path).name``
 4. ``_unbound_`` (only when the path is unusable and git tells us nothing)
+
+Linked worktrees deliberately share the bare repository name (issue #216).
+The feature-worktree workflow (ci-framework, mcp-git, pixi-task,
+session-intelligence) does its work in linked worktrees, so auto-qualifying
+the name per worktree would fragment recall. Anyone who wants a distinct name
+sets ``git config --worktree si.projectName X`` (requires
+``extensions.worktreeConfig=true``) or a repo-wide value for a separate clone.
+The override is cached with the rest of the derivation, so a change takes
+effect on server restart.
 
 Step 1 leads deliberately. The names already in the database
 (``numba-feedstock``, ``hb-event-bus``, ``staged-recipes``,
@@ -31,6 +42,7 @@ binary all fall through to the next step rather than propagating.
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -45,6 +57,11 @@ UNBOUND = "_unbound_"
 #: Git is called on the session-creation hot path, so keep it short. A stalled
 #: git call must never become a stalled session write.
 _GIT_TIMEOUT_S = 2.0
+
+#: Opt-in git config key that overrides every derivation rule (issue #216).
+OVERRIDE_CONFIG_KEY = "si.projectName"
+
+_OVERRIDE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@+-]{0,99}")
 
 
 def _run_git(args: list[str], cwd: Path) -> str | None:
@@ -107,9 +124,27 @@ def repo_name_from_remote_url(url: str) -> str | None:
     return _sanitize(tail)
 
 
+def _read_override(path: Path) -> str | None:
+    """Return the validated ``si.projectName`` git config value, if any.
+
+    A missing key (git exits 1) is the normal case and is silent. An invalid
+    value is ignored with a debug log; this never raises.
+    """
+    value = _run_git(["config", "--get", OVERRIDE_CONFIG_KEY], path)
+    if not value:
+        return None
+    if not _OVERRIDE_RE.fullmatch(value):
+        logger.debug("ignoring invalid %s value %r in %s", OVERRIDE_CONFIG_KEY, value, path)
+        return None
+    return value
+
+
 @lru_cache(maxsize=256)
 def _derive_cached(resolved: str) -> str:
     """Cached derivation keyed on an already-resolved directory path.
+
+    The ``si.projectName`` override is read inside this cached function, so
+    changing it takes effect only after a server restart.
 
     Cached because session creation can happen many times against the same
     working directory and each miss costs up to two subprocess spawns. A
@@ -117,6 +152,10 @@ def _derive_cached(resolved: str) -> str:
     mid-process is not a case worth paying for on every write.
     """
     path = Path(resolved)
+
+    override = _read_override(path)
+    if override:
+        return override
 
     remote_url = _run_git(["remote", "get-url", "origin"], path)
     if remote_url:

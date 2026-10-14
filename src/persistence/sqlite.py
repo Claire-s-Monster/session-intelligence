@@ -82,6 +82,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         impact_level TEXT DEFAULT 'medium',
         artifacts TEXT,
         supersedes TEXT,
+        summary TEXT,
         retired_at TEXT,
         retired_reason TEXT,
         FOREIGN KEY (session_id) REFERENCES sessions(id)
@@ -198,6 +199,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         promoted_to_universal BOOLEAN DEFAULT FALSE,
         created_at TEXT NOT NULL,
         supersedes TEXT,
+        summary TEXT,
         retired_at TEXT,
         retired_reason TEXT,
         FOREIGN KEY (source_session_id) REFERENCES sessions(id)
@@ -429,6 +431,15 @@ class SQLiteBackend(BaseDatabaseBackend):
                 except Exception as e:
                     if "duplicate column" not in str(e).lower():
                         raise
+
+        # Issue #86: optional one-line headline injected at session start.
+        for _table in ("decisions", "project_learnings"):
+            try:
+                await self._connection.execute(f"ALTER TABLE {_table} ADD COLUMN summary TEXT")  # noqa: S608
+                await self._connection.commit()
+            except Exception as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
 
         # Add index for project_name on project_learnings
         try:
@@ -850,13 +861,14 @@ class SQLiteBackend(BaseDatabaseBackend):
             """
             INSERT INTO decisions
             (id, session_id, timestamp, category, description, rationale,
-             context, impact_level, artifacts, supersedes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             context, impact_level, artifacts, supersedes, summary)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 description = excluded.description,
                 rationale = excluded.rationale,
                 context = excluded.context,
-                supersedes = COALESCE(excluded.supersedes, decisions.supersedes)
+                supersedes = COALESCE(excluded.supersedes, decisions.supersedes),
+                summary = COALESCE(excluded.summary, decisions.summary)
         """,
             (
                 decision_data.get("decision_id") or decision_data.get("id"),
@@ -869,6 +881,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 decision_data.get("impact_level", "medium"),
                 self._serialize_json(decision_data.get("artifacts", [])),
                 decision_data.get("supersedes"),
+                decision_data.get("summary"),
             ),
         )
 
@@ -2110,6 +2123,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         source_session_id: str | None = None,
         project_name: str | None = None,
         supersedes: str | None = None,
+        summary: str | None = None,
     ) -> dict[str, Any]:
         """Save a project-specific learning."""
         conn = self._ensure_connected()
@@ -2120,13 +2134,14 @@ class SQLiteBackend(BaseDatabaseBackend):
             INSERT INTO project_learnings (
                 id, project_path, project_name, category, trigger_context,
                 learning_content, source_session_id, success_count, failure_count,
-                last_used, promoted_to_universal, created_at, supersedes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, FALSE, ?, ?)
+                last_used, promoted_to_universal, created_at, supersedes, summary
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, FALSE, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 learning_content = excluded.learning_content,
                 trigger_context = excluded.trigger_context,
                 project_name = excluded.project_name,
                 supersedes = excluded.supersedes,
+                summary = COALESCE(excluded.summary, project_learnings.summary),
                 last_used = excluded.last_used
         """,
             (
@@ -2140,6 +2155,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                 now,
                 now,
                 supersedes,
+                summary,
             ),
         )
         await conn.commit()
@@ -2525,7 +2541,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         if include is None or "decisions" in include:
             cursor = await conn.execute(
                 """
-                SELECT d.id, d.description, d.category, d.rationale,
+                SELECT d.id, d.description, d.category, d.rationale, d.summary,
                        d.impact_level, d.timestamp, s.id AS session_id,
                        s.project_path AS project_path
                 FROM decisions d
@@ -2547,6 +2563,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                     "description": row["description"],
                     "category": row["category"],
                     "rationale": row["rationale"],
+                    "summary": row["summary"],
                     "timestamp": row["timestamp"],
                     "project_path": row["project_path"],
                 }
@@ -2556,7 +2573,7 @@ class SQLiteBackend(BaseDatabaseBackend):
         if include is None or "learnings" in include:
             cursor = await conn.execute(
                 """
-                SELECT id, category, trigger_context, learning_content,
+                SELECT id, category, trigger_context, learning_content, summary,
                        project_name, project_path, source_session_id, success_count,
                        failure_count, created_at, last_used
                 FROM project_learnings

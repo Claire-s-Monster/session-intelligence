@@ -83,6 +83,7 @@ from models.session_models import (
     SolutionResult,
     SolutionSearchResult,
     WorkflowResult,
+    normalize_summary,
 )
 
 # Debug logging is opt-in via SESSION_INTELLIGENCE_DEBUG (issue #68).
@@ -2050,6 +2051,7 @@ class SessionIntelligenceEngine:
         project_path: str | None = None,
         supersedes: str | None = None,
         allow_unbound: bool = False,
+        summary: str | None = None,
     ) -> DecisionResult:
         """
         Intelligent decision logging with context and impact analysis.
@@ -2062,6 +2064,7 @@ class SessionIntelligenceEngine:
         Use allow_unbound=True to opt into the legacy unbound fallback (deprecated).
         """
         _reject_tool_result_envelope("session_log_decision", "decision", decision)
+        summary = normalize_summary(summary)  # #86: raises before any write
         try:
             # Coerce context to dict if caller passed a string
             if isinstance(context, str):
@@ -2158,6 +2161,7 @@ class SessionIntelligenceEngine:
                     impact_level=ImpactLevel.MEDIUM,
                     artifacts=link_artifacts or [],
                     supersedes=supersedes,
+                    summary=summary,
                 )
 
                 session.decisions.append(decision_obj)
@@ -2186,6 +2190,7 @@ class SessionIntelligenceEngine:
                     # issue #96. A dangling pointer is accepted and simply
                     # never retires anything.
                     "supersedes": supersedes,
+                    "summary": summary,
                 }
                 await self.database.save_decision(decision_data)
 
@@ -2799,6 +2804,7 @@ class SessionIntelligenceEngine:
             impact_level=ImpactLevel(row.get("impact_level", "medium")),
             artifacts=artifacts,
             supersedes=row.get("supersedes"),
+            summary=row.get("summary"),
         )
 
     def _agent_execution_from_row(
@@ -4259,6 +4265,7 @@ class SessionIntelligenceEngine:
             "category",
             "trigger_context",
             "learning_content",
+            "summary",
             "project_name",
             "project_path",
             "source_session_id",
@@ -4464,6 +4471,7 @@ class SessionIntelligenceEngine:
         project_name: str | None = None,
         supersedes: str | None = None,
         allow_unbound: bool = False,
+        summary: str | None = None,
     ) -> LearningResult:
         """
         Log a project-specific learning (pattern, fix, preference).
@@ -4490,6 +4498,7 @@ class SessionIntelligenceEngine:
         """
         _reject_tool_result_envelope("session_log_learning", "learning_content", learning_content)
         reject_toolu_id_only("session_log_learning", "learning_content", learning_content)
+        summary = normalize_summary(summary)  # #86: raises before any write
         import uuid
 
         learning_id = f"learn_{uuid.uuid4().hex[:12]}"
@@ -4594,6 +4603,7 @@ class SessionIntelligenceEngine:
             source_session_id=source_session,
             created_at=datetime.now(UTC).isoformat(),
             supersedes=supersedes,
+            summary=summary,
         )
 
         # Persist to database
@@ -4624,6 +4634,7 @@ class SessionIntelligenceEngine:
                     trigger_context=trigger_context,
                     source_session_id=sid,
                     supersedes=supersedes,
+                    summary=summary,
                 )
                 status = "saved"
                 message = f"Learning saved to database for {category}."

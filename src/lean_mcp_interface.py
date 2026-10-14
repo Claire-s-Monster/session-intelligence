@@ -26,9 +26,28 @@ from fastmcp import FastMCP
 
 from core.session_engine import SessionIntelligenceEngine
 from models.session_models import *  # noqa: F403
+from models.session_models import SUMMARY_MAX_CHARS
 from utils.token_limiter import apply_token_limits
 
 logger = logging.getLogger(__name__)
+
+SUMMARY_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "maxLength": SUMMARY_MAX_CHARS,
+    "description": (
+        f"Optional one-line headline injected at session start; <={SUMMARY_MAX_CHARS} "
+        "chars; rejected if longer. Without it the body is clipped."
+    ),
+}
+
+# Issue #91: which store holds what. Appended to the log/notebook tool descriptions.
+STORE_DIVISION_DOC = (
+    "**STORES**: session-intelligence = audit trail (what happened and why); session "
+    f"start injects only recent-N entries, each as its `summary` or else the body "
+    f"clipped to {SUMMARY_MAX_CHARS} chars. Claude Code auto-memory MEMORY.md = standing "
+    "intent a future session must not re-derive; loaded in full every session. "
+    "The repository (commits, PR bodies) = anything a reviewer needs."
+)
 
 
 class LeanMCPInterface:
@@ -243,7 +262,9 @@ class LeanMCPInterface:
                 "to _unbound_. "
                 "**CORRECTING**: pass supersedes=<prior entry id> to replace a wrong "
                 "entry with a corrected one; session_retire_decision retires an entry "
-                "with no successor; session_update_decision edits in place."
+                "with no successor; session_update_decision edits in place. "
+                f"{STORE_DIVISION_DOC} "
+                "Pass `summary` so the injected headline is a complete thought."
             ),
             "schema": {
                 "type": "object",
@@ -302,6 +323,7 @@ class LeanMCPInterface:
                             "without deleting it."
                         ),
                     },
+                    "summary": SUMMARY_SCHEMA,
                 },
                 "required": ["decision"],
             },
@@ -615,7 +637,8 @@ class LeanMCPInterface:
                 "avoid duplicate session records. "
                 "**DISCIPLINE**: pass at least one of session_id, session_name, or "
                 "project_name. Use allow_unbound=true to opt into the legacy unbound "
-                "fallback (deprecated)."
+                "fallback (deprecated). "
+                f"{STORE_DIVISION_DOC}"
             ),
             "schema": {
                 "type": "object",
@@ -1164,7 +1187,9 @@ class LeanMCPInterface:
                 "fallback (deprecated). "
                 "**CORRECTING**: pass supersedes=<prior entry id> to replace a wrong "
                 "entry with a corrected one; session_retire_learning retires an entry "
-                "with no successor; session_update_learning edits in place."
+                "with no successor; session_update_learning edits in place. "
+                f"{STORE_DIVISION_DOC} "
+                "Pass `summary` so the injected headline is a complete thought."
             ),
             "schema": {
                 "type": "object",
@@ -1222,6 +1247,7 @@ class LeanMCPInterface:
                             "without deleting it."
                         ),
                     },
+                    "summary": SUMMARY_SCHEMA,
                 },
                 "required": ["category", "learning_content"],
             },

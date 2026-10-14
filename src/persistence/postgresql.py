@@ -99,6 +99,9 @@ _MIGRATIONS = (
     "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS retired_reason TEXT",
     "ALTER TABLE project_learnings ADD COLUMN IF NOT EXISTS retired_at TIMESTAMPTZ",
     "ALTER TABLE project_learnings ADD COLUMN IF NOT EXISTS retired_reason TEXT",
+    # Issue #86: optional one-line headline injected at session start.
+    "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS summary TEXT",
+    "ALTER TABLE project_learnings ADD COLUMN IF NOT EXISTS summary TEXT",
 )
 
 
@@ -147,6 +150,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         impact_level TEXT DEFAULT 'medium',
         artifacts JSONB DEFAULT '[]',
         supersedes TEXT,
+        summary TEXT,
         retired_at TIMESTAMPTZ,
         retired_reason TEXT
     );
@@ -298,6 +302,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         promoted_to_universal BOOLEAN DEFAULT FALSE,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         supersedes TEXT,
+        summary TEXT,
         retired_at TIMESTAMPTZ,
         retired_reason TEXT
     );
@@ -972,13 +977,14 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             """
             INSERT INTO decisions
             (id, session_id, timestamp, category, description, rationale,
-             context, impact_level, artifacts, supersedes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             context, impact_level, artifacts, supersedes, summary)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             ON CONFLICT (id) DO UPDATE SET
                 description = EXCLUDED.description,
                 rationale = EXCLUDED.rationale,
                 context = EXCLUDED.context,
-                supersedes = COALESCE(EXCLUDED.supersedes, decisions.supersedes)
+                supersedes = COALESCE(EXCLUDED.supersedes, decisions.supersedes),
+                summary = COALESCE(EXCLUDED.summary, decisions.summary)
             """,
             decision_data.get("decision_id") or decision_data.get("id"),
             decision_data["session_id"],
@@ -990,6 +996,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             decision_data.get("impact_level", "medium"),
             json.dumps(decision_data.get("artifacts", [])),
             decision_data.get("supersedes"),
+            decision_data.get("summary"),
         )
 
     @db_retry
@@ -1573,7 +1580,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             if include is None or "decisions" in include:
                 rows = await conn.fetch(
                     """
-                    SELECT d.id, d.description, d.category, d.rationale,
+                    SELECT d.id, d.description, d.category, d.rationale, d.summary,
                            d.impact_level, d.timestamp, s.id AS session_id,
                            s.project_path AS project_path
                     FROM decisions d
@@ -1597,6 +1604,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                         "description": row["description"],
                         "category": row["category"],
                         "rationale": row["rationale"],
+                        "summary": row["summary"],
                         "timestamp": row["timestamp"].isoformat() if row["timestamp"] else None,
                         "project_path": row["project_path"],
                     }
@@ -1606,7 +1614,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             if include is None or "learnings" in include:
                 rows = await conn.fetch(
                     """
-                    SELECT id, category, trigger_context, learning_content,
+                    SELECT id, category, trigger_context, learning_content, summary,
                            project_name, project_path, source_session_id, success_count,
                            failure_count, created_at, last_used
                     FROM project_learnings
@@ -2162,6 +2170,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         source_session_id: str | None = None,
         project_name: str | None = None,
         supersedes: str | None = None,
+        summary: str | None = None,
     ) -> dict[str, Any]:
         """Save a project-specific learning."""
         pool = self._ensure_connected()
@@ -2172,13 +2181,14 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 INSERT INTO project_learnings (
                     id, project_path, project_name, category, trigger_context,
                     learning_content, source_session_id, success_count, failure_count,
-                    last_used, promoted_to_universal, created_at, supersedes
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 0, NOW(), FALSE, NOW(), $8)
+                    last_used, promoted_to_universal, created_at, supersedes, summary
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, 1, 0, NOW(), FALSE, NOW(), $8, $9)
                 ON CONFLICT(id) DO UPDATE SET
                     learning_content = EXCLUDED.learning_content,
                     trigger_context = EXCLUDED.trigger_context,
                     project_name = EXCLUDED.project_name,
                     supersedes = EXCLUDED.supersedes,
+                    summary = COALESCE(EXCLUDED.summary, project_learnings.summary),
                     last_used = NOW()
                 """,
                 learning_id,
@@ -2189,6 +2199,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 learning_content,
                 source_session_id,
                 supersedes,
+                summary,
             )
         return {"id": learning_id, "status": "saved"}
 

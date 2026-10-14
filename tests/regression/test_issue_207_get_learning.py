@@ -22,6 +22,7 @@ LEARNING_KEYS = {
     "category",
     "trigger_context",
     "learning_content",
+    "summary",
     "project_name",
     "project_path",
     "source_session_id",

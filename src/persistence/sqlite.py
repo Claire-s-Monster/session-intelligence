@@ -1937,6 +1937,51 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
         await conn.commit()
 
+    async def recent_decision_texts(self, project_name: str, limit: int) -> list[tuple[str, str]]:
+        """(id, description) of recent live decisions for a project (issue #89)."""
+        conn = self._ensure_connected()
+        cursor = await conn.execute(
+            """
+            SELECT d.id, d.description
+            FROM decisions d
+            JOIN sessions s ON d.session_id = s.id
+            WHERE s.project_name = ?
+              AND d.id NOT IN (
+                  SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
+              )
+              AND d.retired_at IS NULL
+            ORDER BY d.timestamp DESC
+            LIMIT ?
+            """,
+            (project_name, limit),
+        )
+        rows = await cursor.fetchall()
+        return [(row["id"], row["description"] or "") for row in rows]
+
+    async def recent_learning_texts(
+        self, project_name: str, category: str, limit: int
+    ) -> list[tuple[str, str]]:
+        """(id, learning_content) of recent live learnings for project+category (issue #89)."""
+        conn = self._ensure_connected()
+        cursor = await conn.execute(
+            """
+            SELECT id, learning_content
+            FROM project_learnings
+            WHERE project_name = ?
+              AND category = ?
+              AND id NOT IN (
+                  SELECT supersedes FROM project_learnings
+                  WHERE supersedes IS NOT NULL
+              )
+              AND retired_at IS NULL
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (project_name, category, limit),
+        )
+        rows = await cursor.fetchall()
+        return [(row["id"], row["learning_content"] or "") for row in rows]
+
     async def search_sessions(
         self, query: str, search_type: str = "fulltext", limit: int = 20
     ) -> list[dict[str, Any]]:

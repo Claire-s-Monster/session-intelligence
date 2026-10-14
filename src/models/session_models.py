@@ -746,6 +746,9 @@ class SearchResult(BaseModel):
     project_path: str | None = None
     started_at: str | None = None
     tags: list[str] = Field(default_factory=list)
+    # Issue #86: headline of a decision/learning row (decisions/learnings search
+    # types only; fulltext rows have their own session summary, not exposed here).
+    summary: str | None = None
 
 
 class SearchResults(BaseModel):

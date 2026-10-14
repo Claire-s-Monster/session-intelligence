@@ -1188,6 +1188,7 @@ curl -X POST http://127.0.0.1:4002/tools/agent_query_learnings \\
                                 "id": ln["id"],
                                 "source": "project",
                                 "learning_content": ln["learning_content"],
+                                "summary": ln.get("summary"),
                                 "trigger_context": ln.get("trigger_context"),
                                 "success_count": ln.get("success_count", 1),
                             }

@@ -3037,6 +3037,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                         s.project_name,
                         s.project_path,
                         d.timestamp as started_at,
+                        d.summary as summary,
                         '[]'::jsonb as tags
                     FROM decisions d
                     JOIN sessions s ON d.session_id = s.id
@@ -3083,6 +3084,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                         project_name,
                         project_path,
                         created_at as started_at,
+                        summary,
                         '[]'::jsonb as tags
                     FROM project_learnings
                     WHERE to_tsvector(

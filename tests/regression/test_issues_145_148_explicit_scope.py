@@ -77,7 +77,7 @@ async def test_validate_explicit_id_of_uncached_abandoned_session(engine):
     assert result.status == "success"
     assert result.session_id == ABANDONED_ID
     assert result.session_data is not None
-    assert str(result.session_data.status).lower().endswith("abandoned")
+    assert result.session_data["status"] == "abandoned"
 
 
 @pytest.mark.regression
@@ -100,7 +100,7 @@ async def test_finalize_explicit_id_of_uncached_abandoned_session(engine):
     assert result.status == "success"
     assert result.session_id == ABANDONED_ID
     assert result.session_data is not None
-    assert str(result.session_data.status).lower().endswith("completed")
+    assert result.session_data["status"] == "completed"
 
     row = await engine.database.get_session(ABANDONED_ID)
     assert row is not None

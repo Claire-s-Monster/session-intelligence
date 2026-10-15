@@ -159,6 +159,7 @@ async def test_decisions_made_tracks_decisions_list(engine):
     validate_result = await engine.session_manage_lifecycle(
         operation="validate",
         session_id=NATIVE_SESSION_ID,
+        include_details=True,
     )
 
     assert validate_result.session_data is not None
@@ -238,6 +239,7 @@ async def test_hydrated_db_only_session_reports_correct_derived_counters(engine)
         operation="create",
         project_name="demo-project",
         session_id=NATIVE_SESSION_ID,
+        include_details=True,
     )
 
     assert result.status == "success"
@@ -272,6 +274,7 @@ async def test_no_executions_or_decisions_reports_zero(engine):
     validate_result = await engine.session_manage_lifecycle(
         operation="validate",
         session_id=NATIVE_SESSION_ID,
+        include_details=True,
     )
 
     assert validate_result.session_data is not None

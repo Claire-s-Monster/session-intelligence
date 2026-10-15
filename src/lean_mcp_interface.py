@@ -135,6 +135,15 @@ class LeanMCPInterface:
                             "session's name on create (an existing name is kept)."
                         ),
                     },
+                    "include_details": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "For create (adopt path)/finalize/validate: return the full "
+                            "Session in session_data instead of a compact summary. Large "
+                            "on long sessions; prefer session_get_steps."
+                        ),
+                    },
                     "allow_unbound": {
                         "type": "boolean",
                         "default": False,
@@ -619,6 +628,40 @@ class LeanMCPInterface:
                 "required": [],
             },
             "examples": [{"dashboard_type": "performance", "project_name": "my-project"}],
+        }
+
+        registry["session_get_steps"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.session_get_steps),
+            "description": (
+                "Paginated execution steps of one session, flattened with agent_name and "
+                "agent execution id. Long text fields are truncated to 500 chars. Use this "
+                "instead of session_manage_lifecycle(include_details=True) on long sessions."
+            ),
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "session_id": {"type": "string", "description": "Session to read"},
+                    "agent_name": {
+                        "type": "string",
+                        "description": "Only steps of this agent (optional)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 50,
+                        "minimum": 1,
+                        "maximum": 200,
+                        "description": "Page size (clamped to 1-200)",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "default": 0,
+                        "minimum": 0,
+                        "description": "Steps to skip",
+                    },
+                },
+                "required": ["session_id"],
+            },
+            "examples": [{"session_id": "session-20260101-120000-abc123", "limit": 20}],
         }
 
         registry["session_create_notebook"] = {

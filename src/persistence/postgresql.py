@@ -651,6 +651,26 @@ class PostgreSQLBackend(BaseDatabaseBackend):
              session_name, mode, status, metadata, performance_metrics, health_status)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             ON CONFLICT (id) DO UPDATE SET
+                -- Issue #241: a sentinel/empty path may be healed to a real
+                -- one; a real stored path is never overwritten. The name
+                -- follows only while the row is still unbound.
+                project_name = CASE
+                    WHEN sessions.project_name IN ('_unbound_', 'unknown')
+                         AND (sessions.project_path IS NULL
+                              OR sessions.project_path IN ('_unknown_', ''))
+                         AND (EXCLUDED.project_path IS NOT NULL
+                              AND EXCLUDED.project_path NOT IN ('_unknown_', ''))
+                    THEN EXCLUDED.project_name
+                    ELSE sessions.project_name
+                END,
+                project_path = CASE
+                    WHEN (sessions.project_path IS NULL
+                          OR sessions.project_path IN ('_unknown_', ''))
+                         AND (EXCLUDED.project_path IS NOT NULL
+                              AND EXCLUDED.project_path NOT IN ('_unknown_', ''))
+                    THEN EXCLUDED.project_path
+                    ELSE sessions.project_path
+                END,
                 ended_at = EXCLUDED.ended_at,
                 last_seen_at = EXCLUDED.last_seen_at,
                 status = EXCLUDED.status,
@@ -689,6 +709,31 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             if row:
                 return self._normalize_session_data(self._from_record(row))
             return None
+
+    @db_retry
+    async def heal_session_project(
+        self, session_id: str, project_path: str, project_name: str | None
+    ) -> bool:
+        """Bind a sentinel-path session to a real path (issue #241)."""
+        pool = self._ensure_connected()
+
+        async with pool.acquire() as conn:
+            status = await conn.execute(
+                """
+                UPDATE sessions SET
+                    project_name = CASE
+                        WHEN $3::text IS NOT NULL
+                             AND project_name IN ('_unbound_', 'unknown')
+                        THEN $3 ELSE project_name END,
+                    project_path = $2
+                WHERE id = $1
+                  AND (project_path IS NULL OR project_path IN ('', '_unknown_'))
+                """,
+                session_id,
+                project_path,
+                project_name,
+            )
+        return str(status).endswith(" 1")
 
     @db_retry
     async def query_sessions(

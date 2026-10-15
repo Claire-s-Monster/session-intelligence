@@ -198,6 +198,17 @@ class DatabaseBackend(Protocol):
         """Get a session by ID."""
         ...
 
+    async def heal_session_project(
+        self, session_id: str, project_path: str, project_name: str | None
+    ) -> bool:
+        """Bind a sentinel-path session to a real path (issue #241).
+
+        Updates only a row whose project_path is NULL/''/'_unknown_'; the name
+        is replaced only if still '_unbound_'/'unknown' and ``project_name`` is
+        given. Returns True if a row changed.
+        """
+        ...
+
     async def query_sessions(
         self,
         limit: int = 50,

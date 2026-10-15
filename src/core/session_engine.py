@@ -12,7 +12,7 @@ import re
 import secrets
 import uuid
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -129,6 +129,18 @@ def usable_project_path(candidate: str | None) -> str | None:
     if candidate and candidate != UNKNOWN_PROJECT_PATH and Path(candidate).is_absolute():
         return candidate.rstrip("/") or "/"
     return None
+
+
+def path_source(resolved_path: str | None, caller_path: str | None) -> str:
+    """Classify a recorded project_path: "caller", "derived" or "unknown" (#241).
+
+    ``caller_path`` must already be vetted by :func:`usable_project_path`.
+    """
+    if not resolved_path or resolved_path == UNKNOWN_PROJECT_PATH:
+        return "unknown"
+    if caller_path and resolved_path.rstrip("/") == caller_path:
+        return "caller"
+    return "derived"
 
 
 _DECISION_CONTEXT_KEYS = frozenset(DecisionContext.model_fields)
@@ -341,6 +353,8 @@ class ResolvedSessionContext:
     # Non-blocking notes about how the session was chosen (e.g. a guessed
     # project_name binding among several active sessions).
     warnings: list[dict[str, Any]] = field(default_factory=list)
+    # "caller" | "derived" | "unknown"; set by _resolve_session_context (#241).
+    project_path_source: str | None = None
 
 
 class _DirtyTrackingCache(dict[str, Session]):
@@ -450,6 +464,22 @@ class SessionIntelligenceEngine:
         if self._dirty_sessions.get(session_id) == version:
             del self._dirty_sessions[session_id]
 
+    @staticmethod
+    def _heal_session_path(session: Session, path: str | None) -> bool:
+        """Bind a sentinel-path session to ``path`` (issue #241). In-memory only.
+
+        Only a None/UNKNOWN_PROJECT_PATH row is touched; the name is replaced
+        only when it is still UNBOUND and the derived name is not.
+        """
+        if not path or session.project_path not in (None, UNKNOWN_PROJECT_PATH):
+            return False
+        session.project_path = path
+        if session.project_name in (UNBOUND, "unknown"):
+            derived_name = derive_project_name(path)
+            if derived_name != UNBOUND:
+                session.project_name = derived_name
+        return True
+
     async def _derive_project_path(
         self, project_name: str | None, caller_path: str | None
     ) -> str | None:
@@ -502,7 +532,87 @@ class SessionIntelligenceEngine:
             }
         ]
 
+    async def _heal_resolved_session(
+        self, session_id: str, path: str, row_name: str | None
+    ) -> tuple[str | None, str]:
+        """Heal a sentinel-path session row (and cache entry) to ``path`` (#241).
+
+        Returns the (project_name, project_path) now in force. The name changes
+        only while it is still unbound and a real name can be derived.
+        """
+        derived_name = derive_project_name(path)
+        new_name = (
+            derived_name if row_name in (UNBOUND, "unknown") and derived_name != UNBOUND else None
+        )
+        if self.database:
+            try:
+                await self.database.heal_session_project(session_id, path, new_name)
+            except Exception as e:
+                debug_logger.error(f"Error healing project_path for {session_id}: {e}")
+        cached = self.session_cache.get(session_id)
+        if cached is not None and self._heal_session_path(cached, path):
+            self.mark_dirty(session_id)
+        return (new_name or row_name), path
+
+    async def _reconcile_caller_path(
+        self,
+        session_id: str,
+        safe_path: str | None,
+        row_name: str | None,
+        row_path: str | None,
+    ) -> tuple[str | None, str | None, list[dict[str, Any]]]:
+        """Reconcile an explicit session's stored path with the caller's (#241).
+
+        A sentinel row is healed to ``safe_path``; a different real path is
+        kept and reported as a ``project_path_mismatch`` warning.
+        """
+        if not safe_path:
+            return row_name, row_path, []
+        if not row_path or row_path == UNKNOWN_PROJECT_PATH:
+            name, path = await self._heal_resolved_session(session_id, safe_path, row_name)
+            return name, path, []
+        if row_path.rstrip("/") == safe_path:
+            return row_name, row_path, []
+        warning = {
+            "kind": "project_path_mismatch",
+            "message": (
+                f"session {session_id} is bound to {row_path!r}; caller passed "
+                f"project_path={safe_path!r}. The stored path was kept."
+            ),
+        }
+        return row_name, row_path, [warning]
+
     async def _resolve_session_context(
+        self,
+        session_id: str | None = None,
+        session_name: str | None = None,
+        project_name: str | None = None,
+        *,
+        allow_unbound: bool = False,
+        create_if_missing: bool = True,
+        project_path: str | None = None,
+    ) -> "ResolvedSessionContext":
+        """Resolve a session and tag where its project_path came from (#241).
+
+        ``project_path_source``: "caller" if the resolved path is the one the
+        caller passed, "unknown" for the sentinel/no path, else "derived".
+        """
+        resolved = await self._resolve_session_context_inner(
+            session_id,
+            session_name,
+            project_name,
+            allow_unbound=allow_unbound,
+            create_if_missing=create_if_missing,
+            project_path=project_path,
+        )
+        return replace(
+            resolved,
+            project_path_source=path_source(
+                resolved.project_path, usable_project_path(project_path)
+            ),
+        )
+
+    async def _resolve_session_context_inner(
         self,
         session_id: str | None = None,
         session_name: str | None = None,
@@ -550,10 +660,17 @@ class SessionIntelligenceEngine:
                 raise ValueError(f"session_id={session_id!r} not found in database")
             # Cache for back-compat
             self._current_session_id = session_id
+            row_name, row_path, warnings = await self._reconcile_caller_path(
+                session_id,
+                safe_project_path,
+                existing.get("project_name"),
+                existing.get("project_path"),
+            )
             return ResolvedSessionContext(
                 session_id=session_id,
-                project_name=existing.get("project_name"),
-                project_path=existing.get("project_path"),
+                project_name=row_name,
+                project_path=row_path,
+                warnings=warnings,
             )
 
         # 2. session_name (optionally scoped to project_name)
@@ -858,7 +975,7 @@ class SessionIntelligenceEngine:
         session is reactivated on adoption (issue #218).
         """
         try:
-            return await self._manage_lifecycle_impl(
+            result = await self._manage_lifecycle_impl(
                 operation,
                 mode,
                 project_name,
@@ -870,6 +987,15 @@ class SessionIntelligenceEngine:
                 allow_unbound=allow_unbound,
                 include_details=include_details,
             )
+            # Issue #241: say who supplied the recorded path. No session_data
+            # (e.g. an error/no-row result) leaves it unset (legacy fallback).
+            data = result.session_data
+            if data is not None:
+                recorded = data.get("project_path") if isinstance(data, dict) else data.project_path
+                result.project_path_source = path_source(
+                    recorded, usable_project_path(project_path)
+                )
+            return result
         except SessionContextRequiredError:
             raise
         except Exception as e:
@@ -956,6 +1082,12 @@ class SessionIntelligenceEngine:
                             f"; kept existing session_name {existing.session_name!r} "
                             f"(requested {session_name!r})"
                         )
+                    # Issue #241: adopting a hook-created (sentinel-path) session
+                    # with a real path binds it; a real stored path is kept.
+                    if self._heal_session_path(
+                        existing, usable_project_path(create_metadata.get("project_path"))
+                    ):
+                        changed = True
                     if changed:
                         self.mark_dirty(session_id)
                         if self.database:
@@ -1754,10 +1886,14 @@ class SessionIntelligenceEngine:
                 "binding a session-intelligence session to it (likely a "
                 "hook-supplied Claude Code native session id)"
             )
-            hook_cwd = step_data.get("working_directory", str(Path.cwd().resolve()))
+            # Issue #241: never fall back to the SERVER's cwd -- that stamps the
+            # session with this repo's path/name. Without a usable absolute
+            # working_directory the session stays unbound (sentinel path) and
+            # is healed by the first later event that does carry one.
+            hook_cwd = usable_project_path(step_data.get("working_directory"))
             create_result = self._create_session(
                 mode="auto",
-                project_name=derive_project_name(hook_cwd),
+                project_name=(derive_project_name(hook_cwd) if hook_cwd else UNBOUND),
                 metadata={
                     "project_path": hook_cwd,
                     "tags": ["hook-bound", "claude-native-session"],
@@ -1784,6 +1920,9 @@ class SessionIntelligenceEngine:
         # Issue #190: every mutation below (heartbeat, executions, steps, metrics)
         # belongs to this one session; the post-call sweep persists only it.
         self.mark_dirty(session_id)
+        # Issue #241: self-heal a sentinel-path session from a later event that
+        # carries a real working_directory. Never overwrites a real path.
+        self._heal_session_path(session, usable_project_path(step_data.get("working_directory")))
         debug_logger.info(f"Found session in cache: {session.id}")
         debug_logger.info(f"Session project_path: {session.project_path}")
         debug_logger.info(f"Session agents_executed count: {len(session.agents_executed)}")
@@ -3309,9 +3448,10 @@ class SessionIntelligenceEngine:
                 (unchanged behaviour).
         """
         try:
+            nb_warnings: list[dict[str, Any]] = []
+            usable_path = usable_project_path(project_path)
             # Resolve session via the flexible resolver
             if session_id is None:
-                usable_path = usable_project_path(project_path)
                 if not (session_name or project_name) and not allow_unbound and usable_path:
                     derived_name = derive_project_name(usable_path)
                     if derived_name != UNBOUND:
@@ -3324,6 +3464,7 @@ class SessionIntelligenceEngine:
                     project_path=project_path,
                 )
                 session_id = resolved.session_id
+                nb_warnings = list(resolved.warnings)
             if not session_id:
                 return NotebookResult(
                     session_id="unknown",
@@ -3340,6 +3481,20 @@ class SessionIntelligenceEngine:
                     status="error",
                     message="No session found",
                 )
+            if usable_path:
+                # Issue #241: honour the caller's path for an explicit/adopted
+                # session too (heal a sentinel row, warn on a different path).
+                new_name, new_path, path_warnings = await self._reconcile_caller_path(
+                    session_id, usable_path, session.project_name, session.project_path
+                )
+                nb_warnings += [w for w in path_warnings if w not in nb_warnings]
+                if new_path and new_path != session.project_path:
+                    session = session.model_copy(
+                        update={
+                            "project_path": new_path,
+                            "project_name": new_name or session.project_name,
+                        }
+                    )
 
             # Merge decisions from database
             if self.database:
@@ -3542,6 +3697,8 @@ class SessionIntelligenceEngine:
                 file_status=file_status,
                 search_indexed=search_indexed,
                 message=f"Notebook created with {len(sections)} sections",
+                warnings=nb_warnings,
+                project_path_source=path_source(session.project_path, usable_path),
             )
         except SessionContextRequiredError:
             raise
@@ -4814,6 +4971,7 @@ class SessionIntelligenceEngine:
             message=message,
             learning=learning,
             warnings=warnings,
+            project_path_source=path_source(effective_project, usable_project_path(project_path)),
         )
 
     async def session_find_solution(

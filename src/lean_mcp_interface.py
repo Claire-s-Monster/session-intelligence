@@ -1140,6 +1140,12 @@ class LeanMCPInterface:
                         "enum": ["error_fix", "pattern", "preference", "workflow"],
                         "description": "New category",
                     },
+                    "summary": {
+                        **SUMMARY_SCHEMA,
+                        "description": (
+                            f"{SUMMARY_SCHEMA['description']} Omit to keep; empty string clears."
+                        ),
+                    },
                 },
                 "required": ["learning_id"],
             },
@@ -1164,6 +1170,12 @@ class LeanMCPInterface:
                         "type": "string",
                         "enum": ["low", "medium", "high", "critical"],
                         "description": "New impact level",
+                    },
+                    "summary": {
+                        **SUMMARY_SCHEMA,
+                        "description": (
+                            f"{SUMMARY_SCHEMA['description']} Omit to keep; empty string clears."
+                        ),
                     },
                 },
                 "required": ["decision_id"],

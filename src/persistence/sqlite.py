@@ -2036,6 +2036,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                     s.project_name,
                     s.project_path,
                     d.timestamp as started_at,
+                    d.summary as summary,
                     '[]' as tags
                 FROM decisions d
                 JOIN sessions s ON d.session_id = s.id
@@ -2066,6 +2067,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                     project_name,
                     project_path,
                     created_at as started_at,
+                    summary,
                     '[]' as tags
                 FROM project_learnings
                 WHERE (learning_content LIKE ? OR trigger_context LIKE ? OR category LIKE ?)

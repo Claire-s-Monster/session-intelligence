@@ -2790,6 +2790,7 @@ class SessionIntelligenceEngine:
                     "decision_id": d.decision_id,
                     "timestamp": d.timestamp.isoformat(),
                     "description": d.description,
+                    "summary": d.summary,
                     "impact_level": d.impact_level.value,
                     "supersedes": d.supersedes,
                 }
@@ -3878,6 +3879,11 @@ class SessionIntelligenceEngine:
                         project_path=result.get("project_path"),
                         started_at=started_at,
                         tags=tags,
+                        summary=(
+                            result.get("summary")
+                            if search_type in ("decisions", "learnings")
+                            else None
+                        ),
                     )
                 )
 
@@ -4349,13 +4355,23 @@ class SessionIntelligenceEngine:
         row_id: str,
         fields: dict[str, Any],
         updater_name: str,
+        summary: str | None = None,
     ) -> dict[str, Any]:
-        """Shared in-place edit flow for learnings and decisions (Issue #150)."""
+        """Shared in-place edit flow for learnings and decisions (Issue #150).
+
+        summary (Issue #86): None leaves it unchanged, a blank string clears it
+        to NULL, anything else is normalised (over the limit -> error, no write).
+        """
         if not row_id or not row_id.strip():
             return {"status": "error", "message": f"{id_key} is required"}
         if not self.database:
             return {"status": "error", "message": "No database configured"}
         fields = {k: v for k, v in fields.items() if v is not None}
+        if summary is not None:
+            try:
+                fields["summary"] = normalize_summary(summary)
+            except ValueError as e:
+                return {"status": "error", "message": str(e)}
         if not fields:
             return {"status": "error", "message": "Nothing to update: pass at least one field"}
         for name, value in fields.items():
@@ -4407,6 +4423,7 @@ class SessionIntelligenceEngine:
         learning_content: str | None = None,
         trigger_context: str | None = None,
         category: str | None = None,
+        summary: str | None = None,
     ) -> dict[str, Any]:
         """Edit a learning in place. Only content fields are editable."""
         if category is not None:
@@ -4429,6 +4446,7 @@ class SessionIntelligenceEngine:
                 "category": category,
             },
             "update_project_learning",
+            summary=summary,
         )
 
     async def session_update_decision(
@@ -4438,6 +4456,7 @@ class SessionIntelligenceEngine:
         rationale: str | None = None,
         category: str | None = None,
         impact_level: str | None = None,
+        summary: str | None = None,
     ) -> dict[str, Any]:
         """Edit a decision in place. `decision` maps to the stored description."""
         if impact_level is not None:
@@ -4459,9 +4478,17 @@ class SessionIntelligenceEngine:
                 "impact_level": impact_level,
             },
             "update_decision",
+            summary=summary,
         )
         if result.get("status") == "success":
-            self._sync_cached_decision(decision_id, decision, rationale, impact_level)
+            self._sync_cached_decision(
+                decision_id,
+                decision,
+                rationale,
+                impact_level,
+                summary_set=summary is not None,
+                summary=normalize_summary(summary) if summary is not None else None,
+            )
         return result
 
     def _sync_cached_decision(
@@ -4470,6 +4497,9 @@ class SessionIntelligenceEngine:
         description: str | None,
         rationale: str | None,
         impact_level: str | None,
+        *,
+        summary_set: bool = False,
+        summary: str | None = None,
     ) -> None:
         """Mirror an in-place decision edit onto the cached Decision.
 
@@ -4488,6 +4518,8 @@ class SessionIntelligenceEngine:
                     cached.rationale = rationale
                 if impact_level is not None:
                     cached.impact_level = ImpactLevel(impact_level)
+                if summary_set:
+                    cached.summary = summary
                 self.mark_dirty(session_id)
                 return
 

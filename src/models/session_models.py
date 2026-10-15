@@ -19,6 +19,26 @@ from pydantic import BaseModel, Field, computed_field
 # UNKNOWN_PROJECT_PATH` working for existing importers.
 UNKNOWN_PROJECT_PATH = "_unknown_"
 
+# Issue #86: max length of the optional one-line `summary` on decisions and
+# learnings. MUST match ENTRY_CLIP in the SessionStart hook.
+SUMMARY_MAX_CHARS = 100
+
+
+def normalize_summary(summary: str | None) -> str | None:
+    """Strip a summary; empty -> None; reject (never truncate) if too long."""
+    if summary is None:
+        return None
+    stripped = summary.strip()
+    if not stripped:
+        return None
+    if len(stripped) > SUMMARY_MAX_CHARS:
+        raise ValueError(
+            f"summary must be at most {SUMMARY_MAX_CHARS} characters "
+            f"(got {len(stripped)}); shorten it or omit it"
+        )
+    return stripped
+
+
 # Issue #108: internal hook-driven pseudo-agents that never report a real
 # `agent_type`. Canonical home (issue #208): shared by core.session_engine and
 # the persistence layer (persistence cannot import core), and re-exported from
@@ -366,6 +386,7 @@ class Decision(BaseModel):
     artifacts: list[str] = Field(default_factory=list)
     outcomes: list[DecisionOutcome] = Field(default_factory=list)
     supersedes: str | None = None
+    summary: str | None = None
 
 
 # ===== ANALYTICS AND INTELLIGENCE MODELS =====
@@ -725,6 +746,9 @@ class SearchResult(BaseModel):
     project_path: str | None = None
     started_at: str | None = None
     tags: list[str] = Field(default_factory=list)
+    # Issue #86: headline of a decision/learning row (decisions/learnings search
+    # types only; fulltext rows have their own session summary, not exposed here).
+    summary: str | None = None
 
 
 class SearchResults(BaseModel):
@@ -773,6 +797,7 @@ class ProjectLearning(BaseModel):
     promoted_to_universal: bool = False
     created_at: str
     supersedes: str | None = None
+    summary: str | None = None
 
 
 class LearningResult(BaseModel):

@@ -127,7 +127,7 @@ async def test_finalize_session(engine):
     assert finalize_result.status == "success"
     assert finalize_result.operation == "finalize"
     assert finalize_result.session_data is not None
-    assert finalize_result.session_data.status == SessionStatus.COMPLETED
+    assert finalize_result.session_data["status"] == SessionStatus.COMPLETED.value
 
 
 async def test_finalize_nonexistent_session_requires_scope(engine):

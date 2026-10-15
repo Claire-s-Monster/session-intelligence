@@ -530,7 +530,7 @@ class SessionResult(BaseModel):
     operation: str
     status: str
     message: str
-    session_data: Session | None = None
+    session_data: Session | dict[str, Any] | None = None
     recovery_options: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
 
@@ -547,6 +547,8 @@ class SessionResult(BaseModel):
         data it describes."""
         if self.session_data is None:
             return True
+        if isinstance(self.session_data, dict):
+            return self.session_data.get("project_path") != UNKNOWN_PROJECT_PATH
         return self.session_data.project_path != UNKNOWN_PROJECT_PATH
 
 

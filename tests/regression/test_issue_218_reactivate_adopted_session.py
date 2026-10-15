@@ -64,9 +64,9 @@ async def test_recreate_after_finalize_reactivates_and_persists(engine):
 
     assert result.status == "success"
     assert "reactivated" in result.message
-    assert result.session_data.status == SessionStatus.ACTIVE
-    assert result.session_data.completed is None
-    assert result.session_data.last_seen_at is not None
+    assert result.session_data["status"] == SessionStatus.ACTIVE.value
+    assert result.session_data["completed_at"] is None
+    assert result.session_data["last_seen_at"] is not None
 
     engine.session_cache.pop(SESSION_ID)
     row = await engine.database.get_session(SESSION_ID)
@@ -97,7 +97,7 @@ async def test_db_only_abandoned_row_is_reactivated(engine):
 
     assert result.status == "success"
     assert "reactivated" in result.message
-    assert result.session_data.status == SessionStatus.ACTIVE
+    assert result.session_data["status"] == SessionStatus.ACTIVE.value
 
 
 @pytest.mark.regression
@@ -108,7 +108,7 @@ async def test_adopting_active_session_is_not_reactivated(engine):
 
     assert result.status == "success"
     assert "reactivated" not in result.message
-    assert result.session_data.status == SessionStatus.ACTIVE
+    assert result.session_data["status"] == SessionStatus.ACTIVE.value
 
 
 @pytest.mark.regression
@@ -120,7 +120,7 @@ async def test_failed_session_is_not_reactivated(memory_engine):
 
     assert result.status == "success"
     assert "reactivated" not in result.message
-    assert result.session_data.status == SessionStatus.FAILED
+    assert result.session_data["status"] == SessionStatus.FAILED.value
 
 
 @pytest.mark.regression
@@ -137,8 +137,8 @@ async def test_memory_only_completed_session_is_reactivated(memory_engine):
     assert result.status == "success"
     assert "reactivated" in result.message
     assert memory_engine.session_cache[SESSION_ID] is session
-    assert result.session_data.status == SessionStatus.ACTIVE
-    assert result.session_data.completed is None
+    assert result.session_data["status"] == SessionStatus.ACTIVE.value
+    assert result.session_data["completed_at"] is None
 
 
 @pytest.mark.regression

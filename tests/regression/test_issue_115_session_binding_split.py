@@ -117,6 +117,7 @@ async def test_create_with_existing_session_id_adopts_and_preserves_data(engine)
         operation="create",
         project_name="demo-project",
         session_id=NATIVE_SESSION_ID,
+        include_details=True,
     )
 
     assert create_result.status == "success"
@@ -182,11 +183,11 @@ async def test_create_with_existing_session_id_db_only_adopts_and_hydrates(engin
     assert result.status == "success"
     assert result.session_id == NATIVE_SESSION_ID
     assert result.session_data is not None
-    assert len(result.session_data.agents_executed) == 1, (
+    assert result.session_data["counts"]["agents_executed"] == 1, (
         "DB-only adopt path did not hydrate agent executions from the "
         "database -- the #115 bug survives a process restart."
     )
-    assert result.session_data.agents_executed[0].agent_name == "focused-code-modifier"
+    assert result.session_data["recent_agents"][0]["agent_name"] == "focused-code-modifier"
 
 
 @pytest.mark.regression

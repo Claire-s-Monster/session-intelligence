@@ -592,7 +592,7 @@ class SessionIntelligenceEngine:
             # session_summaries.session_id FK-references, so a later
             # save_session_summary would fail FOREIGN KEY constraint failed.
             if result.status == "success" and self.database:
-                if result.session_data is None:
+                if not isinstance(result.session_data, Session):
                     debug_logger.error(
                         f"Session {result.session_id} reported success but has no "
                         "session_data; skipping DB persistence"
@@ -654,7 +654,7 @@ class SessionIntelligenceEngine:
             # session_summaries.session_id FK-references, so a later
             # save_session_summary would fail FOREIGN KEY constraint failed.
             if result.status == "success" and self.database:
-                if result.session_data is None:
+                if not isinstance(result.session_data, Session):
                     debug_logger.error(
                         f"Session {result.session_id} reported success but has no "
                         "session_data; skipping DB persistence"
@@ -831,9 +831,14 @@ class SessionIntelligenceEngine:
         session_id: str | None = None,
         session_name: str | None = None,
         allow_unbound: bool = False,
+        include_details: bool = False,
     ) -> SessionResult:
         """
         Comprehensive session lifecycle management with intelligent tracking.
+
+        create (adopt path), finalize and validate return a compact summary in
+        session_data by default; pass include_details=True for the full
+        Session, or page through steps with session_get_steps.
 
         Consolidates: claudecode_create_session_metadata,
             claudecode_get_or_create_session_id,
@@ -863,6 +868,7 @@ class SessionIntelligenceEngine:
                 session_id=session_id,
                 session_name=session_name,
                 allow_unbound=allow_unbound,
+                include_details=include_details,
             )
         except SessionContextRequiredError:
             raise
@@ -885,6 +891,7 @@ class SessionIntelligenceEngine:
         session_id: str | None = None,
         session_name: str | None = None,
         allow_unbound: bool = False,
+        include_details: bool = False,
     ) -> SessionResult:
         """Session lifecycle management.
 
@@ -958,7 +965,9 @@ class SessionIntelligenceEngine:
                         operation="create",
                         status="success",
                         message=message,
-                        session_data=existing,
+                        session_data=(
+                            existing if include_details else self._compact_session_data(existing)
+                        ),
                         next_steps=["Initialize agent tracking", "Set up workflow state"],
                     )
 
@@ -979,7 +988,7 @@ class SessionIntelligenceEngine:
             )
             # Persist session to DB so FK references work
             if result.status == "success" and self.database:
-                if result.session_data is None:
+                if not isinstance(result.session_data, Session):
                     debug_logger.error(
                         f"Session {result.session_id} reported success but has no "
                         "session_data; skipping DB persistence"
@@ -1008,6 +1017,7 @@ class SessionIntelligenceEngine:
                 project_name=project_name,
                 project_path=project_path,
                 allow_unbound=allow_unbound,
+                include_details=include_details,
             )
         elif operation == "validate":
             return await self._validate_session(
@@ -1016,6 +1026,7 @@ class SessionIntelligenceEngine:
                 project_name=project_name,
                 project_path=project_path,
                 allow_unbound=allow_unbound,
+                include_details=include_details,
             )
         else:
             return SessionResult(
@@ -1213,6 +1224,7 @@ class SessionIntelligenceEngine:
         project_name: str | None = None,
         project_path: str | None = None,
         allow_unbound: bool = False,
+        include_details: bool = False,
     ) -> SessionResult:
         """Finalize current session with comprehensive summary.
 
@@ -1377,7 +1389,7 @@ class SessionIntelligenceEngine:
             operation="finalize",
             status="success",
             message=f"Session {session_id} finalized successfully",
-            session_data=session,
+            session_data=session if include_details else self._compact_session_data(session),
         )
 
     async def _validate_session(
@@ -1387,6 +1399,7 @@ class SessionIntelligenceEngine:
         project_name: str | None = None,
         project_path: str | None = None,
         allow_unbound: bool = False,
+        include_details: bool = False,
     ) -> SessionResult:
         """Validate session continuity and health.
 
@@ -1487,8 +1500,88 @@ class SessionIntelligenceEngine:
             operation="validate",
             status=status,
             message=message,
-            session_data=session,
+            session_data=session if include_details else self._compact_session_data(session),
         )
+
+    @staticmethod
+    def _compact_session_data(session: Session) -> dict[str, Any]:
+        """Compact lifecycle summary of a Session: ids, status, counts and the
+        last 10 agents -- no execution step, command or error bodies."""
+        agents = session.agents_executed
+        return {
+            "id": session.id,
+            "project_name": session.project_name,
+            "project_path": session.project_path,
+            "session_name": session.session_name,
+            "status": session.status.value,
+            "mode": session.mode,
+            "started_at": session.started.isoformat(),
+            "completed_at": session.completed.isoformat() if session.completed else None,
+            "last_seen_at": session.last_seen_at.isoformat() if session.last_seen_at else None,
+            "counts": {
+                "agents_executed": len(agents),
+                "total_steps": sum(len(a.execution_steps) for a in agents),
+                "errors": sum(len(a.errors) for a in agents),
+                "decisions": len(session.decisions),
+            },
+            "recent_agents": [
+                {
+                    "agent_name": a.agent_name,
+                    "status": a.status.value,
+                    "step_count": len(a.execution_steps),
+                    "error_count": len(a.errors),
+                    "started_at": a.started.isoformat(),
+                }
+                for a in agents[-10:]
+            ],
+            "details_omitted": True,
+        }
+
+    async def session_get_steps(
+        self,
+        session_id: str,
+        agent_name: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Paginated, flattened execution steps of one session.
+
+        limit is clamped to [1, 200], offset to >= 0. Long string fields are
+        truncated to 500 chars. Raises ValueError if the session is not found.
+        """
+        session = await self._hydrate_session(session_id)
+        if session is None:
+            raise ValueError(f"Session {session_id} not found")
+
+        limit = max(1, min(int(limit), 200))
+        offset = max(0, int(offset))
+
+        steps: list[dict[str, Any]] = []
+        for agent_exec in session.agents_executed:
+            if agent_name and agent_exec.agent_name != agent_name:
+                continue
+            for step in agent_exec.execution_steps:
+                row = step.model_dump(
+                    mode="json",
+                    exclude={"commands_executed", "patterns_detected", "optimizations_available"},
+                )
+                row["agent_name"] = agent_exec.agent_name
+                row["agent_execution_id"] = agent_exec.execution_id
+                row["commands_count"] = len(step.commands_executed)
+                for key, value in row.items():
+                    if isinstance(value, str) and len(value) > 500:
+                        row[key] = value[:500]
+                steps.append(row)
+
+        page = steps[offset : offset + limit]
+        return {
+            "session_id": session_id,
+            "total": len(steps),
+            "offset": offset,
+            "limit": limit,
+            "has_more": offset + len(page) < len(steps),
+            "steps": page,
+        }
 
     # ===== EXECUTION TRACKING =====
 

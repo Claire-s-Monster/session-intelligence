@@ -1838,7 +1838,7 @@ class SessionIntelligenceEngine:
 
         execution_step = ExecutionStep(
             step_id=step_id,
-            step_number=len(session.agents_executed) + 1,
+            step_number=0,  # assigned below, once the owning execution is known
             agent=agent_name,
             operation=operation,
             description=description,
@@ -1941,7 +1941,12 @@ class SessionIntelligenceEngine:
             ):
                 agent_execution.agent_type = resolved_agent_type
 
-        # Add step to agent execution
+        # Add step to agent execution. step_number is per-execution: one past
+        # the highest persisted number (not len(agents_executed), which repeated
+        # for every step of a long-lived execution).
+        execution_step.step_number = (
+            max((s.step_number for s in agent_execution.execution_steps), default=0) + 1
+        )
         agent_execution.execution_steps.append(execution_step)
         debug_logger.info("Added execution_step to agent_execution")
         debug_logger.info(f"Agent execution steps count: {len(agent_execution.execution_steps)}")

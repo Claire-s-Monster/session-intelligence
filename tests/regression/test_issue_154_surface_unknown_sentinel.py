@@ -124,7 +124,9 @@ class TestSessionResultSurfacesSentinel:
 
         assert result.session_data is not None
         assert result.session_data.project_path == "/abs/real/proj-154"
-        assert result.project_path_derived is True
+        # Issue #241: a caller-supplied path is "caller", not "derived".
+        assert result.project_path_source == "caller"
+        assert result.project_path_derived is False
 
 
 # ---------------------------------------------------------------------------

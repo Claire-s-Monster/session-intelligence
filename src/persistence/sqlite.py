@@ -603,6 +603,35 @@ class SQLiteBackend(BaseDatabaseBackend):
             return self._normalize_session_data(dict(row))
         return None
 
+    async def heal_session_project(
+        self,
+        session_id: str,
+        project_path: str,
+        project_name: str | None,
+        server_cwd: str | None = None,
+    ) -> bool:
+        """Bind a healable session to a real path (issue #241)."""
+        conn = self._ensure_connected()
+
+        # A NULL server_cwd makes the cwd clause NULL (false) -- sentinel only.
+        cwd_clause = "(project_path = ? AND metadata LIKE '%\"hook-bound\"%')"
+        cursor = await conn.execute(
+            f"""
+            UPDATE sessions SET
+                project_name = CASE
+                    WHEN ? IS NOT NULL
+                         AND (project_name IN ('_unbound_', 'unknown') OR {cwd_clause})
+                    THEN ? ELSE project_name END,
+                project_path = ?
+            WHERE id = ?
+              AND (project_path IS NULL OR project_path IN ('', '_unknown_')
+                   OR {cwd_clause})
+            """,  # noqa: S608 - cwd_clause is a constant
+            (project_name, server_cwd, project_name, project_path, session_id, server_cwd),
+        )
+        await conn.commit()
+        return cursor.rowcount > 0
+
     async def query_sessions(
         self,
         limit: int = 50,

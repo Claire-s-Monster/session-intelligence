@@ -5,8 +5,10 @@ Comprehensive data models for session lifecycle management, execution tracking,
 decision logging, analytics, and intelligence operations based on the PRD requirements.
 """
 
+import json
 from datetime import datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field, computed_field
@@ -18,6 +20,42 @@ from pydantic import BaseModel, Field, computed_field
 # from this module, keeping `from core.session_engine import
 # UNKNOWN_PROJECT_PATH` working for existing importers.
 UNKNOWN_PROJECT_PATH = "_unknown_"
+
+# Issue #241: tag the hook stamps on sessions it auto-creates. Rows created by
+# the hook before the fix carry the SERVER's cwd as project_path.
+HOOK_BOUND_TAG = "hook-bound"
+
+
+def server_cwd() -> str:
+    """The server process's own cwd -- never a caller fact."""
+    return str(Path.cwd().resolve())
+
+
+def session_tags(metadata: Any) -> list[str]:
+    """Tags from a session ``metadata`` dict, JSON string or SessionMetadata."""
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except ValueError:
+            return []
+    tags = metadata.get("tags") if isinstance(metadata, dict) else getattr(metadata, "tags", None)
+    return list(tags) if isinstance(tags, list) else []
+
+
+def is_server_cwd_stamped(project_path: str | None, metadata: Any) -> bool:
+    """True for a hook-bound session whose path is the server's own cwd (#241)."""
+    if not project_path or project_path.rstrip("/") != server_cwd():
+        return False
+    return HOOK_BOUND_TAG in session_tags(metadata)
+
+
+def is_healable_path(project_path: str | None, metadata: Any) -> bool:
+    """A session path that may be replaced by a caller's real path (#241):
+    NULL/''/'_unknown_', or a hook-bound row stamped with the server cwd."""
+    if not project_path or project_path == UNKNOWN_PROJECT_PATH:
+        return True
+    return is_server_cwd_stamped(project_path, metadata)
+
 
 # Issue #86: max length of the optional one-line `summary` on decisions and
 # learnings. MUST match ENTRY_CLIP in the SessionStart hook.
@@ -533,18 +571,19 @@ class SessionResult(BaseModel):
     session_data: Session | dict[str, Any] | None = None
     recovery_options: list[str] = Field(default_factory=list)
     next_steps: list[str] = Field(default_factory=list)
+    # Issue #241: "caller" | "derived" | "unknown" -- who supplied project_path.
+    project_path_source: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def project_path_derived(self) -> bool:
-        """False iff session_data.project_path is the UNKNOWN_PROJECT_PATH
-        sentinel (issue #154): such a row is not project-recallable (#120
-        matches project_path exactly). True means "not known to be a
-        sentinel", not "definitely verified" -- it is also True when
-        session_data is absent (e.g. a non-create operation), since there is
-        no stored path to be a sentinel. Computed from the nested row rather
-        than hand-set so a write path can never silently disagree with the
-        data it describes."""
+        """True iff the server inferred project_path (project_path_source ==
+        "derived"). When project_path_source is unset (legacy callers) falls
+        back to the issue #154 meaning: False iff session_data.project_path is
+        the UNKNOWN_PROJECT_PATH sentinel (such a row is not project-recallable;
+        #120 matches project_path exactly), True when session_data is absent."""
+        if self.project_path_source is not None:
+            return self.project_path_source == "derived"
         if self.session_data is None:
             return True
         if isinstance(self.session_data, dict):
@@ -718,17 +757,20 @@ class NotebookResult(BaseModel):
     file_status: str | None = None
     search_indexed: bool = False
     message: str = ""
+    # Issue #241: non-blocking notes (e.g. project_path_mismatch).
+    warnings: list[dict[str, Any]] = Field(default_factory=list)
+    # Issue #241: "caller" | "derived" | "unknown" -- who supplied project_path.
+    project_path_source: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def project_path_derived(self) -> bool:
-        """False iff notebook.project_path is the UNKNOWN_PROJECT_PATH
-        sentinel (issue #154): such a row is not project-recallable (#120
-        matches project_path exactly). True means "not known to be a
-        sentinel", not "definitely verified" -- it is also True when
-        notebook is absent, since there is no stored path to be a sentinel.
-        Computed from the nested row rather than hand-set so a write path
-        can never silently disagree with the data it describes."""
+        """True iff the server inferred project_path (project_path_source ==
+        "derived"). When project_path_source is unset (legacy callers) falls
+        back to the issue #154 meaning: False iff notebook.project_path is the
+        UNKNOWN_PROJECT_PATH sentinel, True when notebook is absent."""
+        if self.project_path_source is not None:
+            return self.project_path_source == "derived"
         if self.notebook is None:
             return True
         return self.notebook.project_path != UNKNOWN_PROJECT_PATH
@@ -811,17 +853,18 @@ class LearningResult(BaseModel):
     learning: ProjectLearning | None = None
     # Issue #89: non-blocking near-duplicate warnings.
     warnings: list[dict[str, Any]] = Field(default_factory=list)
+    # Issue #241: "caller" | "derived" | "unknown" -- who supplied project_path.
+    project_path_source: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def project_path_derived(self) -> bool:
-        """False iff learning.project_path is the UNKNOWN_PROJECT_PATH
-        sentinel (issue #154): such a row is not project-recallable (#120
-        matches project_path exactly). True means "not known to be a
-        sentinel", not "definitely verified" -- it is also True when
-        learning is absent, since there is no stored path to be a sentinel.
-        Computed from the nested row rather than hand-set so a write path
-        can never silently disagree with the data it describes."""
+        """True iff the server inferred project_path (project_path_source ==
+        "derived"). When project_path_source is unset (legacy callers) falls
+        back to the issue #154 meaning: False iff learning.project_path is the
+        UNKNOWN_PROJECT_PATH sentinel, True when learning is absent."""
+        if self.project_path_source is not None:
+            return self.project_path_source == "derived"
         if self.learning is None:
             return True
         return self.learning.project_path != UNKNOWN_PROJECT_PATH

@@ -28,7 +28,7 @@ try:
 except ImportError:
     asyncpg = None  # type: ignore
 
-from models.session_models import INTERNAL_AGENT_NAMES
+from models.session_models import INTERNAL_AGENT_NAMES, server_cwd
 
 from .base import (
     DEFAULT_POSTGRES_DSN,
@@ -651,13 +651,19 @@ class PostgreSQLBackend(BaseDatabaseBackend):
              session_name, mode, status, metadata, performance_metrics, health_status)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             ON CONFLICT (id) DO UPDATE SET
-                -- Issue #241: a sentinel/empty path may be healed to a real
-                -- one; a real stored path is never overwritten. The name
-                -- follows only while the row is still unbound.
+                -- Issue #241: a healable path (sentinel/empty, or a hook-bound
+                -- row stamped with the server cwd $13) may be replaced by a
+                -- real one; any other stored path is never overwritten. The
+                -- name follows while the row is unbound or cwd-stamped.
                 project_name = CASE
-                    WHEN sessions.project_name IN ('_unbound_', 'unknown')
-                         AND (sessions.project_path IS NULL
-                              OR sessions.project_path IN ('_unknown_', ''))
+                    WHEN (
+                            (sessions.project_name IN ('_unbound_', 'unknown')
+                             AND (sessions.project_path IS NULL
+                                  OR sessions.project_path IN ('_unknown_', '')))
+                            OR (sessions.project_path = $13::text
+                                AND sessions.metadata::text LIKE '%"hook-bound"%'
+                                AND EXCLUDED.project_path <> $13::text)
+                         )
                          AND (EXCLUDED.project_path IS NOT NULL
                               AND EXCLUDED.project_path NOT IN ('_unknown_', ''))
                     THEN EXCLUDED.project_name
@@ -665,7 +671,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 END,
                 project_path = CASE
                     WHEN (sessions.project_path IS NULL
-                          OR sessions.project_path IN ('_unknown_', ''))
+                          OR sessions.project_path IN ('_unknown_', '')
+                          OR (sessions.project_path = $13::text
+                              AND sessions.metadata::text LIKE '%"hook-bound"%'
+                              AND EXCLUDED.project_path <> $13::text))
                          AND (EXCLUDED.project_path IS NOT NULL
                               AND EXCLUDED.project_path NOT IN ('_unknown_', ''))
                     THEN EXCLUDED.project_path
@@ -691,6 +700,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             json.dumps(session_data.get("metadata", {})),
             json.dumps(session_data.get("performance_metrics", {})),
             json.dumps(session_data.get("health_status", {})),
+            server_cwd(),
         )
 
         # Notify listeners of session change
@@ -712,9 +722,13 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     @db_retry
     async def heal_session_project(
-        self, session_id: str, project_path: str, project_name: str | None
+        self,
+        session_id: str,
+        project_path: str,
+        project_name: str | None,
+        server_cwd: str | None = None,
     ) -> bool:
-        """Bind a sentinel-path session to a real path (issue #241)."""
+        """Bind a healable session to a real path (issue #241)."""
         pool = self._ensure_connected()
 
         async with pool.acquire() as conn:
@@ -723,15 +737,20 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 UPDATE sessions SET
                     project_name = CASE
                         WHEN $3::text IS NOT NULL
-                             AND project_name IN ('_unbound_', 'unknown')
+                             AND (project_name IN ('_unbound_', 'unknown')
+                                  OR (project_path = $4::text
+                                      AND metadata::text LIKE '%"hook-bound"%'))
                         THEN $3 ELSE project_name END,
                     project_path = $2
                 WHERE id = $1
-                  AND (project_path IS NULL OR project_path IN ('', '_unknown_'))
+                  AND (project_path IS NULL OR project_path IN ('', '_unknown_')
+                       OR (project_path = $4::text
+                           AND metadata::text LIKE '%"hook-bound"%'))
                 """,
                 session_id,
                 project_path,
                 project_name,
+                server_cwd,
             )
         return str(status).endswith(" 1")
 

@@ -83,7 +83,10 @@ from models.session_models import (
     SolutionResult,
     SolutionSearchResult,
     WorkflowResult,
+    is_healable_path,
+    is_server_cwd_stamped,
     normalize_summary,
+    server_cwd,
 )
 
 # Debug logging is opt-in via SESSION_INTELLIGENCE_DEBUG (issue #68).
@@ -465,19 +468,26 @@ class SessionIntelligenceEngine:
             del self._dirty_sessions[session_id]
 
     @staticmethod
-    def _heal_session_path(session: Session, path: str | None) -> bool:
-        """Bind a sentinel-path session to ``path`` (issue #241). In-memory only.
+    def _heal_session_path(
+        session: Session, path: str | None, caller_name: str | None = None
+    ) -> bool:
+        """Bind a healable session to ``path`` (issue #241). In-memory only.
 
-        Only a None/UNKNOWN_PROJECT_PATH row is touched; the name is replaced
-        only when it is still UNBOUND and the derived name is not.
+        Healable: sentinel path, or a hook-bound row stamped with the server
+        cwd. The name is replaced when it is still UNBOUND or the row was
+        cwd-stamped: by ``caller_name`` if given, else the name derived from
+        ``path`` (when that is not UNBOUND).
         """
-        if not path or session.project_path not in (None, UNKNOWN_PROJECT_PATH):
+        if not path or not is_healable_path(session.project_path, session.metadata):
             return False
+        if path == (session.project_path or "").rstrip("/"):
+            return False
+        cwd_stamped = is_server_cwd_stamped(session.project_path, session.metadata)
         session.project_path = path
-        if session.project_name in (UNBOUND, "unknown"):
-            derived_name = derive_project_name(path)
-            if derived_name != UNBOUND:
-                session.project_name = derived_name
+        if cwd_stamped or session.project_name in (UNBOUND, "unknown"):
+            new_name = caller_name or derive_project_name(path)
+            if new_name != UNBOUND:
+                session.project_name = new_name
         return True
 
     async def _derive_project_path(
@@ -533,24 +543,32 @@ class SessionIntelligenceEngine:
         ]
 
     async def _heal_resolved_session(
-        self, session_id: str, path: str, row_name: str | None
+        self,
+        session_id: str,
+        path: str,
+        row_name: str | None,
+        caller_name: str | None = None,
+        cwd_stamped: bool = False,
     ) -> tuple[str | None, str]:
-        """Heal a sentinel-path session row (and cache entry) to ``path`` (#241).
+        """Heal a healable session row (and cache entry) to ``path`` (#241).
 
         Returns the (project_name, project_path) now in force. The name changes
-        only while it is still unbound and a real name can be derived.
+        only while it is unbound (or the row was server-cwd-stamped): to
+        ``caller_name`` if given, else the name derived from ``path``.
         """
-        derived_name = derive_project_name(path)
-        new_name = (
-            derived_name if row_name in (UNBOUND, "unknown") and derived_name != UNBOUND else None
-        )
+        new_name = None
+        if cwd_stamped or row_name in (UNBOUND, "unknown"):
+            candidate = caller_name or derive_project_name(path)
+            new_name = candidate if candidate != UNBOUND else None
         if self.database:
             try:
-                await self.database.heal_session_project(session_id, path, new_name)
+                await self.database.heal_session_project(
+                    session_id, path, new_name, server_cwd=server_cwd()
+                )
             except Exception as e:
                 debug_logger.error(f"Error healing project_path for {session_id}: {e}")
         cached = self.session_cache.get(session_id)
-        if cached is not None and self._heal_session_path(cached, path):
+        if cached is not None and self._heal_session_path(cached, path, caller_name):
             self.mark_dirty(session_id)
         return (new_name or row_name), path
 
@@ -560,27 +578,45 @@ class SessionIntelligenceEngine:
         safe_path: str | None,
         row_name: str | None,
         row_path: str | None,
+        row_metadata: Any = None,
+        caller_name: str | None = None,
     ) -> tuple[str | None, str | None, list[dict[str, Any]]]:
-        """Reconcile an explicit session's stored path with the caller's (#241).
+        """Reconcile an explicit session's stored binding with the caller's (#241).
 
-        A sentinel row is healed to ``safe_path``; a different real path is
-        kept and reported as a ``project_path_mismatch`` warning.
+        A healable row (see ``is_healable_path``) is healed to ``safe_path``; a
+        different real path is kept and reported as ``project_path_mismatch``.
+        A ``caller_name`` that differs from the resulting row name is reported
+        as ``project_name_mismatch`` (decisions inherit the row's project).
         """
-        if not safe_path:
-            return row_name, row_path, []
-        if not row_path or row_path == UNKNOWN_PROJECT_PATH:
-            name, path = await self._heal_resolved_session(session_id, safe_path, row_name)
-            return name, path, []
-        if row_path.rstrip("/") == safe_path:
-            return row_name, row_path, []
-        warning = {
-            "kind": "project_path_mismatch",
-            "message": (
-                f"session {session_id} is bound to {row_path!r}; caller passed "
-                f"project_path={safe_path!r}. The stored path was kept."
-            ),
-        }
-        return row_name, row_path, [warning]
+        warnings: list[dict[str, Any]] = []
+        if safe_path:
+            if is_healable_path(row_path, row_metadata):
+                cwd_stamped = is_server_cwd_stamped(row_path, row_metadata)
+                row_name, row_path = await self._heal_resolved_session(
+                    session_id, safe_path, row_name, caller_name, cwd_stamped
+                )
+            elif (row_path or "").rstrip("/") != safe_path:
+                warnings.append(
+                    {
+                        "kind": "project_path_mismatch",
+                        "message": (
+                            f"session {session_id} is bound to {row_path!r}; caller passed "
+                            f"project_path={safe_path!r}. The stored path was kept."
+                        ),
+                    }
+                )
+        if caller_name and row_name and caller_name != row_name:
+            warnings.append(
+                {
+                    "kind": "project_name_mismatch",
+                    "message": (
+                        f"session {session_id} is bound to project_name={row_name!r}; caller "
+                        f"passed project_name={caller_name!r}. Records are filed under "
+                        f"{row_name!r}."
+                    ),
+                }
+            )
+        return row_name, row_path, warnings
 
     async def _resolve_session_context(
         self,
@@ -665,6 +701,8 @@ class SessionIntelligenceEngine:
                 safe_project_path,
                 existing.get("project_name"),
                 existing.get("project_path"),
+                existing.get("metadata"),
+                project_name,
             )
             return ResolvedSessionContext(
                 session_id=session_id,
@@ -888,7 +926,7 @@ class SessionIntelligenceEngine:
         result = self._create_session(
             mode="auto",
             project_name="_unbound_",
-            metadata={"project_path": str(Path.cwd().resolve())},
+            metadata={},  # issue #241: sentinel path, never the server cwd
             session_name=None,
         )
 
@@ -1085,7 +1123,9 @@ class SessionIntelligenceEngine:
                     # Issue #241: adopting a hook-created (sentinel-path) session
                     # with a real path binds it; a real stored path is kept.
                     if self._heal_session_path(
-                        existing, usable_project_path(create_metadata.get("project_path"))
+                        existing,
+                        usable_project_path(create_metadata.get("project_path")),
+                        project_name,
                     ):
                         changed = True
                     if changed:
@@ -3481,11 +3521,17 @@ class SessionIntelligenceEngine:
                     status="error",
                     message="No session found",
                 )
-            if usable_path:
+            if usable_path or project_name:
                 # Issue #241: honour the caller's path for an explicit/adopted
-                # session too (heal a sentinel row, warn on a different path).
+                # session too (heal a healable row, warn on a different path
+                # or project_name).
                 new_name, new_path, path_warnings = await self._reconcile_caller_path(
-                    session_id, usable_path, session.project_name, session.project_path
+                    session_id,
+                    usable_path,
+                    session.project_name,
+                    session.project_path,
+                    session.metadata,
+                    project_name,
                 )
                 nb_warnings += [w for w in path_warnings if w not in nb_warnings]
                 if new_path and new_path != session.project_path:

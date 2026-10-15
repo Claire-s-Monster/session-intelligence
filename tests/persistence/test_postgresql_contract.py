@@ -35,6 +35,30 @@ class TestPostgreSQLContract(PersistenceContractTests):
         results = await backend.recall_project("recall-test", query="unique recall keyword")
         assert results is not None
 
+    async def test_save_session_heals_hook_bound_server_cwd_row(self, backend):
+        """Issue #241: the upsert replaces a hook-bound row stamped with the server cwd."""
+        from models.session_models import server_cwd
+        from tests.persistence.contract_tests import _session
+
+        hooked = {"tags": ["hook-bound", "claude-native-session"]}
+        stamped = _session(
+            project_path=server_cwd(), project_name="session-intelligence", metadata=hooked
+        )
+        await backend.save_session(stamped)
+
+        healed = {**stamped, "project_path": "/tmp/real-241", "project_name": "real-241"}
+        await backend.save_session(healed)
+        row = await backend.get_session(stamped["id"])
+        assert (row["project_path"], row["project_name"]) == ("/tmp/real-241", "real-241")
+
+        genuine = _session(
+            project_path=server_cwd(), project_name="session-intelligence", metadata={"tags": []}
+        )
+        await backend.save_session(genuine)
+        await backend.save_session({**genuine, "project_path": "/tmp/x", "project_name": "x"})
+        row = await backend.get_session(genuine["id"])
+        assert row["project_path"] == server_cwd()
+
     async def test_search_sessions_with_search_type(self, backend):
         from tests.persistence.contract_tests import _session
 

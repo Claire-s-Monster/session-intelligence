@@ -173,6 +173,146 @@ class TestExplicitSessionIdHealing:
         assert row["project_path"] == REAL_PATH
 
 
+OTHER_NAME = "ocaml-feedstock"
+OTHER_PATH = "/home/user/work/ocaml-feedstock"
+
+
+async def _seed_server_cwd_row(engine, *, hook_bound: bool):
+    """A row stamped with the server's cwd, as created before the #241 fix."""
+    await engine.database.save_session(
+        {
+            "id": NATIVE_ID,
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "project_path": SERVER_CWD,
+            "project_name": "session-intelligence",
+            "status": "active",
+            "metadata": {"tags": ["hook-bound", "claude-native-session"] if hook_bound else []},
+        }
+    )
+
+
+@pytest.mark.regression
+class TestServerCwdStampedRows:
+    async def test_hook_bound_server_cwd_row_is_healed_by_decision(self, engine):
+        await _seed_server_cwd_row(engine, hook_bound=True)
+
+        result = await engine.session_log_decision(
+            "d", session_id=NATIVE_ID, project_name=OTHER_NAME, project_path=OTHER_PATH
+        )
+
+        assert result.warnings == []
+        row = await engine.database.get_session(NATIVE_ID)
+        assert row["project_path"] == OTHER_PATH
+        assert row["project_name"] == OTHER_NAME
+
+    async def test_heal_without_caller_name_derives_name_from_path(self, engine):
+        await _seed_server_cwd_row(engine, hook_bound=True)
+
+        resolved = await engine._resolve_session_context(
+            session_id=NATIVE_ID, project_path=OTHER_PATH
+        )
+
+        assert resolved.project_path == OTHER_PATH
+        assert resolved.project_name == OTHER_NAME
+        assert resolved.warnings == []
+
+    async def test_non_hook_bound_server_cwd_row_is_not_healed(self, engine):
+        await _seed_server_cwd_row(engine, hook_bound=False)
+
+        result = await engine.session_log_decision(
+            "d", session_id=NATIVE_ID, project_name=OTHER_NAME, project_path=OTHER_PATH
+        )
+
+        kinds = [w["kind"] for w in result.warnings]
+        assert "project_path_mismatch" in kinds
+        assert "project_name_mismatch" in kinds
+        row = await engine.database.get_session(NATIVE_ID)
+        assert row["project_path"] == SERVER_CWD
+        assert row["project_name"] == "session-intelligence"
+
+    async def test_name_mismatch_reaches_learning_and_notebook(self, engine):
+        await _seed_server_cwd_row(engine, hook_bound=False)
+        kwargs = {"session_id": NATIVE_ID, "project_name": OTHER_NAME, "project_path": OTHER_PATH}
+
+        learning = await engine.session_log_learning(
+            category="pattern", learning_content="l", **kwargs
+        )
+        notebook = await engine.session_create_notebook_async(
+            save_to_file=False, save_to_database=False, **kwargs
+        )
+
+        for result in (learning, notebook):
+            assert "project_name_mismatch" in [w["kind"] for w in result.warnings]
+
+    async def test_notebook_heals_hook_bound_server_cwd_row(self, engine):
+        await _seed_server_cwd_row(engine, hook_bound=True)
+
+        notebook = await engine.session_create_notebook_async(
+            session_id=NATIVE_ID,
+            project_name=OTHER_NAME,
+            project_path=OTHER_PATH,
+            save_to_file=False,
+            save_to_database=False,
+        )
+
+        assert notebook.notebook.project_path == OTHER_PATH
+        assert "project_name_mismatch" not in [w["kind"] for w in notebook.warnings]
+        row = await engine.database.get_session(NATIVE_ID)
+        assert row["project_path"] == OTHER_PATH
+        assert row["project_name"] == OTHER_NAME
+
+    async def test_adopt_heals_hook_bound_server_cwd_row(self, engine):
+        await _seed_server_cwd_row(engine, hook_bound=True)
+
+        await engine.session_manage_lifecycle(
+            "create", session_id=NATIVE_ID, project_path=OTHER_PATH
+        )
+
+        row = await engine.database.get_session(NATIVE_ID)
+        assert row["project_path"] == OTHER_PATH
+        assert row["project_name"] == OTHER_NAME
+
+    async def test_hook_event_heals_server_cwd_row(self, engine):
+        engine._create_session(
+            mode="auto",
+            project_name="session-intelligence",
+            metadata={"project_path": SERVER_CWD, "tags": ["hook-bound"]},
+            session_id=NATIVE_ID,
+        )
+
+        session = await _hook_session(engine, working_directory=OTHER_PATH)
+
+        assert session.project_path == OTHER_PATH
+        assert session.project_name == OTHER_NAME
+
+    async def test_hook_event_never_heals_non_hook_bound_server_cwd_row(self, engine):
+        engine._create_session(
+            mode="auto",
+            project_name="session-intelligence",
+            metadata={"project_path": SERVER_CWD},
+            session_id=NATIVE_ID,
+        )
+
+        session = await _hook_session(engine, working_directory=OTHER_PATH)
+
+        assert session.project_path == SERVER_CWD
+
+    async def test_sqlite_heal_requires_hook_bound_tag_and_cwd(self, engine):
+        db = engine.database
+        await _seed_server_cwd_row(engine, hook_bound=False)
+        assert not await db.heal_session_project(
+            NATIVE_ID, OTHER_PATH, OTHER_NAME, server_cwd=SERVER_CWD
+        )
+
+        await _seed_server_cwd_row(engine, hook_bound=True)
+        assert not await db.heal_session_project(NATIVE_ID, OTHER_PATH, OTHER_NAME)
+        assert await db.heal_session_project(
+            NATIVE_ID, OTHER_PATH, OTHER_NAME, server_cwd=SERVER_CWD
+        )
+        row = await db.get_session(NATIVE_ID)
+        assert (row["project_path"], row["project_name"]) == (OTHER_PATH, OTHER_NAME)
+
+
 @pytest.mark.regression
 class TestProjectPathSource:
     async def test_caller_path(self, engine):

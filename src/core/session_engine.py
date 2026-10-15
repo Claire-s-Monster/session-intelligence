@@ -1797,7 +1797,10 @@ class SessionIntelligenceEngine:
         session.last_seen_at = datetime.now(UTC)
 
         # Create execution step
-        step_id = f"{agent_name}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        # UTC (matches started_at) plus a uuid suffix: parallel tool calls land
+        # within the same second and must not share an id.
+        stamp = datetime.now(UTC).strftime("%Y%m%d%H%M%S")
+        step_id = f"{agent_name}-{stamp}-{uuid.uuid4().hex[:8]}"
         debug_logger.info(f"Created step_id: {step_id}")
 
         # The SubagentStop hook reports phase="agent_stop" with a "success"

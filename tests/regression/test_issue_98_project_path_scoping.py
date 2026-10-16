@@ -313,10 +313,13 @@ class TestPostgresSql:
         assert result["project_path"] == "/wt/a"
         assert len(conn.calls) == 4
         sessions, decisions, learnings, notebooks = conn.calls
-        for query, args in (sessions, decisions, notebooks):
-            assert "project_path = $4" in query
+        assert "project_path = $4" in sessions[0]
+        # Decisions/notebooks compare the effective scope (override, else session).
+        assert "COALESCE(d.project_path, s.project_path) = $4" in decisions[0]
+        assert "COALESCE(ss.project_path, s.project_path) = $4" in notebooks[0]
+        for _query, args in (sessions, decisions, notebooks):
             assert args[3] == "/wt/a"
-        assert "s.project_path AS project_path" in decisions[0]
+        assert "COALESCE(d.project_path, s.project_path) AS project_path" in decisions[0]
         assert "project_path = $3" in learnings[0]
         assert learnings[1] == (PROJECT, 10, "/wt/a")
 

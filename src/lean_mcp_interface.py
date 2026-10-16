@@ -1170,6 +1170,113 @@ class LeanMCPInterface:
             ],
         }
 
+        registry["session_transfer_entries"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.session_transfer_entries),
+            "description": (
+                "Move decisions, learnings and notebooks between project scopes (issue #244). "
+                "**SYSTEM**: session — project-scoped work history. "
+                "**WRITES**: per-entry project_name/project_path overrides on decisions and "
+                "notebooks, in-place project_name/project_path on learnings; session_id "
+                "re-homes the whole session. Superseded/retired rows move too. "
+                "When target_project_path is omitted, entries keep their current path: a "
+                "decision or notebook keeps following its session's path, a learning keeps "
+                "its stored path. "
+                "**dry_run defaults to TRUE** — review the returned entries, then repeat "
+                "with dry_run=false. One transaction; over max_entries is an error and "
+                "writes nothing."
+            ),
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "target_project_name": {
+                        "type": "string",
+                        "description": "Destination project name (required, non-empty)",
+                    },
+                    "target_project_path": {
+                        "type": "string",
+                        "description": (
+                            "Optional absolute destination path. Omitted: decisions and "
+                            "notebooks keep following their session's path, learnings keep "
+                            "their stored path."
+                        ),
+                    },
+                    "decision_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Decision ids to move",
+                    },
+                    "learning_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Learning ids to move",
+                    },
+                    "notebook_session_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Notebook ids to move (a notebook's id is its session_id)",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": (
+                            "Re-home this session unconditionally: its sessions row, all its "
+                            "decisions and notebook, and learnings sourced from it"
+                        ),
+                    },
+                    "from_project_name": {
+                        "type": "string",
+                        "description": (
+                            "Select every decision/learning/notebook currently in this "
+                            "project (effective scope), optionally narrowed below"
+                        ),
+                    },
+                    "from_project_path": {
+                        "type": "string",
+                        "description": "Absolute path narrowing from_project_name",
+                    },
+                    "since": {
+                        "type": "string",
+                        "description": "ISO-8601 lower bound (requires from_project_name)",
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "ISO-8601 upper bound (requires from_project_name)",
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Preview only; nothing is written (default true)",
+                    },
+                    "max_entries": {
+                        "type": "integer",
+                        "default": 200,
+                        "minimum": 1,
+                        "maximum": 1000,
+                        "description": "Error (nothing written) if more entries match",
+                    },
+                },
+                "required": ["target_project_name"],
+            },
+            "examples": [
+                {
+                    "target_project_name": "ocaml-feedstock",
+                    "decision_ids": ["dec-123"],
+                    "learning_ids": ["learn-456"],
+                },
+                {
+                    "target_project_name": "ocaml-feedstock",
+                    "session_id": "abc123",
+                    "dry_run": False,
+                },
+                {
+                    "target_project_name": "ocaml-5.5.1",
+                    "target_project_path": "/home/me/proj/ocaml-5.5.1",
+                    "from_project_name": "ocaml-feedstock",
+                    "since": "2026-10-01T00:00:00Z",
+                    "until": "2026-10-10T00:00:00Z",
+                },
+            ],
+        }
+
         # ===== KNOWLEDGE SYSTEM TOOLS =====
 
         registry["session_get_learning"] = {

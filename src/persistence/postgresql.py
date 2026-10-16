@@ -30,6 +30,7 @@ except ImportError:
 
 from models.session_models import INTERNAL_AGENT_NAMES, server_cwd
 
+from . import transfer
 from .base import (
     DEFAULT_POSTGRES_DSN,
     UPDATABLE_DECISION_FIELDS,
@@ -102,6 +103,11 @@ _MIGRATIONS = (
     # Issue #86: optional one-line headline injected at session start.
     "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS summary TEXT",
     "ALTER TABLE project_learnings ADD COLUMN IF NOT EXISTS summary TEXT",
+    # Issue #244: per-entry scope override (NULL = follow the session).
+    "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS project_name TEXT",
+    "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS project_path TEXT",
+    "ALTER TABLE session_summaries ADD COLUMN IF NOT EXISTS project_name TEXT",
+    "ALTER TABLE session_summaries ADD COLUMN IF NOT EXISTS project_path TEXT",
 )
 
 
@@ -152,7 +158,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         supersedes TEXT,
         summary TEXT,
         retired_at TIMESTAMPTZ,
-        retired_reason TEXT
+        retired_reason TEXT,
+        project_name TEXT,
+        project_path TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_decisions_session ON decisions(session_id);
@@ -282,7 +290,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         authored_body TEXT,
         key_changes JSONB DEFAULT '[]',
         tags JSONB DEFAULT '[]',
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        project_name TEXT,
+        project_path TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_summaries_created ON session_summaries(created_at);
@@ -755,6 +765,56 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         return str(status).endswith(" 1")
 
     @db_retry
+    async def transfer_entries(
+        self,
+        *,
+        target_project_name: str,
+        target_project_path: str | None = None,
+        decision_ids: list[str] | None = None,
+        learning_ids: list[str] | None = None,
+        notebook_session_ids: list[str] | None = None,
+        session_id: str | None = None,
+        from_project_name: str | None = None,
+        from_project_path: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        dry_run: bool = True,
+        max_entries: int = 200,
+    ) -> dict[str, Any]:
+        """Move entries between project scopes in one transaction (issue #244 part 1)."""
+        pool = self._ensure_connected()
+        plan = transfer.plan_selections(
+            decision_ids=decision_ids,
+            learning_ids=learning_ids,
+            notebook_session_ids=notebook_session_ids,
+            session_id=session_id,
+            from_project_name=from_project_name,
+            from_project_path=from_project_path,
+            since=since,
+            until=until,
+        )
+        async with pool.acquire() as conn, conn.transaction():
+            found: dict[tuple[str, str], dict[str, Any]] = {}
+            for sel in plan:
+                where, args = transfer.render(sel.cond, sel.params, "postgres")
+                rows = await conn.fetch(
+                    f"{transfer.SELECTS[sel.kind]} WHERE {where}",  # noqa: S608 - fixed templates
+                    *args,
+                )
+                for row in rows:
+                    found.setdefault(
+                        (sel.kind, row["id"]), transfer.make_entry(sel.kind, dict(row))
+                    )
+            entries, missing = transfer.finalize_entries(found, plan, max_entries)
+            if not dry_run and entries:
+                groups = transfer.split_for_apply(entries)
+                for sql, args in transfer.apply_statements(
+                    groups, target_project_name, target_project_path, "postgres"
+                ):
+                    await conn.execute(sql, *args)
+        return transfer.build_result(dry_run, entries, missing)
+
+    @db_retry
     async def query_sessions(
         self,
         limit: int = 50,
@@ -1112,7 +1172,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT d.*, s.project_name
+                SELECT d.id, d.session_id, d.timestamp, d.category, d.description,
+                       d.rationale, d.context, d.impact_level, d.artifacts, d.supersedes,
+                       d.summary, d.retired_at, d.retired_reason,
+                       COALESCE(d.project_name, s.project_name) AS project_name
                 FROM decisions d
                 JOIN sessions s ON d.session_id = s.id
                 WHERE d.category = $1
@@ -1531,7 +1594,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             conditions.append(f"ss.tags @> ${len(params)}::jsonb")
         if project_name:
             params.append(project_name)
-            conditions.append(f"s.project_name = ${len(params)}")
+            conditions.append(f"COALESCE(ss.project_name, s.project_name) = ${len(params)}")
         if session_id is not None:
             params.append(session_id)
             conditions.append(f"ss.session_id = ${len(params)}")
@@ -1542,7 +1605,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         params.append(limit)
         query = f"""
-            SELECT ss.*, s.project_path, s.project_name
+            SELECT ss.session_id, ss.title, ss.summary_markdown, ss.authored_body,
+                   ss.key_changes, ss.tags, ss.created_at,
+                   COALESCE(ss.project_path, s.project_path) AS project_path,
+                   COALESCE(ss.project_name, s.project_name) AS project_name
             FROM session_summaries ss
             JOIN sessions s ON ss.session_id = s.id
             {where}
@@ -1561,7 +1627,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT ss.*, s.project_path, s.project_name
+                SELECT ss.session_id, ss.title, ss.summary_markdown, ss.authored_body,
+                       ss.key_changes, ss.tags, ss.created_at,
+                       COALESCE(ss.project_path, s.project_path) AS project_path,
+                       COALESCE(ss.project_name, s.project_name) AS project_name
                 FROM session_summaries ss
                 JOIN sessions s ON ss.session_id = s.id
                 WHERE ss.tags @> $1::jsonb
@@ -1580,7 +1649,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT ss.*, s.project_path, s.project_name
+                SELECT ss.session_id, ss.title, ss.summary_markdown, ss.authored_body,
+                       ss.key_changes, ss.tags, ss.created_at,
+                       COALESCE(ss.project_path, s.project_path) AS project_path,
+                       COALESCE(ss.project_name, s.project_name) AS project_name
                 FROM session_summaries ss
                 JOIN sessions s ON ss.session_id = s.id
                 ORDER BY ss.created_at DESC
@@ -1599,7 +1671,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         async with pool.acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT ss.*, s.project_name, s.project_path
+                SELECT ss.session_id, ss.title, ss.summary_markdown, ss.authored_body,
+                       ss.key_changes, ss.tags, ss.created_at,
+                       COALESCE(ss.project_name, s.project_name) AS project_name,
+                       COALESCE(ss.project_path, s.project_path) AS project_path
                 FROM session_summaries ss
                 JOIN sessions s ON ss.session_id = s.id
                 WHERE EXISTS (
@@ -1683,16 +1758,16 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 ]
 
             if include is None or "decisions" in include:
-                clause, extra = _excl("s.project_path", 5)
+                clause, extra = _excl("COALESCE(d.project_path, s.project_path)", 5)
                 rows = await conn.fetch(
                     f"""
                     SELECT d.id, d.description, d.category, d.rationale, d.summary,
                            d.impact_level, d.timestamp, s.id AS session_id,
-                           s.project_path AS project_path
+                           COALESCE(d.project_path, s.project_path) AS project_path
                     FROM decisions d
                     JOIN sessions s ON d.session_id = s.id
-                    WHERE s.project_name = $1 AND d.timestamp > $2
-                      AND ($4::text IS NULL OR s.project_path = $4)
+                    WHERE COALESCE(d.project_name, s.project_name) = $1 AND d.timestamp > $2
+                      AND ($4::text IS NULL OR COALESCE(d.project_path, s.project_path) = $4)
                       {clause}
                       AND d.id NOT IN (
                           SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
@@ -1753,14 +1828,14 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 result["learnings"] = [self._from_record(row) for row in rows]
 
             if include is None or "notebooks" in include:
-                clause, extra = _excl("s.project_path", 5)
+                clause, extra = _excl("COALESCE(ss.project_path, s.project_path)", 5)
                 rows = await conn.fetch(
                     f"""
                     SELECT ss.title, ss.tags, ss.created_at, ss.session_id
                     FROM session_summaries ss
                     JOIN sessions s ON ss.session_id = s.id
-                    WHERE s.project_name = $1 AND ss.created_at > $2
-                      AND ($4::text IS NULL OR s.project_path = $4)
+                    WHERE COALESCE(ss.project_name, s.project_name) = $1 AND ss.created_at > $2
+                      AND ($4::text IS NULL OR COALESCE(ss.project_path, s.project_path) = $4)
                       {clause}
                     ORDER BY ss.created_at DESC
                     LIMIT $3
@@ -3067,7 +3142,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 SELECT d.id, d.description
                 FROM decisions d
                 JOIN sessions s ON d.session_id = s.id
-                WHERE s.project_name = $1
+                WHERE COALESCE(d.project_name, s.project_name) = $1
                   AND d.id NOT IN (
                       SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
                   )
@@ -3148,8 +3223,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                             ),
                             plainto_tsquery('english', $1)
                         ) as relevance,
-                        s.project_name,
-                        s.project_path,
+                        COALESCE(d.project_name, s.project_name) AS project_name,
+                        COALESCE(d.project_path, s.project_path) AS project_path,
                         d.timestamp as started_at,
                         d.summary as summary,
                         '[]'::jsonb as tags
@@ -3231,8 +3306,8 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                         ss.summary_markdown as summary,
                         ss.tags,
                         ss.created_at,
-                        s.project_name,
-                        s.project_path,
+                        COALESCE(ss.project_name, s.project_name) AS project_name,
+                        COALESCE(ss.project_path, s.project_path) AS project_path,
                         s.started_at,
                         ts_rank(
                             to_tsvector(

@@ -193,8 +193,8 @@ class TestPostgresSql:
         sessions, decisions, learnings, notebooks = conn.calls
         for (query, args), col, n in (
             (sessions, "project_path", 5),
-            (decisions, "s.project_path", 5),
-            (notebooks, "s.project_path", 5),
+            (decisions, "COALESCE(d.project_path, s.project_path)", 5),
+            (notebooks, "COALESCE(ss.project_path, s.project_path)", 5),
             (learnings, "project_path", 4),
         ):
             assert f"({col} IS NULL OR NOT ({col} = ANY(${n}::text[])))" in query

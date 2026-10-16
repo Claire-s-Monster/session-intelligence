@@ -21,6 +21,7 @@ import aiosqlite
 
 from models.session_models import INTERNAL_AGENT_NAMES
 
+from . import transfer
 from .base import (
     DEFAULT_SQLITE_PATH,
     UPDATABLE_DECISION_FIELDS,
@@ -85,6 +86,8 @@ class SQLiteBackend(BaseDatabaseBackend):
         summary TEXT,
         retired_at TEXT,
         retired_reason TEXT,
+        project_name TEXT,                -- scope override (issue #244); NULL = session's
+        project_path TEXT,                -- scope override (issue #244); NULL = session's
         FOREIGN KEY (session_id) REFERENCES sessions(id)
     );
 
@@ -179,6 +182,8 @@ class SQLiteBackend(BaseDatabaseBackend):
         key_changes TEXT,
         tags TEXT,
         created_at TEXT NOT NULL,
+        project_name TEXT,                -- scope override (issue #244); NULL = session's
+        project_path TEXT,                -- scope override (issue #244); NULL = session's
         FOREIGN KEY (session_id) REFERENCES sessions(id)
     );
 
@@ -493,6 +498,16 @@ class SQLiteBackend(BaseDatabaseBackend):
             if "duplicate column" not in str(e).lower():
                 raise
 
+        # Issue #244: per-entry scope override columns (NULL = follow the session).
+        for _table in ("decisions", "session_summaries"):
+            for _col in ("project_name", "project_path"):
+                try:
+                    await self._connection.execute(f"ALTER TABLE {_table} ADD COLUMN {_col} TEXT")  # noqa: S608
+                    await self._connection.commit()
+                except Exception as e:
+                    if "duplicate column" not in str(e).lower():
+                        raise
+
         self._is_connected = True
         logger.info(f"SQLite database initialized: {self.db_path}")
 
@@ -631,6 +646,58 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
         await conn.commit()
         return cursor.rowcount > 0
+
+    async def transfer_entries(
+        self,
+        *,
+        target_project_name: str,
+        target_project_path: str | None = None,
+        decision_ids: list[str] | None = None,
+        learning_ids: list[str] | None = None,
+        notebook_session_ids: list[str] | None = None,
+        session_id: str | None = None,
+        from_project_name: str | None = None,
+        from_project_path: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        dry_run: bool = True,
+        max_entries: int = 200,
+    ) -> dict[str, Any]:
+        """Move entries between project scopes (issue #244 part 1)."""
+        conn = self._ensure_connected()
+        plan = transfer.plan_selections(
+            decision_ids=decision_ids,
+            learning_ids=learning_ids,
+            notebook_session_ids=notebook_session_ids,
+            session_id=session_id,
+            from_project_name=from_project_name,
+            from_project_path=from_project_path,
+            since=since.isoformat() if since else None,
+            until=until.isoformat() if until else None,
+        )
+        found: dict[tuple[str, str], dict[str, Any]] = {}
+        for sel in plan:
+            where, args = transfer.render(sel.cond, sel.params, "sqlite")
+            cursor = await conn.execute(
+                f"{transfer.SELECTS[sel.kind]} WHERE {where}",  # noqa: S608 - fixed templates
+                args,
+            )
+            for row in await cursor.fetchall():
+                found.setdefault((sel.kind, row["id"]), transfer.make_entry(sel.kind, dict(row)))
+        entries, missing = transfer.finalize_entries(found, plan, max_entries)
+        if not dry_run and entries:
+            groups = transfer.split_for_apply(entries)
+            statements = transfer.apply_statements(
+                groups, target_project_name, target_project_path, "sqlite"
+            )
+            try:
+                for sql, args in statements:
+                    await conn.execute(sql, args)
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        return transfer.build_result(dry_run, entries, missing)
 
     async def query_sessions(
         self,
@@ -943,7 +1010,10 @@ class SQLiteBackend(BaseDatabaseBackend):
 
         cursor = await conn.execute(
             """
-            SELECT d.*, s.project_name
+            SELECT d.id, d.session_id, d.timestamp, d.category, d.description,
+                   d.rationale, d.context, d.impact_level, d.artifacts, d.supersedes,
+                   d.summary, d.retired_at, d.retired_reason,
+                   COALESCE(d.project_name, s.project_name) AS project_name
             FROM decisions d
             JOIN sessions s ON d.session_id = s.id
             WHERE d.category = ?
@@ -1295,7 +1365,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             conditions.append("EXISTS (SELECT 1 FROM json_each(ss.tags) WHERE value = ?)")
             params.append(tags[0])  # Match first tag
         if project_name:
-            conditions.append("s.project_name = ?")
+            conditions.append("COALESCE(ss.project_name, s.project_name) = ?")
             params.append(project_name)
         if session_id is not None:
             conditions.append("ss.session_id = ?")
@@ -1307,7 +1377,10 @@ class SQLiteBackend(BaseDatabaseBackend):
         where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         params.append(limit)
         query = f"""
-            SELECT ss.*, s.project_path, s.project_name
+            SELECT ss.session_id, ss.title, ss.summary_markdown, ss.authored_body,
+                   ss.key_changes, ss.tags, ss.created_at,
+                   COALESCE(ss.project_path, s.project_path) AS project_path,
+                   COALESCE(ss.project_name, s.project_name) AS project_name
             FROM session_summaries ss
             JOIN sessions s ON ss.session_id = s.id
             {where}
@@ -1612,7 +1685,10 @@ class SQLiteBackend(BaseDatabaseBackend):
         # SQLite JSON search using json_each
         cursor = await conn.execute(
             """
-            SELECT ss.*, s.project_name, s.project_path
+            SELECT ss.session_id, ss.title, ss.summary_markdown, ss.authored_body,
+                   ss.key_changes, ss.tags, ss.created_at,
+                   COALESCE(ss.project_name, s.project_name) AS project_name,
+                   COALESCE(ss.project_path, s.project_path) AS project_path
             FROM session_summaries ss
             JOIN sessions s ON ss.session_id = s.id
             WHERE EXISTS (
@@ -1632,7 +1708,10 @@ class SQLiteBackend(BaseDatabaseBackend):
 
         cursor = await conn.execute(
             """
-            SELECT ss.*, s.project_name, s.project_path
+            SELECT ss.session_id, ss.title, ss.summary_markdown, ss.authored_body,
+                   ss.key_changes, ss.tags, ss.created_at,
+                   COALESCE(ss.project_name, s.project_name) AS project_name,
+                   COALESCE(ss.project_path, s.project_path) AS project_path
             FROM session_summaries ss
             JOIN sessions s ON ss.session_id = s.id
             ORDER BY ss.created_at DESC
@@ -2002,7 +2081,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             SELECT d.id, d.description
             FROM decisions d
             JOIN sessions s ON d.session_id = s.id
-            WHERE s.project_name = ?
+            WHERE COALESCE(d.project_name, s.project_name) = ?
               AND d.id NOT IN (
                   SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
               )
@@ -2056,8 +2135,8 @@ class SQLiteBackend(BaseDatabaseBackend):
                     d.category as title,
                     d.description as snippet,
                     NULL as relevance,
-                    s.project_name,
-                    s.project_path,
+                    COALESCE(d.project_name, s.project_name) AS project_name,
+                    COALESCE(d.project_path, s.project_path) AS project_path,
                     d.timestamp as started_at,
                     d.summary as summary,
                     '[]' as tags
@@ -2116,13 +2195,14 @@ class SQLiteBackend(BaseDatabaseBackend):
                 ss.title,
                 ss.summary,
                 ss.tags,
-                s.project_name,
-                s.project_path,
+                COALESCE(sm.project_name, s.project_name) AS project_name,
+                COALESCE(sm.project_path, s.project_path) AS project_path,
                 s.started_at,
                 bm25(session_search) as relevance,
                 snippet(session_search, 2, '<mark>', '</mark>', '...', 32) as snippet
             FROM session_search ss
             JOIN sessions s ON ss.session_id = s.id
+            LEFT JOIN session_summaries sm ON sm.session_id = ss.session_id
             WHERE session_search MATCH ?
             ORDER BY relevance
             LIMIT ?
@@ -2142,7 +2222,10 @@ class SQLiteBackend(BaseDatabaseBackend):
         # Search in key_changes JSON array
         cursor = await conn.execute(
             """
-            SELECT ss.*, s.project_name, s.project_path
+            SELECT ss.session_id, ss.title, ss.summary_markdown, ss.authored_body,
+                   ss.key_changes, ss.tags, ss.created_at,
+                   COALESCE(ss.project_name, s.project_name) AS project_name,
+                   COALESCE(ss.project_path, s.project_path) AS project_path
             FROM session_summaries ss
             JOIN sessions s ON ss.session_id = s.id
             WHERE EXISTS (
@@ -2601,12 +2684,12 @@ class SQLiteBackend(BaseDatabaseBackend):
                 f"""
                 SELECT d.id, d.description, d.category, d.rationale, d.summary,
                        d.impact_level, d.timestamp, s.id AS session_id,
-                       s.project_path AS project_path
+                       COALESCE(d.project_path, s.project_path) AS project_path
                 FROM decisions d
                 JOIN sessions s ON d.session_id = s.id
-                WHERE s.project_name = ? AND d.timestamp > ?
-                  AND (? IS NULL OR s.project_path = ?)
-                  {_excl("s.project_path")}
+                WHERE COALESCE(d.project_name, s.project_name) = ? AND d.timestamp > ?
+                  AND (? IS NULL OR COALESCE(d.project_path, s.project_path) = ?)
+                  {_excl("COALESCE(d.project_path, s.project_path)")}
                   AND d.id NOT IN (
                       SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
                   )
@@ -2665,9 +2748,9 @@ class SQLiteBackend(BaseDatabaseBackend):
                 SELECT ss.title, ss.tags, ss.created_at, ss.session_id
                 FROM session_summaries ss
                 JOIN sessions s ON ss.session_id = s.id
-                WHERE s.project_name = ? AND ss.created_at > ?
-                  AND (? IS NULL OR s.project_path = ?)
-                  {_excl("s.project_path")}
+                WHERE COALESCE(ss.project_name, s.project_name) = ? AND ss.created_at > ?
+                  AND (? IS NULL OR COALESCE(ss.project_path, s.project_path) = ?)
+                  {_excl("COALESCE(ss.project_path, s.project_path)")}
                 ORDER BY ss.created_at DESC
                 LIMIT ?
                 """,  # noqa: S608 - fixed template, values are bound

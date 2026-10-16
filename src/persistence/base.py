@@ -214,6 +214,38 @@ class DatabaseBackend(Protocol):
         """
         ...
 
+    async def transfer_entries(
+        self,
+        *,
+        target_project_name: str,
+        target_project_path: str | None = None,
+        decision_ids: list[str] | None = None,
+        learning_ids: list[str] | None = None,
+        notebook_session_ids: list[str] | None = None,
+        session_id: str | None = None,
+        from_project_name: str | None = None,
+        from_project_path: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
+        dry_run: bool = True,
+        max_entries: int = 200,
+    ) -> dict[str, Any]:
+        """Move entries to another project scope (issue #244 part 1).
+
+        Selectors are combinable; the deduplicated union is moved. Decisions
+        and notebooks get per-entry ``project_name``/``project_path`` override
+        columns (effective scope is COALESCE(override, session value));
+        learnings are updated in place (existing path kept when no target path
+        is given). ``session_id`` re-homes the sessions row itself, clears the
+        overrides on that session's decisions/notebook and moves learnings
+        sourced from it. Superseded and retired rows are included. Runs in one
+        transaction; with ``dry_run`` nothing is written. Raises ValueError,
+        writing nothing, when more than ``max_entries`` entries match.
+
+        Returns ``{dry_run, counts, entries, not_found}``.
+        """
+        ...
+
     async def query_sessions(
         self,
         limit: int = 50,

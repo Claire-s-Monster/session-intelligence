@@ -111,6 +111,8 @@ debug_logger = configure_debug_logger(
 AGENT_EXECUTION_PAGE_SIZE = 200
 AGENT_EXECUTION_MAX_PAGES = 100
 MAX_EXCLUDE_PROJECT_PATHS = 50
+MAX_TRANSFER_ENTRIES = 1000
+DEFAULT_TRANSFER_ENTRIES = 200
 
 # Issue #108: INTERNAL_AGENT_NAMES (imported from models.session_models,
 # issue #208) are internal hook-driven pseudo-agents that never report a real
@@ -4653,6 +4655,141 @@ class SessionIntelligenceEngine:
                 "notebooks": [],
                 "counts": {"sessions": 0, "decisions": 0, "learnings": 0, "notebooks": 0},
             }
+
+    @staticmethod
+    def _parse_transfer_ts(value: str | None, label: str) -> datetime | None:
+        """ISO timestamp -> aware datetime (naive input is taken as UTC)."""
+        if value is None:
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        except ValueError:
+            raise ValueError(f"{label} {value!r} is not an ISO-8601 timestamp") from None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+    @staticmethod
+    def _clean_transfer_ids(value: list[str] | None, label: str) -> list[str] | None:
+        if value is None:
+            return None
+        if not isinstance(value, list) or not all(isinstance(i, str) and i.strip() for i in value):
+            raise ValueError(f"{label} must be a list of non-empty strings")
+        return list(dict.fromkeys(i.strip() for i in value)) or None
+
+    def _validate_transfer_args(
+        self,
+        target_project_name: str,
+        target_project_path: str | None,
+        from_project_name: str | None,
+        from_project_path: str | None,
+        max_entries: int,
+    ) -> tuple[str, str | None, str | None, str | None]:
+        """Normalised (target_name, target_path, from_name, from_path); raises ValueError."""
+        if not isinstance(target_project_name, str) or not target_project_name.strip():
+            raise ValueError("target_project_name is required and must be non-empty")
+        if (
+            isinstance(max_entries, bool)
+            or not isinstance(max_entries, int)
+            or not 1 <= max_entries <= MAX_TRANSFER_ENTRIES
+        ):
+            raise ValueError(f"max_entries must be an integer 1..{MAX_TRANSFER_ENTRIES}")
+        paths: list[str | None] = []
+        for label, raw in (
+            ("target_project_path", target_project_path),
+            ("from_project_path", from_project_path),
+        ):
+            usable = None if raw is None else usable_project_path(raw)
+            if raw is not None and usable is None:
+                raise ValueError(f"{label} {raw!r} is not an absolute path")
+            paths.append(usable)
+        from_name = from_project_name.strip() if from_project_name else None
+        if from_project_path is not None and not from_name:
+            raise ValueError("from_project_path requires from_project_name")
+        return target_project_name.strip(), paths[0], from_name, paths[1]
+
+    async def session_transfer_entries(
+        self,
+        target_project_name: str,
+        target_project_path: str | None = None,
+        decision_ids: list[str] | None = None,
+        learning_ids: list[str] | None = None,
+        notebook_session_ids: list[str] | None = None,
+        session_id: str | None = None,
+        from_project_name: str | None = None,
+        from_project_path: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        dry_run: bool = True,
+        max_entries: int = DEFAULT_TRANSFER_ENTRIES,
+    ) -> dict[str, Any]:
+        """Move decisions, learnings and notebooks to another project scope (issue #244).
+
+        Selectors combine (union, deduplicated): decision_ids, learning_ids,
+        notebook_session_ids, session_id (re-homes the whole session) and
+        from_project_name (+ from_project_path, since, until). dry_run defaults
+        to True and writes nothing. Returns dry_run, counts, entries, warnings.
+        """
+        try:
+            target_name, target_path, from_name, from_path = self._validate_transfer_args(
+                target_project_name,
+                target_project_path,
+                from_project_name,
+                from_project_path,
+                max_entries,
+            )
+            d_ids = self._clean_transfer_ids(decision_ids, "decision_ids")
+            l_ids = self._clean_transfer_ids(learning_ids, "learning_ids")
+            n_ids = self._clean_transfer_ids(notebook_session_ids, "notebook_session_ids")
+            sid = session_id.strip() if isinstance(session_id, str) and session_id.strip() else None
+            since_dt = self._parse_transfer_ts(since, "since")
+            until_dt = self._parse_transfer_ts(until, "until")
+            if (since_dt or until_dt) and not from_name:
+                raise ValueError("since/until require from_project_name")
+            if not (d_ids or l_ids or n_ids or sid or from_name):
+                raise ValueError(
+                    "at least one selector is required: decision_ids, learning_ids, "
+                    "notebook_session_ids, session_id or from_project_name"
+                )
+        except ValueError as e:
+            return {"status": "error", "dry_run": dry_run, "message": str(e)}
+
+        if not self.database:
+            return {"status": "error", "dry_run": dry_run, "message": "No database configured"}
+
+        try:
+            result = await self.database.transfer_entries(
+                target_project_name=target_name,
+                target_project_path=target_path,
+                decision_ids=d_ids,
+                learning_ids=l_ids,
+                notebook_session_ids=n_ids,
+                session_id=sid,
+                from_project_name=from_name,
+                from_project_path=from_path,
+                since=since_dt,
+                until=until_dt,
+                dry_run=dry_run,
+                max_entries=max_entries,
+            )
+        except ValueError as e:
+            return {"status": "error", "dry_run": dry_run, "message": str(e)}
+        except Exception as e:
+            debug_logger.error(f"Error in session_transfer_entries: {e}")
+            return {"status": "error", "dry_run": dry_run, "message": f"Transfer failed: {e}"}
+
+        if not result["dry_run"]:
+            # Re-homed sessions: keep cached copies in step with the DB row so
+            # a later write cannot persist the stale project scope back.
+            for entry in result["entries"]:
+                cached = self.session_cache.get(entry["id"]) if entry["kind"] == "session" else None
+                if cached is not None:
+                    cached.project_name = target_name
+                    if target_path:
+                        cached.project_path = target_path
+
+        warnings = [f"{kind} not found: {ids}" for kind, ids in result.pop("not_found").items()]
+        if not result["entries"]:
+            warnings.append("no entries matched the selectors")
+        return {"status": "success", **result, "warnings": warnings}
 
     async def session_get_learning(self, learning_id: str) -> dict[str, Any]:
         """Fetch one project learning by id (Issue #207).

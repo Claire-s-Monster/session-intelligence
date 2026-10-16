@@ -4564,6 +4564,7 @@ class SessionIntelligenceEngine:
         days: int = 30,
         project_path: str | None = None,
         exclude_project_paths: list[str] | None = None,
+        include_ancestors: bool = True,
     ) -> dict[str, Any]:
         """
         Recall project knowledge across all sessions.
@@ -4585,6 +4586,11 @@ class SessionIntelligenceEngine:
             exclude_project_paths: Optional absolute paths (max 50); rows
                 recorded under any of these exact paths are dropped from every
                 section. Rows with no recorded path are kept (issue #244).
+            include_ancestors: When the project has ancestors (see
+                session_set_project_parent), decisions, learnings and
+                notebooks also return ancestor-project entries after the
+                project's own, within the per-section limit, tagged
+                ``inherited_from``. project_path never filters ancestor rows.
 
         Returns:
             Consolidated project knowledge dict
@@ -4640,6 +4646,10 @@ class SessionIntelligenceEngine:
                 project_path=usable_project_path(project_path),
                 **extra,
             )
+            if include_ancestors:
+                await self._merge_ancestor_recall(
+                    result, project_name, include, limit, days, excluded
+                )
 
             debug_logger.info(f"Recall for '{project_name}': {result.get('counts', {})}")
             return result
@@ -4655,6 +4665,125 @@ class SessionIntelligenceEngine:
                 "notebooks": [],
                 "counts": {"sessions": 0, "decisions": 0, "learnings": 0, "notebooks": 0},
             }
+
+    async def _merge_ancestor_recall(
+        self,
+        result: dict[str, Any],
+        project_name: str,
+        include: list[str] | None,
+        limit: int,
+        days: int,
+        excluded: list[str],
+    ) -> None:
+        """Append ancestor-project entries to ``result`` (issue #244 part 2).
+
+        Own rows stay first; ancestors (nearest first) fill each tier's
+        remaining limit and carry ``inherited_from``. The caller's
+        project_path is deliberately not applied to ancestor rows. A failure
+        here leaves the project's own recall intact.
+        """
+        tiers = [
+            t for t in ("decisions", "learnings", "notebooks") if include is None or t in include
+        ]
+        db = self.database
+        if db is None:
+            return
+        try:
+            ancestors = await db.get_project_ancestors(project_name)
+            if not isinstance(ancestors, list) or not ancestors or not tiers:
+                return
+            extra: dict[str, Any] = {"exclude_project_paths": excluded} if excluded else {}
+            for ancestor in ancestors:
+                needy = [t for t in tiers if len(result[t]) < limit]
+                if not needy:
+                    break
+                got = await db.recall_project(
+                    project_name=ancestor,
+                    include=needy,
+                    limit=limit,
+                    days=days,
+                    project_path=None,
+                    **extra,
+                )
+                for tier in needy:
+                    room = limit - len(result[tier])
+                    result[tier].extend(
+                        {**row, "inherited_from": ancestor} for row in got.get(tier, [])[:room]
+                    )
+            result["ancestors"] = ancestors
+            result["counts"] = {k: len(result[k]) for k in result["counts"]}
+        except Exception as e:
+            debug_logger.warning(f"Ancestor recall skipped for '{project_name}': {e}")
+
+    async def _project_view(self, name: str) -> dict[str, Any]:
+        db = self.database
+        assert db is not None  # callers check before building the view
+        project = await db.get_project(name)
+        return {
+            "status": "success",
+            "project_name": name,
+            "parent_project_name": project["parent_name"] if project else None,
+            "description": project["description"] if project else None,
+            "ancestors": await db.get_project_ancestors(name),
+            "children": await db.list_project_children(name),
+        }
+
+    async def session_set_project_parent(
+        self,
+        project_name: str,
+        parent_project_name: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Set (or clear, with parent_project_name=None) a project's parent (issue #244).
+
+        Rejects empty names, self-parenting and cycles; writes nothing on
+        rejection. The parent need not exist yet. Returns project_name,
+        parent_project_name, ancestors and children.
+        """
+        name = project_name.strip() if isinstance(project_name, str) else ""
+        if not name:
+            return {"status": "error", "message": "project_name is required and must be non-empty"}
+        parent: str | None = None
+        if parent_project_name is not None:
+            parent = parent_project_name.strip() if isinstance(parent_project_name, str) else ""
+            if not parent:
+                return {
+                    "status": "error",
+                    "message": "parent_project_name must be non-empty (omit to clear it)",
+                }
+            if parent == name:
+                return {"status": "error", "message": "a project cannot be its own parent"}
+        if not self.database:
+            return {"status": "error", "message": "No database configured"}
+        try:
+            if parent is not None:
+                chain = await self.database.get_project_ancestors(parent)
+                if name in chain:
+                    return {
+                        "status": "error",
+                        "message": (
+                            f"cycle: {name!r} is already an ancestor of {parent!r} "
+                            f"({' -> '.join([parent, *chain])})"
+                        ),
+                    }
+            await self.database.set_project_parent(name, parent, description)
+            return await self._project_view(name)
+        except Exception as e:
+            debug_logger.error(f"Error in session_set_project_parent: {e}")
+            return {"status": "error", "message": f"Failed to set project parent: {e}"}
+
+    async def session_get_project(self, project_name: str) -> dict[str, Any]:
+        """Return a project's parent, description, ancestors and children (issue #244)."""
+        name = project_name.strip() if isinstance(project_name, str) else ""
+        if not name:
+            return {"status": "error", "message": "project_name is required and must be non-empty"}
+        if not self.database:
+            return {"status": "error", "message": "No database configured"}
+        try:
+            return await self._project_view(name)
+        except Exception as e:
+            debug_logger.error(f"Error in session_get_project: {e}")
+            return {"status": "error", "message": f"Failed to get project: {e}"}
 
     @staticmethod
     def _parse_transfer_ts(value: str | None, label: str) -> datetime | None:

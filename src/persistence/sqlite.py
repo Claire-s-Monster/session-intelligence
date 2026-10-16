@@ -30,6 +30,7 @@ from .base import (
     execution_duration_ms,
     get_execution_max_age_hours,
     get_session_max_age_hours,
+    walk_project_ancestors,
 )
 
 logger = logging.getLogger(__name__)
@@ -316,6 +317,16 @@ class SQLiteBackend(BaseDatabaseBackend):
     );
     CREATE INDEX IF NOT EXISTS idx_agent_notebooks_agent ON agent_notebooks(agent_id);
     CREATE INDEX IF NOT EXISTS idx_agent_notebooks_type ON agent_notebooks(notebook_type);
+
+    -- PROJECTS TABLE (issue #244: parent/child; parent_name is not an FK)
+    CREATE TABLE IF NOT EXISTS projects (
+        name TEXT PRIMARY KEY,
+        parent_name TEXT,
+        description TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_projects_parent ON projects(parent_name);
     """
 
     # FTS5 schema must be created separately (cannot use IF NOT EXISTS with virtual tables)
@@ -646,6 +657,56 @@ class SQLiteBackend(BaseDatabaseBackend):
         )
         await conn.commit()
         return cursor.rowcount > 0
+
+    async def set_project_parent(
+        self, name: str, parent_name: str | None, description: str | None = None
+    ) -> dict[str, Any]:
+        """Upsert a projects row (issue #244 part 2)."""
+        conn = self._ensure_connected()
+        now = datetime.now(UTC).isoformat()
+        await conn.execute(
+            """
+            INSERT INTO projects (name, parent_name, description, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                parent_name = excluded.parent_name,
+                description = COALESCE(excluded.description, projects.description),
+                updated_at = excluded.updated_at
+            """,
+            (name, parent_name, description, now, now),
+        )
+        await conn.commit()
+        project = await self.get_project(name)
+        assert project is not None
+        return project
+
+    async def get_project(self, name: str) -> dict[str, Any] | None:
+        """Return the projects row for ``name`` or None."""
+        conn = self._ensure_connected()
+        cursor = await conn.execute(
+            "SELECT name, parent_name, description, created_at, updated_at "
+            "FROM projects WHERE name = ?",
+            (name,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def get_project_ancestors(self, name: str) -> list[str]:
+        """Return [parent, grandparent, ...] (depth-capped, cycle-safe)."""
+
+        async def _parent(current: str) -> str | None:
+            project = await self.get_project(current)
+            return project["parent_name"] if project else None
+
+        return await walk_project_ancestors(_parent, name)
+
+    async def list_project_children(self, name: str) -> list[str]:
+        """Return names of projects whose parent is ``name``."""
+        conn = self._ensure_connected()
+        cursor = await conn.execute(
+            "SELECT name FROM projects WHERE parent_name = ? ORDER BY name", (name,)
+        )
+        return [row["name"] for row in await cursor.fetchall()]
 
     async def transfer_entries(
         self,

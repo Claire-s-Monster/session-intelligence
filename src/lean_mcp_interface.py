@@ -1134,6 +1134,16 @@ class LeanMCPInterface:
                             "recorded path are kept. Applied before limit."
                         ),
                     },
+                    "include_ancestors": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": (
+                            "If the project has ancestors (session_set_project_parent), "
+                            "decisions/learnings/notebooks also return ancestor entries after "
+                            "the project's own, within the limit, tagged inherited_from. "
+                            "project_path never filters ancestor rows. Sessions stay own-only."
+                        ),
+                    },
                     "include": {
                         "type": "array",
                         "items": {
@@ -1275,6 +1285,55 @@ class LeanMCPInterface:
                     "until": "2026-10-10T00:00:00Z",
                 },
             ],
+        }
+
+        registry["session_set_project_parent"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.session_set_project_parent),
+            "description": (
+                "Set or clear a project's parent (issue #244 parent/child projects). "
+                "**SYSTEM**: session — project-scoped work history. "
+                "**WRITES**: one projects row. session_recall on a child then also returns "
+                "ancestor decisions/learnings/notebooks tagged inherited_from; the parent's "
+                "recall is unchanged. The parent need not have entries yet. Omit "
+                "parent_project_name to clear. Self-parenting and cycles are errors "
+                "(nothing written). Returns project_name, parent_project_name, ancestors "
+                "(max depth 5), children."
+            ),
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "project_name": {"type": "string", "description": "Child project name"},
+                    "parent_project_name": {
+                        "type": "string",
+                        "description": "Parent project name; omit/null to clear the parent",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional project description (kept if omitted)",
+                    },
+                },
+                "required": ["project_name"],
+            },
+            "examples": [
+                {"project_name": "ocaml-5.5.1", "parent_project_name": "ocaml-feedstock"},
+                {"project_name": "ocaml-5.5.1"},
+            ],
+        }
+
+        registry["session_get_project"] = {
+            "implementation": self._wrap_async_tool(self.session_engine.session_get_project),
+            "description": (
+                "Get a project's parent, description, ancestors and children (issue #244). "
+                "**SYSTEM**: session — project-scoped work history. **READS**: projects table."
+            ),
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "project_name": {"type": "string", "description": "Project name"},
+                },
+                "required": ["project_name"],
+            },
+            "examples": [{"project_name": "ocaml-5.5.1"}],
         }
 
         # ===== KNOWLEDGE SYSTEM TOOLS =====

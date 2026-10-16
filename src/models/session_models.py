@@ -914,6 +914,12 @@ class SolutionSearchResult(BaseModel):
     solutions: list[ErrorSolution] = Field(default_factory=list)
     project_specific_count: int = 0
     universal_count: int = 0
+    learnings: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Matching project learnings; inherited ones carry inherited_from",
+    )
+    inherited_count: int = 0
+    ancestors: list[str] = Field(default_factory=list)
     degraded: bool = Field(
         default=False,
         description=(

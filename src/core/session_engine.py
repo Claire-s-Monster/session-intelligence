@@ -5371,12 +5371,36 @@ class SessionIntelligenceEngine:
             project_path_source=path_source(effective_project, usable_project_path(project_path)),
         )
 
+    @staticmethod
+    def _learning_matches(lr: dict[str, Any], error_text: str) -> bool:
+        """Text-match predicate; NULL trigger_context is present-as-None (issue #158)."""
+        hay = (lr.get("learning_content") or "") + (lr.get("trigger_context") or "")
+        return error_text.lower() in hay.lower()
+
+    @staticmethod
+    def _compact_learning(lr: dict[str, Any]) -> dict[str, Any]:
+        """Reduce a project_learnings row to the fields find_solution returns."""
+        keys = (
+            "id",
+            "category",
+            "learning_content",
+            "trigger_context",
+            "project_name",
+            "project_path",
+        )
+        item = {k: lr.get(k) for k in keys}
+        if lr.get("summary"):
+            item["summary"] = lr["summary"]
+        return item
+
     async def session_find_solution(
         self,
         error_text: str,
         error_category: str | None = None,
         include_universal: bool = True,
         project_path: str | None = None,
+        project_name: str | None = None,
+        include_ancestors: bool = True,
     ) -> SolutionSearchResult:
         """
         Find solutions for an error from project and universal knowledge.
@@ -5387,6 +5411,11 @@ class SessionIntelligenceEngine:
                 dependency)
             include_universal: Whether to include universal solutions
             project_path: Project scope for solutions
+            project_name: Project name used to find ancestor projects; derived
+                from a usable project_path when omitted (never from the server cwd)
+            include_ancestors: Also match learnings from ancestor projects,
+                tagged ``inherited_from``. error_solutions are path-keyed with
+                no project name, so ancestors do not apply to them.
 
         Returns:
             SolutionSearchResult with matching solutions
@@ -5453,48 +5482,75 @@ class SessionIntelligenceEngine:
             # Also query project_learnings for matching content. This is wrapped in its
             # own try/except (issue #158) so a failure here can't discard the `solutions`
             # list already built above from the unrelated error_solutions query.
-            matching_count = 0
-            learnings_failure: str | None = None
+            own_name = project_name
+            if not own_name and project_path is not None:
+                derived = derive_project_name(project_path)
+                own_name = derived if derived != UNBOUND else None
+            if own_name == UNBOUND:
+                own_name = None
+
+            own_learnings: list[dict[str, Any]] = []
+            inherited: list[dict[str, Any]] = []
+            ancestors: list[str] = []
+            reasons = []
             try:
-                learnings = await self.database.query_project_learnings(
+                rows = await self.database.query_project_learnings(
                     project_path=effective_project,
                     category=error_category,
                     exclude_superseded=True,
+                    project_name=own_name,
                 )
-
-                # Filter learnings by text match and count them. trigger_context is a
-                # nullable column, so a NULL row is PRESENT with value None -- `.get(key, "")`
-                # only supplies "" when the key is ABSENT, not when it's None (issue #158).
-                # Use `or ""` to coerce both cases; learning_content is NOT NULL so this is
-                # purely defensive there, but kept for uniform style.
-                matching_count = sum(
-                    1
-                    for lr in learnings
-                    if error_text.lower()
-                    in (
-                        (lr.get("learning_content") or "") + (lr.get("trigger_context") or "")
-                    ).lower()
-                )
+                own_learnings = [
+                    self._compact_learning(lr)
+                    for lr in rows
+                    if self._learning_matches(lr, error_text)
+                ]
             except Exception as e:
                 debug_logger.error(f"Error matching project_learnings: {e}")
-                learnings_failure = f"project_learnings query failed: {type(e).__name__}: {e}"[:300]
+                reasons.append(f"project_learnings query failed: {type(e).__name__}: {e}"[:300])
 
+            if include_ancestors and own_name:
+                try:
+                    found = await self.database.get_project_ancestors(own_name)
+                    ancestors = (
+                        [a for a in found if isinstance(a, str)] if isinstance(found, list) else []
+                    )
+                    seen = {lr["id"] for lr in own_learnings}
+                    for ancestor in ancestors:
+                        arows = await self.database.query_project_learnings(
+                            project_path=None,
+                            project_name=ancestor,
+                            category=error_category,
+                            exclude_superseded=True,
+                        )
+                        for lr in arows:
+                            if lr.get("id") in seen or not self._learning_matches(lr, error_text):
+                                continue
+                            seen.add(lr.get("id"))
+                            item = self._compact_learning(lr)
+                            item["inherited_from"] = ancestor
+                            inherited.append(item)
+                except Exception as e:
+                    debug_logger.error(f"Error resolving ancestor learnings: {e}")
+                    reasons.append(f"ancestor lookup failed: {type(e).__name__}: {e}"[:300])
+
+            matching_count = len(own_learnings)
             project_count = sum(1 for s in solutions if s.project_path == effective_project)
-            total = len(solutions) + matching_count
+            total = len(solutions) + matching_count + len(inherited)
 
             # issue #164: partial failures keep their results but are flagged.
-            reasons = []
             if skipped_malformed:
                 reasons.append(f"skipped {skipped_malformed} malformed error_solutions record(s)")
-            if learnings_failure:
-                reasons.append(learnings_failure)
 
             return SolutionSearchResult(
                 error_text=error_text,
                 total_found=total,
                 solutions=solutions,
+                learnings=own_learnings + inherited,
                 project_specific_count=project_count + matching_count,
-                universal_count=total - project_count - matching_count,
+                inherited_count=len(inherited),
+                ancestors=ancestors,
+                universal_count=total - project_count - matching_count - len(inherited),
                 degraded=bool(reasons),
                 degraded_reason="; ".join(reasons) or None,
             )

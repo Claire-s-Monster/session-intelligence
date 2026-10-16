@@ -2474,7 +2474,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
     async def query_project_learnings(
         self,
-        project_path: str,
+        project_path: str | None,
         category: str | None = None,
         limit: int = 20,
         *,
@@ -2483,6 +2483,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         project_name: str | None = None,
     ) -> list[dict[str, Any]]:
         """Query learnings for a project.
+
+        project_path may be None when project_name is given; scope is then
+        ``project_name = <param>`` only. Both None raises ValueError.
 
         exclude_superseded defaults to False because migration/export paths
         (migration.py) must preserve retired rows; callers that render
@@ -2498,6 +2501,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         if since_days is not None and since_days < 1:
             raise ValueError("since_days must be >= 1")
 
+        if project_path is None and not project_name:
+            raise ValueError("project_path or project_name is required")
+
         pool = self._ensure_connected()
 
         supersede_clause = (
@@ -2512,11 +2518,16 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             else ""
         )
 
-        args: list[Any] = [project_path]
-        scope_clause = "project_path = $1"
-        if project_name:
+        args: list[Any] = []
+        if project_path is None:
             args.append(project_name)
-            scope_clause = f"(project_path = $1 OR project_name = ${len(args)})"
+            scope_clause = "project_name = $1"
+        else:
+            args.append(project_path)
+            scope_clause = "project_path = $1"
+            if project_name:
+                args.append(project_name)
+                scope_clause = f"(project_path = $1 OR project_name = ${len(args)})"
 
         where_category = ""
         if category:

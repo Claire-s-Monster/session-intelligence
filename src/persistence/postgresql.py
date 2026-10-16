@@ -2481,6 +2481,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         exclude_superseded: bool = False,
         since_days: int | None = None,
         project_name: str | None = None,
+        text_match: str | None = None,
     ) -> list[dict[str, Any]]:
         """Query learnings for a project.
 
@@ -2497,6 +2498,10 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         project_name, when set, widens scope to also match learnings
         stored under a sentinel project_path but tagged with this
         project_name (issue #120).
+
+        text_match, when set, keeps only rows whose learning_content plus
+        trigger_context contains it as a literal, case-insensitive substring
+        (no wildcard interpretation), applied before LIMIT.
         """
         if since_days is not None and since_days < 1:
             raise ValueError("since_days must be >= 1")
@@ -2539,6 +2544,14 @@ class PostgreSQLBackend(BaseDatabaseBackend):
             args.append(since_days)
             since_clause = f"AND created_at >= now() - make_interval(days => ${len(args)})"
 
+        text_clause = ""
+        if text_match is not None:
+            args.append(text_match)
+            text_clause = (
+                f"AND position(lower(${len(args)}::text) in "
+                "lower(learning_content || COALESCE(trigger_context, ''))) > 0"
+            )
+
         args.append(limit)
         limit_placeholder = f"${len(args)}"
 
@@ -2550,6 +2563,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 {where_category}
                 {supersede_clause}
                 {since_clause}
+                {text_clause}
                 ORDER BY success_count DESC, (last_used IS NULL), last_used DESC, id
                 LIMIT {limit_placeholder}
                 """,

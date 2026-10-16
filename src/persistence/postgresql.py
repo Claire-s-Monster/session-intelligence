@@ -1623,13 +1623,23 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         days: int = 30,
         query: str | None = None,
         project_path: str | None = None,
+        exclude_project_paths: list[str] | None = None,
     ) -> dict[str, Any]:
         """Recall recent sessions, decisions, learnings, and notebooks for a project.
 
         project_path (issue #98), when given, narrows every tier to rows
         recorded under that exact path (exact match, as stored on write).
+        exclude_project_paths (issue #244) drops rows whose path equals any
+        entry; rows with a NULL path are kept.
         """
         from datetime import UTC, datetime, timedelta
+
+        excluded = list(exclude_project_paths or [])
+
+        def _excl(col: str, n: int) -> tuple[str, list[Any]]:
+            if not excluded:
+                return "", []
+            return f"AND ({col} IS NULL OR NOT ({col} = ANY(${n}::text[])))", [excluded]
 
         pool = self._ensure_connected()
         cutoff = datetime.now(UTC) - timedelta(days=days)
@@ -1646,19 +1656,22 @@ class PostgreSQLBackend(BaseDatabaseBackend):
 
         async with pool.acquire() as conn:
             if include is None or "sessions" in include:
+                clause, extra = _excl("project_path", 5)
                 rows = await conn.fetch(
-                    """
+                    f"""
                     SELECT id, started_at, ended_at, status, mode
                     FROM sessions
                     WHERE project_name = $1 AND started_at > $2
                       AND ($4::text IS NULL OR project_path = $4)
+                      {clause}
                     ORDER BY started_at DESC
                     LIMIT $3
-                    """,
+                    """,  # noqa: S608 - clause is a fixed template, values are bound
                     project_name,
                     cutoff,
                     limit,
                     project_path,
+                    *extra,
                 )
                 result["sessions"] = [
                     {
@@ -1670,8 +1683,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 ]
 
             if include is None or "decisions" in include:
+                clause, extra = _excl("s.project_path", 5)
                 rows = await conn.fetch(
-                    """
+                    f"""
                     SELECT d.id, d.description, d.category, d.rationale, d.summary,
                            d.impact_level, d.timestamp, s.id AS session_id,
                            s.project_path AS project_path
@@ -1679,17 +1693,19 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                     JOIN sessions s ON d.session_id = s.id
                     WHERE s.project_name = $1 AND d.timestamp > $2
                       AND ($4::text IS NULL OR s.project_path = $4)
+                      {clause}
                       AND d.id NOT IN (
                           SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
                       )
                       AND d.retired_at IS NULL
                     ORDER BY d.timestamp DESC
                     LIMIT $3
-                    """,
+                    """,  # noqa: S608 - clause is a fixed template, values are bound
                     project_name,
                     cutoff,
                     limit,
                     project_path,
+                    *extra,
                 )
                 result["decisions"] = [
                     {
@@ -1704,8 +1720,9 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 ]
 
             if include is None or "learnings" in include:
+                clause, extra = _excl("project_path", 4)
                 rows = await conn.fetch(
-                    """
+                    f"""
                     SELECT id, category, trigger_context, learning_content, summary,
                            project_name, project_path, source_session_id, success_count,
                            failure_count, created_at, last_used
@@ -1719,6 +1736,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                         ))
                     )
                       AND ($3::text IS NULL OR project_path = $3)
+                      {clause}
                       AND id NOT IN (
                           SELECT supersedes FROM project_learnings
                           WHERE supersedes IS NOT NULL
@@ -1726,28 +1744,32 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                       AND retired_at IS NULL
                     ORDER BY success_count DESC, (last_used IS NULL), last_used DESC, id
                     LIMIT $2
-                    """,
+                    """,  # noqa: S608 - clause is a fixed template, values are bound
                     project_name,
                     limit,
                     project_path,
+                    *extra,
                 )
                 result["learnings"] = [self._from_record(row) for row in rows]
 
             if include is None or "notebooks" in include:
+                clause, extra = _excl("s.project_path", 5)
                 rows = await conn.fetch(
-                    """
+                    f"""
                     SELECT ss.title, ss.tags, ss.created_at, ss.session_id
                     FROM session_summaries ss
                     JOIN sessions s ON ss.session_id = s.id
                     WHERE s.project_name = $1 AND ss.created_at > $2
                       AND ($4::text IS NULL OR s.project_path = $4)
+                      {clause}
                     ORDER BY ss.created_at DESC
                     LIMIT $3
-                    """,
+                    """,  # noqa: S608 - clause is a fixed template, values are bound
                     project_name,
                     cutoff,
                     limit,
                     project_path,
+                    *extra,
                 )
                 result["notebooks"] = []
                 for row in rows:

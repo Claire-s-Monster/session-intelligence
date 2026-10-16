@@ -2541,13 +2541,24 @@ class SQLiteBackend(BaseDatabaseBackend):
         days: int = 30,
         query: str | None = None,
         project_path: str | None = None,
+        exclude_project_paths: list[str] | None = None,
     ) -> dict[str, Any]:
         """Recall recent sessions, decisions, learnings, and notebooks for a project.
 
         project_path (issue #98), when given, narrows every tier to rows
         recorded under that exact path (exact match, as stored on write).
+        exclude_project_paths (issue #244) drops rows whose path equals any
+        entry; rows with a NULL path are kept.
         """
         from datetime import UTC, datetime, timedelta
+
+        excluded = list(exclude_project_paths or [])
+        marks = ", ".join("?" for _ in excluded)
+
+        def _excl(col: str) -> str:
+            if not excluded:
+                return ""
+            return f"AND ({col} IS NULL OR {col} NOT IN ({marks}))"
 
         conn = self._ensure_connected()
         cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
@@ -2564,15 +2575,16 @@ class SQLiteBackend(BaseDatabaseBackend):
 
         if include is None or "sessions" in include:
             cursor = await conn.execute(
-                """
+                f"""
                 SELECT id, started_at, ended_at, status, mode
                 FROM sessions
                 WHERE project_name = ? AND started_at > ?
                   AND (? IS NULL OR project_path = ?)
+                  {_excl("project_path")}
                 ORDER BY started_at DESC
                 LIMIT ?
-                """,
-                (project_name, cutoff, project_path, project_path, limit),
+                """,  # noqa: S608 - fixed template, values are bound
+                (project_name, cutoff, project_path, project_path, *excluded, limit),
             )
             rows = await cursor.fetchall()
             result["sessions"] = [
@@ -2586,7 +2598,7 @@ class SQLiteBackend(BaseDatabaseBackend):
 
         if include is None or "decisions" in include:
             cursor = await conn.execute(
-                """
+                f"""
                 SELECT d.id, d.description, d.category, d.rationale, d.summary,
                        d.impact_level, d.timestamp, s.id AS session_id,
                        s.project_path AS project_path
@@ -2594,14 +2606,15 @@ class SQLiteBackend(BaseDatabaseBackend):
                 JOIN sessions s ON d.session_id = s.id
                 WHERE s.project_name = ? AND d.timestamp > ?
                   AND (? IS NULL OR s.project_path = ?)
+                  {_excl("s.project_path")}
                   AND d.id NOT IN (
                       SELECT supersedes FROM decisions WHERE supersedes IS NOT NULL
                   )
                   AND d.retired_at IS NULL
                 ORDER BY d.timestamp DESC
                 LIMIT ?
-                """,
-                (project_name, cutoff, project_path, project_path, limit),
+                """,  # noqa: S608 - fixed template, values are bound
+                (project_name, cutoff, project_path, project_path, *excluded, limit),
             )
             rows = await cursor.fetchall()
             result["decisions"] = [
@@ -2618,7 +2631,7 @@ class SQLiteBackend(BaseDatabaseBackend):
 
         if include is None or "learnings" in include:
             cursor = await conn.execute(
-                """
+                f"""
                 SELECT id, category, trigger_context, learning_content, summary,
                        project_name, project_path, source_session_id, success_count,
                        failure_count, created_at, last_used
@@ -2632,6 +2645,7 @@ class SQLiteBackend(BaseDatabaseBackend):
                     ))
                 )
                   AND (? IS NULL OR project_path = ?)
+                  {_excl("project_path")}
                   AND id NOT IN (
                       SELECT supersedes FROM project_learnings
                       WHERE supersedes IS NOT NULL
@@ -2639,24 +2653,25 @@ class SQLiteBackend(BaseDatabaseBackend):
                   AND retired_at IS NULL
                 ORDER BY success_count DESC, (last_used IS NULL), last_used DESC, id
                 LIMIT ?
-                """,
-                (project_name, project_name, project_path, project_path, limit),
+                """,  # noqa: S608 - fixed template, values are bound
+                (project_name, project_name, project_path, project_path, *excluded, limit),
             )
             rows = await cursor.fetchall()
             result["learnings"] = [dict(row) for row in rows]
 
         if include is None or "notebooks" in include:
             cursor = await conn.execute(
-                """
+                f"""
                 SELECT ss.title, ss.tags, ss.created_at, ss.session_id
                 FROM session_summaries ss
                 JOIN sessions s ON ss.session_id = s.id
                 WHERE s.project_name = ? AND ss.created_at > ?
                   AND (? IS NULL OR s.project_path = ?)
+                  {_excl("s.project_path")}
                 ORDER BY ss.created_at DESC
                 LIMIT ?
-                """,
-                (project_name, cutoff, project_path, project_path, limit),
+                """,  # noqa: S608 - fixed template, values are bound
+                (project_name, cutoff, project_path, project_path, *excluded, limit),
             )
             rows = await cursor.fetchall()
             result["notebooks"] = [

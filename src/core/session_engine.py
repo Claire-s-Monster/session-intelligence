@@ -110,6 +110,7 @@ debug_logger = configure_debug_logger(
 # exhaustion; MAX_PAGES is only a runaway guard.
 AGENT_EXECUTION_PAGE_SIZE = 200
 AGENT_EXECUTION_MAX_PAGES = 100
+MAX_EXCLUDE_PROJECT_PATHS = 50
 
 # Issue #108: INTERNAL_AGENT_NAMES (imported from models.session_models,
 # issue #208) are internal hook-driven pseudo-agents that never report a real
@@ -4560,6 +4561,7 @@ class SessionIntelligenceEngine:
         limit: int = 10,
         days: int = 30,
         project_path: str | None = None,
+        exclude_project_paths: list[str] | None = None,
     ) -> dict[str, Any]:
         """
         Recall project knowledge across all sessions.
@@ -4578,16 +4580,35 @@ class SessionIntelligenceEngine:
                 rows recorded under that exact path (e.g. one worktree of a
                 project). Exact match against the stored value; a relative
                 path is rejected since it can never match.
+            exclude_project_paths: Optional absolute paths (max 50); rows
+                recorded under any of these exact paths are dropped from every
+                section. Rows with no recorded path are kept (issue #244).
 
         Returns:
             Consolidated project knowledge dict
         """
         debug_logger.info(f"Recalling project knowledge for: {project_name}")
 
+        problem: str | None = None
+        excluded: list[str] = []
         if project_path is not None and usable_project_path(project_path) is None:
+            problem = f"project_path {project_path!r} is not an absolute path"
+        elif exclude_project_paths and len(exclude_project_paths) > MAX_EXCLUDE_PROJECT_PATHS:
+            problem = (
+                f"exclude_project_paths has {len(exclude_project_paths)} entries "
+                f"(max {MAX_EXCLUDE_PROJECT_PATHS})"
+            )
+        else:
+            for raw in exclude_project_paths or []:
+                usable = usable_project_path(raw)
+                if usable is None:
+                    problem = f"exclude_project_paths entry {raw!r} is not an absolute path"
+                    break
+                excluded.append(usable)
+        if problem is not None:
             return {
                 "project_name": project_name,
-                "error": (f"session_recall: project_path {project_path!r} is not an absolute path"),
+                "error": f"session_recall: {problem}",
                 "sessions": [],
                 "decisions": [],
                 "learnings": [],
@@ -4608,12 +4629,14 @@ class SessionIntelligenceEngine:
             }
 
         try:
+            extra: dict[str, Any] = {"exclude_project_paths": excluded} if excluded else {}
             result = await self.database.recall_project(
                 project_name=project_name,
                 include=include,
                 limit=limit,
                 days=days,
                 project_path=usable_project_path(project_path),
+                **extra,
             )
 
             debug_logger.info(f"Recall for '{project_name}': {result.get('counts', {})}")

@@ -109,6 +109,13 @@ _MIGRATIONS = (
     "ALTER TABLE decisions ADD COLUMN IF NOT EXISTS project_path TEXT",
     "ALTER TABLE session_summaries ADD COLUMN IF NOT EXISTS project_name TEXT",
     "ALTER TABLE session_summaries ADD COLUMN IF NOT EXISTS project_path TEXT",
+    # Issue #244 part 2: projects table, also here so a mangled SCHEMA split
+    # can never leave existing databases without it.
+    "CREATE TABLE IF NOT EXISTS projects ("
+    "name TEXT PRIMARY KEY, parent_name TEXT, description TEXT, "
+    "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), "
+    "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+    "CREATE INDEX IF NOT EXISTS idx_projects_parent ON projects(parent_name)",
 )
 
 
@@ -422,7 +429,7 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     CREATE INDEX IF NOT EXISTS idx_agent_notebooks_agent ON agent_notebooks(agent_id);
     CREATE INDEX IF NOT EXISTS idx_agent_notebooks_type ON agent_notebooks(notebook_type);
 
-    -- PROJECTS TABLE (issue #244: parent/child; parent_name is not an FK)
+    -- PROJECTS TABLE (issue #244, parent/child, parent_name is not an FK)
     CREATE TABLE IF NOT EXISTS projects (
         name TEXT PRIMARY KEY,
         parent_name TEXT,

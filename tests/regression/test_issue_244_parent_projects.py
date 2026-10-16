@@ -16,6 +16,27 @@ from persistence.sqlite import SQLiteBackend
 TIERS = ("decisions", "learnings", "notebooks")
 
 
+def test_projects_ddl_in_always_run_migrations() -> None:
+    """Live DBs hit 'relation projects does not exist': a ';' inside a SQL comment
+    in SCHEMA broke the split, and the swallowed error skipped the CREATE TABLE.
+    """
+    from persistence.postgresql import _MIGRATIONS
+
+    joined = "\n".join(_MIGRATIONS)
+    assert "CREATE TABLE IF NOT EXISTS projects (" in joined
+    assert "idx_projects_parent" in joined
+
+
+def test_pg_schema_statements_split_cleanly() -> None:
+    import re
+
+    statements = [s.strip() for s in PostgreSQLBackend.SCHEMA.split(";") if s.strip()]
+    for stmt in statements:
+        body = re.sub(r"--[^\n]*", "", stmt).strip()
+        assert re.match(r"(CREATE|ALTER|INSERT)\b", body), stmt[:80]
+    assert any("CREATE TABLE IF NOT EXISTS projects" in s for s in statements)
+
+
 @pytest.fixture
 async def engine(tmp_path):
     eng = SessionIntelligenceEngine(repository_path=str(tmp_path))

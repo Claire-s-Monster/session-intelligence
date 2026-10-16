@@ -1578,6 +1578,21 @@ class LeanMCPInterface:
                             "resolve against the server's cwd, not the caller's)."
                         ),
                     },
+                    "project_name": {
+                        "type": "string",
+                        "description": (
+                            "Project name; used to find ancestor projects "
+                            "(session_set_project_parent). Derived from project_path "
+                            "when omitted."
+                        ),
+                    },
+                    "include_ancestors": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": (
+                            "Also match learnings from ancestor projects, tagged inherited_from"
+                        ),
+                    },
                 },
                 "required": ["error_text"],
             },

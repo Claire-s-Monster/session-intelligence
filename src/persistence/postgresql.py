@@ -41,6 +41,7 @@ from .base import (
     get_execution_max_age_hours,
     get_session_max_age_hours,
     sanitize_dsn,
+    walk_project_ancestors,
 )
 
 logger = logging.getLogger(__name__)
@@ -420,6 +421,16 @@ class PostgreSQLBackend(BaseDatabaseBackend):
     );
     CREATE INDEX IF NOT EXISTS idx_agent_notebooks_agent ON agent_notebooks(agent_id);
     CREATE INDEX IF NOT EXISTS idx_agent_notebooks_type ON agent_notebooks(notebook_type);
+
+    -- PROJECTS TABLE (issue #244: parent/child; parent_name is not an FK)
+    CREATE TABLE IF NOT EXISTS projects (
+        name TEXT PRIMARY KEY,
+        parent_name TEXT,
+        description TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_projects_parent ON projects(parent_name);
     """
 
     def __init__(
@@ -763,6 +774,68 @@ class PostgreSQLBackend(BaseDatabaseBackend):
                 server_cwd,
             )
         return str(status).endswith(" 1")
+
+    @staticmethod
+    def _project_row(row: Any) -> dict[str, Any]:
+        out = dict(row)
+        for key in ("created_at", "updated_at"):
+            if out.get(key) is not None:
+                out[key] = out[key].isoformat()
+        return out
+
+    @db_retry
+    async def set_project_parent(
+        self, name: str, parent_name: str | None, description: str | None = None
+    ) -> dict[str, Any]:
+        """Upsert a projects row (issue #244 part 2)."""
+        pool = self._ensure_connected()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO projects (name, parent_name, description)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (name) DO UPDATE SET
+                    parent_name = EXCLUDED.parent_name,
+                    description = COALESCE(EXCLUDED.description, projects.description),
+                    updated_at = NOW()
+                RETURNING name, parent_name, description, created_at, updated_at
+                """,
+                name,
+                parent_name,
+                description,
+            )
+        return self._project_row(row)
+
+    @db_retry
+    async def get_project(self, name: str) -> dict[str, Any] | None:
+        """Return the projects row for ``name`` or None."""
+        pool = self._ensure_connected()
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT name, parent_name, description, created_at, updated_at "
+                "FROM projects WHERE name = $1",
+                name,
+            )
+        return self._project_row(row) if row else None
+
+    async def get_project_ancestors(self, name: str) -> list[str]:
+        """Return [parent, grandparent, ...] (depth-capped, cycle-safe)."""
+
+        async def _parent(current: str) -> str | None:
+            project = await self.get_project(current)
+            return project["parent_name"] if project else None
+
+        return await walk_project_ancestors(_parent, name)
+
+    @db_retry
+    async def list_project_children(self, name: str) -> list[str]:
+        """Return names of projects whose parent is ``name``."""
+        pool = self._ensure_connected()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT name FROM projects WHERE parent_name = $1 ORDER BY name", name
+            )
+        return [row["name"] for row in rows]
 
     @db_retry
     async def transfer_entries(

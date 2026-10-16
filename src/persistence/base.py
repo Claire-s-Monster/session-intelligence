@@ -34,6 +34,29 @@ DEFAULT_SQLITE_PATH = DEFAULT_DATA_DIR / "sessions.db"
 DEFAULT_SESSION_MAX_AGE_HOURS = 24
 
 
+# Issue #244 part 2: maximum number of ancestors followed for a project.
+MAX_PROJECT_DEPTH = 5
+
+
+async def walk_project_ancestors(get_parent: Any, name: str) -> list[str]:
+    """Follow parent links from ``name`` via ``get_parent(name) -> str | None``.
+
+    Stops at MAX_PROJECT_DEPTH ancestors, on a missing parent, or when a name
+    repeats (a cycle, including a loop back to ``name``).
+    """
+    seen = {name}
+    chain: list[str] = []
+    current = name
+    while len(chain) < MAX_PROJECT_DEPTH:
+        parent = await get_parent(current)
+        if not parent or parent in seen:
+            break
+        chain.append(parent)
+        seen.add(parent)
+        current = parent
+    return chain
+
+
 def get_session_max_age_hours() -> int:
     """Return the staleness threshold (hours) for 'active' sessions.
 
@@ -244,6 +267,27 @@ class DatabaseBackend(Protocol):
 
         Returns ``{dry_run, counts, entries, not_found}``.
         """
+        ...
+
+    async def set_project_parent(
+        self, name: str, parent_name: str | None, description: str | None = None
+    ) -> dict[str, Any]:
+        """Upsert a projects row (issue #244 part 2); parent_name None clears it.
+
+        ``description`` None leaves an existing description untouched.
+        """
+        ...
+
+    async def get_project(self, name: str) -> dict[str, Any] | None:
+        """Return ``{name, parent_name, description, created_at, updated_at}`` or None."""
+        ...
+
+    async def get_project_ancestors(self, name: str) -> list[str]:
+        """Return [parent, grandparent, ...]; capped at MAX_PROJECT_DEPTH, stops on a cycle."""
+        ...
+
+    async def list_project_children(self, name: str) -> list[str]:
+        """Return the names of projects whose parent_name is ``name``, sorted."""
         ...
 
     async def query_sessions(

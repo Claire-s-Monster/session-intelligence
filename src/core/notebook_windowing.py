@@ -85,21 +85,48 @@ def parse_outline(body: str) -> list[dict[str, Any]]:
     return headings
 
 
-def extract_section(body: str, name: str) -> tuple[str, str | None]:
-    """Return (section_text, error). On no/ambiguous match text is "" and error is set."""
+def locate_section(body: str, name: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Resolve ``name`` to one outline entry: exact case-insensitive match, then unique substring.
+
+    Returns (heading_entry, None) on success or (None, error) when the match is
+    missing or ambiguous; the error lists the available headings.
+    """
     outline = parse_outline(body)
     wanted = name.strip().lower()
     exact = [h for h in outline if h["heading"].strip().lower() == wanted]
     candidates = exact or [h for h in outline if wanted in h["heading"].strip().lower()]
     if len(candidates) == 1:
-        hit = candidates[0]
-        return body[hit["offset"] : hit["offset"] + hit["chars"]], None
+        return candidates[0], None
 
     problem = "ambiguous" if candidates else "not found"
     names = [h["heading"] for h in outline[:_MAX_LISTED_HEADINGS]]
     more = len(outline) - len(names)
     suffix = f" (+{more} more)" if more > 0 else ""
-    return "", f"Section {name!r} {problem}. Available headings: {names}{suffix}"
+    return None, f"Section {name!r} {problem}. Available headings: {names}{suffix}"
+
+
+def extract_section(body: str, name: str) -> tuple[str, str | None]:
+    """Return (section_text, error). On no/ambiguous match text is "" and error is set."""
+    hit, error = locate_section(body, name)
+    if hit is None:
+        return "", error
+    return body[hit["offset"] : hit["offset"] + hit["chars"]], None
+
+
+def insert_after_section(body: str, name: str, addition: str) -> tuple[str | None, str, str | None]:
+    """Insert ``addition`` at the end of section ``name`` (before the next same-or-higher heading).
+
+    Returns (new_body, resolved_heading, error); new_body is None on error.
+    Blank lines separate the addition from its neighbours.
+    """
+    hit, error = locate_section(body, name)
+    if hit is None:
+        return None, "", error
+    end = hit["offset"] + hit["chars"]
+    head, tail = body[:end], body[end:]
+    new_body = head.rstrip("\n") + "\n\n" + addition.strip("\n")
+    new_body += "\n\n" + tail if tail else ("\n" if head.endswith("\n") else "")
+    return new_body, hit["heading"], None
 
 
 def apply_window(

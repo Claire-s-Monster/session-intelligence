@@ -1514,55 +1514,44 @@ class PostgreSQLBackend(BaseDatabaseBackend):
         project_name: str | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
+        session_id: str | None = None,
+        title: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Query session summaries/notebooks with optional filters."""
+        """Query session summaries/notebooks; all supplied filters are AND-combined.
+
+        ``title`` is a case-insensitive literal substring match (``%``, ``_``
+        and ``\\`` are escaped).
+        """
         pool = self._ensure_connected()
 
-        async with pool.acquire() as conn:
-            if tags:
-                # Query by tags using JSONB containment
-                if project_name:
-                    query = """
-                        SELECT ss.*, s.project_path, s.project_name
-                        FROM session_summaries ss
-                        JOIN sessions s ON ss.session_id = s.id
-                        WHERE ss.tags @> $1::jsonb AND s.project_name = $2
-                        ORDER BY ss.created_at DESC
-                        LIMIT $3
-                    """
-                    rows = await conn.fetch(query, json.dumps([tags[0]]), project_name, limit)
-                else:
-                    query = """
-                        SELECT ss.*, s.project_path, s.project_name
-                        FROM session_summaries ss
-                        JOIN sessions s ON ss.session_id = s.id
-                        WHERE ss.tags @> $1::jsonb
-                        ORDER BY ss.created_at DESC
-                        LIMIT $2
-                    """
-                    rows = await conn.fetch(query, json.dumps([tags[0]]), limit)
-            elif project_name:
-                # Query by project
-                query = """
-                    SELECT ss.*, s.project_path, s.project_name
-                    FROM session_summaries ss
-                    JOIN sessions s ON ss.session_id = s.id
-                    WHERE s.project_name = $1
-                    ORDER BY ss.created_at DESC
-                    LIMIT $2
-                """
-                rows = await conn.fetch(query, project_name, limit)
-            else:
-                # Query all recent
-                query = """
-                    SELECT ss.*, s.project_path, s.project_name
-                    FROM session_summaries ss
-                    JOIN sessions s ON ss.session_id = s.id
-                    ORDER BY ss.created_at DESC
-                    LIMIT $1
-                """
-                rows = await conn.fetch(query, limit)
+        conditions: list[str] = []
+        params: list[Any] = []
+        if tags:
+            params.append(json.dumps([tags[0]]))  # Match first tag
+            conditions.append(f"ss.tags @> ${len(params)}::jsonb")
+        if project_name:
+            params.append(project_name)
+            conditions.append(f"s.project_name = ${len(params)}")
+        if session_id is not None:
+            params.append(session_id)
+            conditions.append(f"ss.session_id = ${len(params)}")
+        if title is not None:
+            escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            params.append(f"%{escaped}%")
+            conditions.append(f"ss.title ILIKE ${len(params)} ESCAPE '\\'")
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(limit)
+        query = f"""
+            SELECT ss.*, s.project_path, s.project_name
+            FROM session_summaries ss
+            JOIN sessions s ON ss.session_id = s.id
+            {where}
+            ORDER BY ss.created_at DESC
+            LIMIT ${len(params)}
+        """  # noqa: S608 -- only fixed clause text is interpolated; values are bound params
 
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(query, *params)
             return [self._decode_summary_row(row) for row in rows]
 
     async def query_summaries_by_tag(self, tag: str, limit: int = 50) -> list[dict[str, Any]]:

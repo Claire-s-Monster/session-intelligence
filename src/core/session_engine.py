@@ -24,6 +24,7 @@ from core.notebook_windowing import (
     apply_window,
     extract_section,
     find_matches,
+    insert_after_section,
     parse_outline,
     validate_window_params,
 )
@@ -4260,9 +4261,15 @@ class SessionIntelligenceEngine:
         max_chars: int | None = None,
         search: str | None = None,
         include_key_changes: bool = False,
+        session_id: str | None = None,
+        title: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Query session notebooks/summaries with optional filters.
+
+        ``session_id`` returns only that session's notebook (0 or 1 rows) and
+        ``title`` filters by case-insensitive literal substring; both are
+        AND-combined with project_name/tags (blank title raises ValueError).
 
         Issue #141 body controls (any of them implies summary_only=False):
         outline replaces bodies with a heading outline; search adds
@@ -4304,6 +4311,8 @@ class SessionIntelligenceEngine:
             to an unfiltered query across every project's notebooks.
         """
         validate_window_params(offset, max_chars, search)
+        if title is not None and not title.strip():
+            raise ValueError("title must be a non-empty, non-whitespace string")
         body_mode = (
             outline
             or search is not None
@@ -4356,6 +4365,8 @@ class SessionIntelligenceEngine:
                 project_name=effective_project_name,
                 tags=tags,
                 limit=limit,
+                session_id=session_id,
+                title=title,
             )
 
             # Convert datetime objects to ISO strings for JSON serialization
@@ -4386,6 +4397,53 @@ class SessionIntelligenceEngine:
             debug_logger.error(f"Error in session_query_notebooks: {e}")
             return []
 
+    @staticmethod
+    def _validate_notebook_update_mode(
+        mode: str, section: str | None, body: str | None
+    ) -> str | None:
+        """Return an error message for an invalid mode/section/body combination, else None."""
+        if mode not in ("replace", "append", "insert_after_section"):
+            return f"Invalid mode {mode!r}: use replace, append or insert_after_section"
+        if mode == "insert_after_section" and not (section and section.strip()):
+            return "mode='insert_after_section' requires a non-blank section"
+        if mode != "insert_after_section" and section is not None:
+            return "section is only valid with mode='insert_after_section'"
+        if mode != "replace" and not body:
+            return f"mode={mode!r} requires a non-empty body"
+        return None
+
+    @staticmethod
+    def _compose_notebook_body(
+        existing: str, mode: str, body: str, section: str | None
+    ) -> tuple[str, str | None, str | None]:
+        """Return (new_body, inserted_after, error) for append / insert_after_section."""
+        if mode == "append":
+            joined = existing.rstrip("\n") + "\n\n" + body if existing.strip() else body
+            return joined, None, None
+        new_body, heading, error = insert_after_section(existing, section or "", body)
+        return new_body or "", heading, error
+
+    async def _notebook_missing_error(
+        self, session_id: str, project_name: str | None
+    ) -> dict[str, Any]:
+        """Build the 'no notebook for this session' error, naming candidates (issue #127)."""
+        message = "No notebook exists for this session; call session_create_notebook first"
+        # When project_name was supplied, name up to 5 candidate sessions that
+        # DO have notebooks so the caller can retry with an explicit session_id.
+        if project_name is not None and self.database is not None:
+            candidates = await self.database.query_session_summaries(
+                project_name=project_name, limit=5
+            )
+            candidate_ids = [row["session_id"] for row in candidates if row.get("session_id")]
+            if candidate_ids:
+                message = (
+                    f"No notebook exists for session {session_id!r}; sessions with "
+                    f"notebooks for project {project_name!r}: {candidate_ids}. Pass "
+                    "one of these explicitly via session_id, or call "
+                    "session_create_notebook first."
+                )
+        return {"status": "error", "session_id": session_id, "message": message}
+
     async def session_update_notebook(
         self,
         session_id: str | None = None,
@@ -4394,9 +4452,16 @@ class SessionIntelligenceEngine:
         body: str | None = None,
         title: str | None = None,
         allow_unbound: bool = False,
+        mode: str = "replace",
+        section: str | None = None,
     ) -> dict[str, Any]:
         """
         Update the caller-authored body and/or title of an existing notebook.
+
+        mode: "replace" (default) overwrites the body; "append" adds body
+        after the existing one; "insert_after_section" adds body at the end of
+        the markdown section named by ``section`` (required for that mode
+        only). A missing/ambiguous section errors and writes nothing.
 
         Args:
             session_id: Explicit session ID whose notebook to update
@@ -4414,6 +4479,9 @@ class SessionIntelligenceEngine:
         Returns:
             Dict with status and message
         """
+        mode_error = self._validate_notebook_update_mode(mode, section, body)
+        if mode_error:
+            return {"status": "error", "message": mode_error}
         try:
             if session_id is None:
                 # This updates an EXISTING notebook, so project_name must
@@ -4446,45 +4514,39 @@ class SessionIntelligenceEngine:
                     "message": "Nothing to update: pass body and/or title",
                 }
 
+            new_body = body
+            inserted_after: str | None = None
+            if mode != "replace":
+                existing = await self.database.get_session_summary(session_id)
+                if existing is None:
+                    return await self._notebook_missing_error(session_id, project_name)
+                new_body, inserted_after, compose_error = self._compose_notebook_body(
+                    existing.get("authored_body") or "", mode, body or "", section
+                )
+                if compose_error:
+                    return {"status": "error", "session_id": session_id, "message": compose_error}
+
             updated = await self.database.update_session_summary_body(
-                session_id, authored_body=body, title=title
+                session_id, authored_body=new_body, title=title
             )
 
             if not updated:
-                message = "No notebook exists for this session; call session_create_notebook first"
-                # When project_name was supplied, name up to 5 candidate
-                # sessions that DO have notebooks so the caller can retry
-                # with an explicit session_id (issue #127).
-                if project_name is not None:
-                    candidates = await self.database.query_session_summaries(
-                        project_name=project_name, limit=5
-                    )
-                    candidate_ids = [
-                        row["session_id"] for row in candidates if row.get("session_id")
-                    ]
-                    if candidate_ids:
-                        message = (
-                            f"No notebook exists for session {session_id!r}; sessions with "
-                            f"notebooks for project {project_name!r}: {candidate_ids}. Pass "
-                            "one of these explicitly via session_id, or call "
-                            "session_create_notebook first."
-                        )
-                return {
-                    "status": "error",
-                    "session_id": session_id,
-                    "message": message,
-                }
+                return await self._notebook_missing_error(session_id, project_name)
 
             updated_fields = [
                 name for name, value in (("body", body), ("title", title)) if value is not None
             ]
             debug_logger.info(f"session_update_notebook updated {session_id}: {updated_fields}")
-            return {
+            result: dict[str, Any] = {
                 "status": "success",
                 "session_id": session_id,
+                "mode": mode,
                 "updated_fields": updated_fields,
                 "message": "Notebook updated successfully",
             }
+            if inserted_after is not None:
+                result["inserted_after"] = inserted_after
+            return result
         except SessionContextRequiredError:
             raise
         except Exception as e:

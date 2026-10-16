@@ -864,7 +864,8 @@ class LeanMCPInterface:
                 "summary_only=false to retrieve full notebook bodies "
                 "(summary_markdown, authored_body, key_changes). Use outline, "
                 "section, offset and max_chars to fetch headings, one section, "
-                "or a paged window of a body."
+                "or a paged window of a body. Filter by session_id (one notebook) "
+                "or title (substring)."
             ),
             "schema": {
                 "type": "object",
@@ -963,10 +964,26 @@ class LeanMCPInterface:
                             "not by itself change the result shape."
                         ),
                     },
+                    "session_id": {
+                        "type": "string",
+                        "description": (
+                            "Return only this session's notebook (0 or 1 rows). AND-combined "
+                            "with any other filter; works with outline/section/etc."
+                        ),
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": (
+                            "Case-insensitive literal substring match on the title (% and _ "
+                            "are literal). AND-combined with other filters. Must be non-blank."
+                        ),
+                    },
                 },
             },
             "examples": [
                 {"limit": 10},
+                {"session_id": "abc123", "outline": True},
+                {"project_name": "session-intelligence", "title": "release notes", "limit": 5},
                 {"project_name": "session-intelligence", "search": "root cause", "limit": 3},
                 {"project_name": "session-intelligence", "outline": True, "limit": 1},
                 {
@@ -1000,6 +1017,8 @@ class LeanMCPInterface:
                 "than regenerating it; the compiled sections already stored on the "
                 "notebook are left untouched. Use this to append findings or correct "
                 "the title on a notebook already created via session_create_notebook. "
+                "mode=append or insert_after_section(+section) adds to the body "
+                "instead of replacing it. "
                 "**DISCIPLINE**: pass at least one of session_id, session_name, or "
                 "project_name, and at least one of body or title. Use allow_unbound=true "
                 "to opt into the legacy unbound fallback (deprecated)."
@@ -1037,7 +1056,27 @@ class LeanMCPInterface:
                     },
                     "title": {
                         "type": "string",
-                        "description": "New title for the notebook.",
+                        "description": "New title for the notebook (replaced in every mode).",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["replace", "append", "insert_after_section"],
+                        "default": "replace",
+                        "description": (
+                            "replace (default): body overwrites the authored body. append: "
+                            "body is added after the existing body. insert_after_section: "
+                            "body is added at the end of the markdown section named by "
+                            "section (before the next heading of same or higher level). "
+                            "append/insert_after_section require body."
+                        ),
+                    },
+                    "section": {
+                        "type": "string",
+                        "description": (
+                            "Heading to insert after; required iff mode=insert_after_section. "
+                            "Case-insensitive; exact match first, then unique substring. A "
+                            "missing/ambiguous section errors (listing headings), writes nothing."
+                        ),
                     },
                 },
             },
@@ -1045,6 +1084,13 @@ class LeanMCPInterface:
                 {
                     "project_name": "session-intelligence",
                     "body": "Follow-up: the fix landed in PR #110, verified in CI.",
+                },
+                {"session_id": "abc123", "body": "Late finding: ...", "mode": "append"},
+                {
+                    "session_id": "abc123",
+                    "body": "- new decision",
+                    "mode": "insert_after_section",
+                    "section": "Decisions",
                 },
                 {
                     "session_id": "abc123",

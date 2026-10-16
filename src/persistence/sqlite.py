@@ -1279,47 +1279,41 @@ class SQLiteBackend(BaseDatabaseBackend):
         project_name: str | None = None,
         tags: list[str] | None = None,
         limit: int = 20,
+        session_id: str | None = None,
+        title: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Query session summaries/notebooks with optional filters."""
+        """Query session summaries/notebooks; all supplied filters are AND-combined.
+
+        ``title`` is a case-insensitive literal substring match (``%``, ``_``
+        and ``\\`` are escaped).
+        """
         conn = self._ensure_connected()
 
+        conditions: list[str] = []
+        params: list[Any] = []
         if tags:
-            # Query by tags
-            query = """
-                SELECT ss.*, s.project_path, s.project_name
-                FROM session_summaries ss
-                JOIN sessions s ON ss.session_id = s.id
-                WHERE EXISTS (
-                    SELECT 1 FROM json_each(ss.tags) WHERE value = ?
-                )
-            """
-            params: list[Any] = [tags[0]]  # Match first tag
-            if project_name:
-                query += " AND s.project_name = ?"
-                params.append(project_name)
-            query += " ORDER BY ss.created_at DESC LIMIT ?"
-            params.append(limit)
-        elif project_name:
-            # Query by project
-            query = """
-                SELECT ss.*, s.project_path, s.project_name
-                FROM session_summaries ss
-                JOIN sessions s ON ss.session_id = s.id
-                WHERE s.project_name = ?
-                ORDER BY ss.created_at DESC
-                LIMIT ?
-            """
-            params = [project_name, limit]
-        else:
-            # Query all recent
-            query = """
-                SELECT ss.*, s.project_path, s.project_name
-                FROM session_summaries ss
-                JOIN sessions s ON ss.session_id = s.id
-                ORDER BY ss.created_at DESC
-                LIMIT ?
-            """
-            params = [limit]
+            conditions.append("EXISTS (SELECT 1 FROM json_each(ss.tags) WHERE value = ?)")
+            params.append(tags[0])  # Match first tag
+        if project_name:
+            conditions.append("s.project_name = ?")
+            params.append(project_name)
+        if session_id is not None:
+            conditions.append("ss.session_id = ?")
+            params.append(session_id)
+        if title is not None:
+            escaped = title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            conditions.append("LOWER(ss.title) LIKE LOWER(?) ESCAPE '\\'")
+            params.append(f"%{escaped}%")
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(limit)
+        query = f"""
+            SELECT ss.*, s.project_path, s.project_name
+            FROM session_summaries ss
+            JOIN sessions s ON ss.session_id = s.id
+            {where}
+            ORDER BY ss.created_at DESC
+            LIMIT ?
+        """  # noqa: S608 -- only fixed clause text is interpolated; values are bound params
 
         cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()

@@ -1124,6 +1124,16 @@ class LeanMCPInterface:
                             "recorded under that exact path (e.g. one worktree)."
                         ),
                     },
+                    "exclude_project_paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "maxItems": 50,
+                        "description": (
+                            "Optional absolute paths (max 50); rows recorded under any of "
+                            "these exact paths are dropped from every section. Rows with no "
+                            "recorded path are kept. Applied before limit."
+                        ),
+                    },
                     "include": {
                         "type": "array",
                         "items": {
@@ -1147,6 +1157,10 @@ class LeanMCPInterface:
             },
             "examples": [
                 {"project_name": "session-intelligence"},
+                {
+                    "project_name": "session-intelligence",
+                    "exclude_project_paths": ["/home/me/proj/worktrees/old-feature"],
+                },
                 {
                     "project_name": "session-intelligence",
                     "include": ["decisions", "learnings"],

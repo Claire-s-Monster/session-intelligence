@@ -104,6 +104,75 @@ class TestAncestorSolutions:
         assert len(res.learnings) == 1 and "inherited_from" not in res.learnings[0]
 
 
+async def _noise_then_match(engine, project, path):
+    """25 high-success non-matching learnings plus 1 matching at success_count 0."""
+    created = await engine.session_manage_lifecycle(
+        "create", project_name=project, project_path=path, session_name=f"sess-{project}"
+    )
+    for i in range(25):
+        await engine.session_log_learning(
+            category="pattern",
+            learning_content=f"noise-{i} unrelated",
+            trigger_context="nothing",
+            session_id=created.session_id,
+        )
+    await engine.session_log_learning(
+        category="pattern",
+        learning_content=f"needle fix for {ERR}",
+        trigger_context="needle-trigger",
+        session_id=created.session_id,
+    )
+    conn = engine.database._ensure_connected()
+    await conn.execute(
+        "UPDATE project_learnings SET success_count = 9 WHERE learning_content LIKE 'noise-%'"
+    )
+    await conn.execute(
+        "UPDATE project_learnings SET success_count = 0 WHERE learning_content LIKE 'needle%'"
+    )
+    await conn.commit()
+
+
+@pytest.mark.regression
+class TestMatchBeyondDefaultLimit:
+    async def test_own_match_outside_top_20(self, engine, tmp_path):
+        path = _dir(tmp_path, "busy")
+        await _noise_then_match(engine, "busy", path)
+        res = await engine.session_find_solution(ERR, project_path=path)
+        assert len(res.learnings) == 1
+        assert "needle" in res.learnings[0]["learning_content"]
+
+    async def test_ancestor_match_outside_top_20(self, engine, tmp_path):
+        kid = _dir(tmp_path, "kid2")
+        mom = _dir(tmp_path, "mom2")
+        await engine.session_set_project_parent("kid2", "mom2")
+        await _noise_then_match(engine, "mom2", mom)
+        await engine.session_manage_lifecycle(
+            "create", project_name="kid2", project_path=kid, session_name="sess-kid2"
+        )
+        res = await engine.session_find_solution(ERR, project_path=kid)
+        assert res.inherited_count == 1
+        assert res.learnings[0]["inherited_from"] == "mom2"
+
+
+@pytest.mark.regression
+class TestTextMatchLiteral:
+    async def test_wildcards_are_literal(self, engine, tmp_path):
+        path = _dir(tmp_path, "wild")
+        created = await engine.session_manage_lifecycle(
+            "create", project_name="wild", project_path=path, session_name="sess-wild"
+        )
+        for content in ("hit 50%_done here", "miss 50Xadone here"):
+            await engine.session_log_learning(
+                category="pattern",
+                learning_content=content,
+                session_id=created.session_id,
+            )
+        rows = await engine.database.query_project_learnings(
+            project_path=None, project_name="wild", text_match="50%_DONE"
+        )
+        assert [r["learning_content"] for r in rows] == ["hit 50%_done here"]
+
+
 @pytest.mark.regression
 class TestQueryProjectLearningsNullPath:
     async def test_name_only_scope(self, engine, family):

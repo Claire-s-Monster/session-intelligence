@@ -5499,6 +5499,7 @@ class SessionIntelligenceEngine:
                     category=error_category,
                     exclude_superseded=True,
                     project_name=own_name,
+                    text_match=error_text,
                 )
                 own_learnings = [
                     self._compact_learning(lr)
@@ -5522,6 +5523,7 @@ class SessionIntelligenceEngine:
                             project_name=ancestor,
                             category=error_category,
                             exclude_superseded=True,
+                            text_match=error_text,
                         )
                         for lr in arows:
                             if lr.get("id") in seen or not self._learning_matches(lr, error_text):

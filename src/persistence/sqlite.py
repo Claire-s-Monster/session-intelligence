@@ -2360,11 +2360,16 @@ class SQLiteBackend(BaseDatabaseBackend):
         exclude_superseded: bool = False,
         since_days: int | None = None,
         project_name: str | None = None,
+        text_match: str | None = None,
     ) -> list[dict[str, Any]]:
         """Query learnings for a project.
 
         project_path may be None when project_name is given; scope is then
         ``project_name = <param>`` only. Both None raises ValueError.
+
+        text_match, when set, keeps only rows whose learning_content plus
+        trigger_context contains it as a literal, case-insensitive substring
+        (no wildcard interpretation), applied before LIMIT.
 
         exclude_superseded defaults to False because migration/export paths
         (migration.py) must preserve retired rows; callers that render
@@ -2421,6 +2426,13 @@ class SQLiteBackend(BaseDatabaseBackend):
             since_clause = "AND created_at >= ?"
             params.append(cutoff)
 
+        text_clause = ""
+        if text_match is not None:
+            text_clause = (
+                "AND instr(lower(learning_content || COALESCE(trigger_context, '')), lower(?)) > 0"
+            )
+            params.append(text_match)
+
         params.append(limit)
 
         cursor = await conn.execute(
@@ -2430,6 +2442,7 @@ class SQLiteBackend(BaseDatabaseBackend):
             {where_category}
             {supersede_clause}
             {since_clause}
+            {text_clause}
             ORDER BY success_count DESC, (last_used IS NULL), last_used DESC, id
             LIMIT ?
         """,

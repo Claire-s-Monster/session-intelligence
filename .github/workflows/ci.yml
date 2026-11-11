@@ -21,7 +21,7 @@ jobs:
       actions: read
       security-events: write
       id-token: write
-    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@8f6fe6495de08228f74fa51f92070b131911d268  # v4.0.0
+    uses: Claire-s-Monster/ci-framework/.github/workflows/reusable-ci.yml@a5dc6bd9422eb649eb071b2f79c6e0406870dc49  # v4.2.0
     with:
       pixi-environment: "ci"
       python-versions: '["3.11", "3.12"]'
